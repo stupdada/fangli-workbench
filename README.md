@@ -15,6 +15,8 @@ Copy-Item config/workbuddy.example.json config/workbuddy.json
 
 把 `config/workbuddy.json` 中的三个占位值替换为自己的有效 WorkBuddy 配置。该文件被 Git 忽略；配置示例不可用于真实模型调用。SDK为 `vendor/workbuddy-sdk.js`，连接只在服务端读取。FFmpeg/ffprobe 需位于 PATH；Windows 使用微软雅黑，Linux 字体路径要求见视频引擎说明。打开页面不会主动调用外部模型。
 
+不想手抄时用 `python tools/setup_workbuddy.py`：它逐项提示，`publishableKey` 输入不回显，只写本机文件，然后 `python tools/check_workbuddy.py` 做格式与 SDK 的离线校验。三个值的来源是 WorkBuddy 云服务控制台为该应用生成的 `publicConfig`（`endpoint` / `oauthRelayBaseUrl` / `publishableKey`）；`oauthRelayBaseUrl` 只在本工作台调用模型时可以留空。
+
 双击 `启动.bat`，或在此目录运行：
 
 ```powershell

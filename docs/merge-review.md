@@ -86,6 +86,8 @@
 
 `--live` 只做一次模型目录查询（不产生正文 token）；`--live-chat` 才做一次最小对话，会消耗账号额度。两者都要求配置先通过离线检查。
 
+填写本机配置用 `python tools/setup_workbuddy.py`：逐项提示、`publishableKey` 输入不回显、只写 `config/workbuddy.json`（Git 忽略）。三个值来自 WorkBuddy 云服务控制台该应用的 `publicConfig`，不能从域名约定或本机其他文件推导。
+
 ## 六、未验证项与待办
 
 1. **真实模型连通未验证**：本机没有 `config/workbuddy.json`，缺 `endpoint` 与 `publishableKey`。离线检查已到「SDK 加载 + 配置格式」一步，真实目录与对话调用尚未执行，未消耗额度。

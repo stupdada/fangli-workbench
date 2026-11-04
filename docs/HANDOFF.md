@@ -95,6 +95,8 @@ WorkBuddy 连接从 `config/workbuddy.example.json` 复制到本机 `config/work
 
 填好本机文件后先跑连接检查：`python tools/check_workbuddy.py` 只做离线核对（Node ≥ 20、Python ≥ 3.10、SDK 能否在隔离上下文加载、`endpoint`/`publishableKey`/`oauthRelayBaseUrl` 格式与占位值），不回显凭据。`--live` 才做一次模型目录查询，`--live-chat` 才做一次最小对话并消耗你账号的额度。
 
+三个值的来源是 WorkBuddy 云服务控制台为该应用生成的 `publicConfig`：`endpoint` 是应用的发布域名数据面地址（必填，不能靠约定推导），`publishableKey` 以 `wbpk_` 开头（只标识应用，本身不带权限），`oauthRelayBaseUrl` 仅第三方登录需要、本工作台调用模型时可留空。手工填写容易出错时用 `python tools/setup_workbuddy.py`：逐项提示、`publishableKey` 不回显、只写本机 `config/workbuddy.json`。
+
 风格库位于仓库内 `style-library/`，`config/style-library.json` 使用相对路径，由 `bridge/style_library.py` 按仓库位置解析，与启动时的工作目录无关。来源见 [style-library/README.md](../style-library/README.md) 及同目录 `provenance.json`。客户绑定仍需按当前环境真实标识配置。
 
 完成依赖和本机连接配置后，运行：
