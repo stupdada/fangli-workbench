@@ -1,0 +1,23 @@
+# 默认：文本文件统一 LF，检出时按平台自动转换
+* text=auto eol=lf
+
+*.py   text eol=lf
+*.js   text eol=lf
+*.css  text eol=lf
+*.html text eol=lf
+*.md   text eol=lf
+*.json text eol=lf
+
+# .bat 是 GBK 编码 + CRLF，cmd 直接读取。
+# 标记为 binary，禁止 Git 做任何换行/编码转换，否则中文提示会乱码。
+*.bat  binary
+*.docx binary
+*.db   binary
+
+# 交接基线的原始快照按字节保留，供哈希与行为对照。
+/app/** -text
+/video/upstream/** -text
+/video/comparison/zip_native/** -text
+/docs/evidence/** -text
+/docs/reference/** -text
+/style-library/*.json -text

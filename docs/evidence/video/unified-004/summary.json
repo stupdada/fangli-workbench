@@ -1,0 +1,71 @@
+{
+  "task": "geo-merge-20261104",
+  "lane": "video",
+  "dispatch": "video-004",
+  "status": "partial",
+  "codeAndBrowserWork": "complete",
+  "remaining": "Running video Node 80252 still caches the old workspace adapter. A later owner-authorized normal reload and one same-origin live 409 check are required.",
+  "url": "http://127.0.0.1:60128/video/?client_id=34847c7e-debc-4839-b680-2f5b51d36fae&article_id=2&version_id=9",
+  "browser": {
+    "kind": "built-in @Browser",
+    "ownTabRetained": true,
+    "viewportOverrideReset": true,
+    "desktopViewport": [1440, 1000],
+    "mobileViewport": [390, 844],
+    "mobileContentClientAndScrollWidth": [375, 375],
+    "historicalConsoleError": "2026-11-04T07:44:03.478Z; partial editorial.rows.filter; fixed before later successful UI acceptance"
+  },
+  "filesChanged": [
+    "video/workspace-context.cjs",
+    "video/workspace-store.py",
+    "video/public/authoring-view.js",
+    "video/public/video-ui.js",
+    "video/README.md",
+    "tests/video/workspace-errors.test.cjs",
+    "tests/video/unified-ui.test.cjs"
+  ],
+  "checks": {
+    "freshAdapterActualMain400404409": "passed; 3 read-only requests, no automatic retries",
+    "privateDiagnosticProtection": "passed",
+    "partialHistoricalEditorial": "passed",
+    "fixedSourceDraftRestoration": "passed",
+    "bodyMdTruthAndOriginalProvenance": "passed; fixed article 2/version 9",
+    "missingNativeAuditAndBodyOriginal": "explicitly marked missing",
+    "editedDraft": {"characters": 95, "screens": 6, "seconds": 27.36, "revision": 7, "persistedAfterReopen": true},
+    "asset": {"filename": "cat.png", "bytes": 246289, "decodedDimensions": [400, 690], "assignedScreens": 6, "restoredWithDraft": true},
+    "independentDraft": {"characters": 41, "screens": 3, "seconds": 11.76, "sourceUnbound": true, "shopAssetAbsent": true},
+    "historyPlayback": {"seconds": 169.12, "observedCurrentTime": 7.1565, "dimensions": [720, 1280], "readyState": 4, "pausedAtObservation": false, "mediaError": null},
+    "subtitleDownload": {"completed": true, "bytes": 3162, "copy": "downloaded-subtitles.srt"},
+    "videoDownload": "same-origin existing link verified in UI; complete transfer/hash/Range evidence reused from core-003",
+    "focusedCases": {"uniquePassed": 4, "postArchiveChangeAffectedCasePassed": 1},
+    "liveOldCandidate": "not activated: old 503 display observed once, draft remained empty; not retried without process change"
+  },
+  "reusedEvidence": [
+    "core/unified/verification.md",
+    "core/unified/http-boundaries.json",
+    "video/productization/verification.md",
+    "video/pagination-003/verification.md"
+  ],
+  "evidence": [
+    "verification.md",
+    "adapter-errors.json",
+    "fixed-source-browser.json",
+    "edited-draft-browser.json",
+    "asset-browser.json",
+    "independent-browser.json",
+    "final-restored-browser.json",
+    "history-browser.json",
+    "responsive-browser.json",
+    "browser-errors.json",
+    "downloaded-subtitles.srt",
+    "desktop-source.jpg",
+    "desktop-preview.jpg",
+    "mobile-source.jpg",
+    "history-playback.jpg",
+    "live-old-candidate-error.jpg"
+  ],
+  "counts": {"model": 0, "catalog": 0, "tts": 0, "imageGeneration": 0, "cloudVideo": 0, "ffmpegEncodes": 0, "newVideoBatches": 0, "serviceRestarts": 0},
+  "styleV2Integrated": false,
+  "mainProfilesArticlesAdoptionMutated": false,
+  "risk": "Live business error status/message remains pending adapter activation; no claim that running service has been fixed. Existing 169.12-second MP4 remains the video-002 creation version."
+}

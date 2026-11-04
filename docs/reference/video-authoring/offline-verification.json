@@ -1,0 +1,230 @@
+{
+  "status": "offline_complete_real_generation_pending",
+  "moduleVersion": "2.0.0",
+  "promptVersion": "video-creative-2.0.0",
+  "examplesVersion": "video-expression-2.0.0",
+  "examplesDigest": "82e3245d96067e0956f284e54788f7ef18a3b3535d41f6019430c9f49a89cd4b",
+  "moduleReadyForProductionOwner": true,
+  "productionIntegrated": false,
+  "entryProposedByOwner": "/video/ 写视频文案",
+  "inputSetVersion": "eight-briefs-2.0.0",
+  "inputSetDigest": "8787c36a1f9f3b388e7e91d5a2afcd9b1d44b89dd57df4af824c585a93f80329",
+  "preparedTasks": 8,
+  "checks": [
+    {
+      "requestId": "style-v2-intro-1",
+      "direction": "store_intro",
+      "inputValid": true,
+      "inputDigestMatches": true,
+      "writePromptDigestMatches": true,
+      "selectedExampleIds": [
+        "pet-store-intro-user-1",
+        "pet-store-intro-author-1"
+      ]
+    },
+    {
+      "requestId": "style-v2-intro-2",
+      "direction": "store_intro",
+      "inputValid": true,
+      "inputDigestMatches": true,
+      "writePromptDigestMatches": true,
+      "selectedExampleIds": [
+        "pet-store-intro-user-1",
+        "pet-store-intro-author-1"
+      ]
+    },
+    {
+      "requestId": "style-v2-promotion-1",
+      "direction": "promotion",
+      "inputValid": true,
+      "inputDigestMatches": true,
+      "writePromptDigestMatches": true,
+      "selectedExampleIds": [
+        "pet-promotion-user-1",
+        "pet-promotion-author-1"
+      ]
+    },
+    {
+      "requestId": "style-v2-promotion-2",
+      "direction": "promotion",
+      "inputValid": true,
+      "inputDigestMatches": true,
+      "writePromptDigestMatches": true,
+      "selectedExampleIds": [
+        "pet-promotion-user-1",
+        "pet-promotion-author-1"
+      ]
+    },
+    {
+      "requestId": "style-v2-education-1",
+      "direction": "education",
+      "inputValid": true,
+      "inputDigestMatches": true,
+      "writePromptDigestMatches": true,
+      "selectedExampleIds": [
+        "pet-education-user-1",
+        "pet-education-author-1"
+      ]
+    },
+    {
+      "requestId": "style-v2-education-2",
+      "direction": "education",
+      "inputValid": true,
+      "inputDigestMatches": true,
+      "writePromptDigestMatches": true,
+      "selectedExampleIds": [
+        "pet-education-user-1",
+        "pet-education-author-1"
+      ]
+    },
+    {
+      "requestId": "style-v2-image-1",
+      "direction": "image_caption",
+      "inputValid": true,
+      "inputDigestMatches": true,
+      "writePromptDigestMatches": true,
+      "selectedExampleIds": [
+        "pet-image-user-1",
+        "pet-image-author-1"
+      ]
+    },
+    {
+      "requestId": "style-v2-image-2",
+      "direction": "image_caption",
+      "inputValid": true,
+      "inputDigestMatches": true,
+      "writePromptDigestMatches": true,
+      "selectedExampleIds": [
+        "pet-image-user-1",
+        "pet-image-author-1"
+      ]
+    }
+  ],
+  "examples": {
+    "userApproved": 4,
+    "assistantAuthored": 4,
+    "scope": "one_current_direction_and_matching_domain",
+    "factsSource": false
+  },
+  "verification": {
+    "distinctFocusedCasesPassed": 15,
+    "existingCaseRerunAfterUnicodeCountRefinement": 1,
+    "fullPreviousVideoOrArticleSuitesRun": false,
+    "logs": [
+      {
+        "file": "test-output.txt",
+        "expectedPassed": 13,
+        "digest": "3aa5caacc288021fa387a78e54ef08d9aaf31ec4a1c67035b5f2f0653fda453f"
+      },
+      {
+        "file": "runner-focused.txt",
+        "expectedPassed": 2,
+        "digest": "9b19b8938753fdf1be1c81f9e3871fbf8e7b8e5a6f86dace038e98da6a9d211f"
+      },
+      {
+        "file": "count-focused.txt",
+        "expectedPassed": 1,
+        "digest": "ab3aaf2cfc59cbdd3b7132c1bd20d6cc1e5cda1c04097caaa7a3e49bbb60e77a"
+      }
+    ],
+    "machineSchemaJSONParsed": true,
+    "realQualitativeEvaluation": "not_run"
+  },
+  "externalSources": [
+    {
+      "id": "aspca-grooming",
+      "title": "ASPCA General Cat Care / Grooming",
+      "url": "https://www.aspca.org/pet-care/cat-care/general-cat-care",
+      "retrievedOn": "2026-11-04",
+      "scope": "一般养猫知识，非商家事实"
+    },
+    {
+      "id": "cats-protection-space",
+      "title": "Cats Protection / Setting up a space for your new cat",
+      "url": "https://www.cats.org.uk/help-and-advice/getting-a-cat/preparing-for-a-cat",
+      "retrievedOn": "2026-11-04",
+      "scope": "一般养猫知识，非商家事实"
+    }
+  ],
+  "calls": {
+    "realWorkBuddyContent": 0,
+    "realModelDirectory": 0,
+    "tts": 0,
+    "imageGeneration": 0,
+    "cloudVideo": 0,
+    "localRender": 0,
+    "offlineInjectedResponsesAreNotModelEvidence": true
+  },
+  "boundaries": {
+    "onlyWrittenDirectory": "D:\\Codex\\方立\\output\\video-production-20261104\\style-v2",
+    "productionFilesChanged": false,
+    "oldBusinessFilesChanged": false,
+    "servicesRestarted": false,
+    "oldDatabaseReadByModule": false,
+    "addedThreads": 0,
+    "addedSubagents": 0
+  },
+  "runtimeLimitations": [
+    "引用链校验不等于事实语义核实",
+    "当前店铺快照仅确认店名，独有介绍未验证",
+    "真实八稿质量与风格尚未验证",
+    "生产接入、HTTP和浏览器交互由下一owner完成"
+  ],
+  "packageFiles": [
+    {
+      "file": "content-creator.cjs",
+      "digest": "566553dd218b561d7b3e88f9233903bfe239f3f1df31a5769dd54e465317cb42",
+      "bytes": 22380
+    },
+    {
+      "file": "workbuddy-adapter.cjs",
+      "digest": "7bcc99bd74b4098d381748b698940374a3da7324e67025bb40828771d1cd88d6",
+      "bytes": 1629
+    },
+    {
+      "file": "file-archive.cjs",
+      "digest": "a2340c8a8be7a0079696287df395feb96b307fac8ddbc387fdbcfb3f24924a9d",
+      "bytes": 630
+    },
+    {
+      "file": "examples.json",
+      "digest": "eb0bb5ebce2f14430b4ee749998155ecd08115d70d0dcfb0d692c715b5a8cfbb",
+      "bytes": 8466
+    },
+    {
+      "file": "contract.schema.json",
+      "digest": "cf0dbbfc406971aa833c8c4cfacde447b75a9333bfa96b992f907aa840511d2f",
+      "bytes": 5718
+    },
+    {
+      "file": "acceptance-inputs.json",
+      "digest": "8c8e2411b71481f5cf7c3d90c12a04df48f8146529361d9b314cc1d1cbec1c92",
+      "bytes": 36228
+    },
+    {
+      "file": "acceptance-runner.cjs",
+      "digest": "ba54b7e23cb89262325a4edf3e86678b6e2337ab8d16826046f69ce64f0384d8",
+      "bytes": 3898
+    },
+    {
+      "file": "prepare-inputs.cjs",
+      "digest": "6d98295e03feef6eb4239d7252ddeda8a21da4b3784eed1d69b307bb08470e0c",
+      "bytes": 5891
+    },
+    {
+      "file": "content-creator.test.cjs",
+      "digest": "37afbde529877f4cdaa48c5ab052123ec4ccae622492473b6fb3db3771989edd",
+      "bytes": 14796
+    },
+    {
+      "file": "README.md",
+      "digest": "3ee817e8df43e6a1a102622974a7979ae6e5ad321f0f6128c255216e42c13076",
+      "bytes": 9939
+    },
+    {
+      "file": "verify-offline.cjs",
+      "digest": "515911fa4ab4ca35e04f51dc6ec07db6fcfd4414e6c8ef796ea596224c6564a9",
+      "bytes": 3720
+    }
+  ]
+}

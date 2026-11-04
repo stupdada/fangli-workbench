@@ -1,0 +1,142 @@
+"""Manual full-text review and opt-in candidates; no automatic adoption loop."""
+import copy
+from pathlib import Path
+from app import llm, prompts
+from . import provider, style_library
+from .errors import Problem, Conflict
+from .storage import dumps, integer, text_value
+
+CONFIG = Path(__file__).resolve().parent.parent / 'config'
+
+
+def checked_article(service, ident, aid, expected):
+    integer(expected, 'expected_version')
+    conv, article = service.article_context(ident, aid)
+    if article['locked']: raise Conflict('当前稿件正在处理，结束后才能操作')
+    if article['current_version'] != expected: raise Conflict('当前正文已变化，请重新打开后审阅')
+    return conv, article
+
+
+def call_json(system, request, settings, tokens=8000):
+    value = llm.parse_json(llm.chat_with_retry([{'role': 'system', 'content': system},
+        {'role': 'user', 'content': dumps(request)}], settings, force_json=True, max_tokens=tokens))
+    if not isinstance(value, dict): raise Problem('模型未完整返回可用结果，当前采用稿保留')
+    return value
+
+
+def style_review(service, ident, aid, expected):
+    conv, article = checked_article(service, ident, aid, expected)
+    def review(op, settings):
+        skill = (CONFIG / 'de-ai-taste.md').read_text(encoding='utf-8')
+        signals = (CONFIG / 'ai-taste-signals.md').read_text(encoding='utf-8')
+        system = skill + '\n\n' + signals + '''
+本次只执行完整通读、逐段扫描、语境排除、全文分流和正式建议分档，不改写。
+GEO事实段、FAQ与说明文的清晰结构需结合信息贡献判断；正常AI内容声明是ZIP交付要求，不作为需要删除的助手残留。可以一般性概括，不把非核心缺项变成全篇防御性提醒。
+只输出JSON：{"assessment":"程度、系统性问题和具体优点","suggestions":[{"id":"1","tier":1,"signal":"信号类型","quote":"原句或代表段","problem":"问题","proposal":"可独立执行方案","scope":"词/句/段/全文","requires_material":false}],"observations":[{"id":"O1","position":"段号或全文","quote":"原文片段","signal":"信号","reason":"未达门槛原因","proposal":"方向"}]}。
+正式建议按1、2、3档分组，组内按文中顺序，id为跨档连续编号。观察项用O编号、默认不处理。需要真实素材而暂无时给出删除或收紧泛论的备选；不得编造经历。对原文没有的内容不凭可疑感报出。'''
+        data = call_json(system, {'body': article['body_md'], 'title': article['title'], 'brief': conv['brief'],
+            'references': style_library.references(article, conv['client_id'])}, settings)
+        if not isinstance(data.get('assessment'), str) or not isinstance(data.get('suggestions'), list) or not isinstance(data.get('observations', []), list):
+            raise Problem('去味审阅结构不完整，当前采用稿保留')
+        seen = set()
+        for item in data['suggestions'] + data.get('observations', []):
+            if not isinstance(item, dict) or not isinstance(item.get('id'), str) or not item['id'] or item['id'] in seen:
+                raise Problem('审阅建议编号不完整或重复')
+            seen.add(item['id'])
+        for item in data['suggestions']:
+            if item.get('tier') not in (1, 2, 3) or any(not isinstance(item.get(k), str) for k in ('signal', 'quote', 'problem', 'proposal', 'scope')):
+                raise Problem('正式建议缺少档位、证据或可执行方案')
+        for item in data.get('observations', []):
+            if not item['id'].startswith('O') or not isinstance(item.get('reason'), str): raise Problem('观察项缺少编号或未达门槛原因')
+        data['suggestions'] = sorted(data['suggestions'], key=lambda x: x['tier'])
+        data.update(base_version=expected, article_id=aid,
+            recommended=[s['id'] for s in data['suggestions'] if s['tier'] in (1, 2)],
+            default_mode='full', observations_default_selected=False,
+            reviewer='WorkBuddy 模型审阅', codex_review='')
+        return data
+    return service.background('style_review', ident, review, aid, expected)
+
+
+def readonly_fact_check(body, source, settings):
+    documents = [{'filename': d['filename'], 'kind': d['kind'], 'text': d['text']} for d in source.get('documents', [])]
+    system = prompts.AUDIT_RULES + '''
+本次只读事实复核：核对当前候选正文的数字、型号、条件、客户真实关系及是否新增具体经历或承诺。
+允许概括性、一般性介绍，不因缺少非核心细节要求把全篇写成核验说明；不要润色，不提供修订正文，不重复审AI味。
+只输出JSON：{"status":"pass或needs_review","findings":[{"quote":"候选正文原句","why":"问题与依据"}],"summary":"简短结论"}。资料与用户明确补充未经独立外部核验。'''
+    data = call_json(system, {'body': body, 'documents': documents, 'brief': source.get('brief', {})}, settings, 4000)
+    if data.get('status') not in ('pass', 'needs_review') or not isinstance(data.get('findings'), list): raise Problem('事实复核未完整返回')
+    for item in data['findings']:
+        if not isinstance(item, dict) or not isinstance(item.get('quote'), str) or not item['quote'] or item['quote'] not in body or not isinstance(item.get('why'), str):
+            raise Problem('复核结果缺少可定位的正文证据')
+    if data['findings']: data['status'] = 'needs_review'
+    # Ignore any model-generated revised_body; this path cannot modify the candidate.
+    return {'status': data['status'], 'findings': data['findings'], 'summary': str(data.get('summary', '')),
+            'independently_verified': False, 'readonly': True, 'attempts': 1}
+
+
+def candidate_article(article, data):
+    body = data.get('body_md')
+    text_value(body, '候选正文', 200000, empty=False)
+    title = data.get('title') or article['title']
+    text_value(title, '候选标题', 1000, empty=False)
+    result = copy.deepcopy(article)
+    for key in ('current_version', 'version_label', 'origin', 'review', 'locked'): result.pop(key, None)
+    result.update(body_md=body, title=title, audit={}, geo={}, body_original='')
+    return result
+
+
+def style_rewrite(service, ident, aid, expected, review_id, selected, mode='full', material=''):
+    conv, article = checked_article(service, ident, aid, expected)
+    review = service.ws.operation(review_id)
+    if review['kind'] != 'style_review' or review['status'] != 'done' or review['article_id'] != aid or review['conversation_id'] != ident or review['result'].get('base_version') != expected:
+        raise Conflict('审阅记录与当前正文不匹配，请重新审阅')
+    if not isinstance(selected, list) or not selected or any(not isinstance(s, str) for s in selected) or len(set(selected)) != len(selected):
+        raise Problem('请明确选择需处理的建议编号')
+    all_items = review['result']['suggestions'] + review['result'].get('observations', [])
+    chosen = [item for item in all_items if item['id'] in selected]
+    if len(chosen) != len(selected): raise Problem('包含不存在的建议编号')
+    if mode not in ('light', 'standard', 'full'): raise Problem('改写幅度不正确')
+    text_value(material, '真实补充素材', 20000)
+    if any(item.get('requires_material') for item in chosen) and not material.strip():
+        raise Problem('选中方案需要真实素材，请补充或改选删除/收紧方案')
+    source = service.ws.version_source(aid, expected)
+    def write(op, settings):
+        system = (CONFIG / 'de-ai-taste.md').read_text(encoding='utf-8') + '''
+现在执行用户明确选中的建议。全文已经读过，再完整阅读正文以保持语气，仅处理selected；未选位置保持原文。full允许为选定问题跨句重组和全文节奏调整，standard改写问题句，light只最小替换；幅度不足时跳过并说明。
+先删无信息贡献的文字，再收紧过满判断，再以平白的话重述；无更好表达就保留。不通过新口头禅、反问、自嘲或虚构经验制造人味。保留有效事实、逻辑、型号、数值条件、客户关系及ZIP必要AI声明；不凭资料外推商家具体承诺。素材只作为本次明确补充。
+若全文调整会改变未选条目的位置，跳过冲突并说明，不自行扩大范围。只输出JSON：{"title":"标题","body_md":"完整Markdown正文","changes":["实际修改清单"],"skipped":["跳过项及原因"]}。'''
+        data = call_json(system, {'original': article['body_md'], 'title': article['title'], 'selected': chosen,
+            'mode': mode, 'material': material, 'brief': source.get('brief', conv['brief'])}, settings)
+        candidate = candidate_article(article, data)
+        if service.cancellations[op].is_set(): raise provider.failure('cancelled')
+        metadata = {'review_id': review_id, 'selected': selected, 'mode': mode, 'material': material,
+                    'changes': data.get('changes', []), 'skipped': data.get('skipped', [])}
+        initial_check = {'status': 'unverified', 'summary': '候选已保留，正在进行一次只读事实复核', 'readonly': True, 'attempts': 0}
+        vid = service.ws.save_candidate(aid, expected, candidate, initial_check, op, metadata=metadata)
+        try:
+            check = readonly_fact_check(candidate['body_md'], {**source, 'brief': {**source.get('brief', {}),
+                'note': source.get('brief', {}).get('note', '') + ('\n本次真实补充：' + material if material else '')}}, settings)
+        except Exception as exc:
+            check = {'status': 'unverified', 'summary': provider.public_error(exc), 'findings': [], 'readonly': True, 'attempts': 1, 'independently_verified': False}
+        service.ws.update_candidate_review(aid, vid, expected, op, check, metadata)
+        return {'candidate_version': vid, 'base_version': expected, 'changes': metadata['changes'],
+                'skipped': metadata['skipped'], 'fact_check': check, 'adopted': False}
+    return service.background('style_rewrite', ident, write, aid, expected)
+
+
+def revise(service, ident, aid, expected, instruction):
+    conv, article = checked_article(service, ident, aid, expected)
+    instruction = text_value(instruction, '修改要求', 20000, empty=False).strip()
+    source = service.ws.version_source(aid, expected)
+    def edit(op, settings):
+        system = '''只修改给定的当前正文，按用户明确要求作最小充分修改；用户明确要求全文改写时允许重组。
+保留未涉及的文字、有效事实、条件、客户关系及必要AI声明。不编造经历、数值和服务承诺；允许有依据的一般性表达，不把文章改成防御性核验说明。
+只输出JSON：{"title":"标题","body_md":"完整Markdown正文","changes":["修改清单"]}。'''
+        data = call_json(system, {'current': article['body_md'], 'title': article['title'], 'instruction': instruction,
+            'documents': source.get('documents', []), 'brief': source.get('brief', conv['brief'])}, settings)
+        candidate = candidate_article(article, data)
+        if service.cancellations[op].is_set(): raise provider.failure('cancelled')
+        vid = service.ws.save_candidate(aid, expected, candidate, {'status': 'unverified', 'summary': '当前修改候选尚未核查'}, op,
+            origin='revision', label='对话修改候选稿', metadata={'instruction': instruction, 'changes': data.get('changes', [])})
+        return {'candidate_version': vid, 'base_version': expected, 'changes': data.get('changes', []), 'adopted': False}
+    return service.background('revision', ident, edit, aid, expected)

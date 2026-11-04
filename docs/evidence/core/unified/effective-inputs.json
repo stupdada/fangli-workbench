@@ -1,0 +1,98 @@
+{
+  "ok": true,
+  "tests": 3,
+  "evidence": {
+    "alias_groups": {
+      "found_local": [
+        [
+          "西邦24",
+          "Cilbond24"
+        ],
+        [
+          "西邦12E",
+          "Cilbond12E"
+        ],
+        [
+          "西邦80ET",
+          "Cilbond80ET"
+        ]
+      ],
+      "confirmed": [
+        [
+          "西邦24",
+          "Cilbond24"
+        ],
+        [
+          "西邦12E",
+          "Cilbond12E"
+        ],
+        [
+          "西邦80ET",
+          "Cilbond80ET"
+        ]
+      ],
+      "draft_equals_brief": true,
+      "with_aliases": [
+        [
+          "西邦24",
+          "Cilbond24",
+          "西邦12E",
+          "Cilbond12E"
+        ],
+        [
+          "西邦80ET",
+          "Cilbond80ET"
+        ],
+        [
+          "橡胶金属胶"
+        ],
+        [
+          "单涂体系"
+        ]
+      ],
+      "without_aliases": [
+        [
+          "西邦24",
+          "Cilbond80ET"
+        ],
+        [
+          "单涂体系",
+          "西邦12E"
+        ],
+        [
+          "橡胶金属胶",
+          "西邦80ET"
+        ],
+        [
+          "Cilbond24",
+          "Cilbond12E"
+        ]
+      ],
+      "pending": 4,
+      "external_model_calls": 0,
+      "native_grouping_unchanged": true
+    },
+    "profile_transaction": {
+      "one_http_write": true,
+      "archive_and_task_committed_together": true,
+      "forced_sqlite_failure_rolled_both_back": true,
+      "explicit_empty_preserved": true,
+      "running_following_paused": true,
+      "frozen_snapshot_and_completed_article_unchanged": true,
+      "new_task_empty_platforms": true,
+      "new_task_uses_archive_defaults": true
+    },
+    "note_and_interview": {
+      "visible_note_only": true,
+      "history_preserved": true,
+      "untouched_condition_retained": true,
+      "replaced_reader_removed": true,
+      "interview_updates_task_fields": true,
+      "explicit_empty_no_fallback": true,
+      "local_fixture_calls": 1,
+      "external_model_calls": 0
+    }
+  },
+  "external_model_calls": 0,
+  "external_catalog_calls": 0
+}

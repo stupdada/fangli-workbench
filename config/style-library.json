@@ -1,0 +1,6 @@
+{
+  "root": "style-library",
+  "client_bindings": {},
+  "signals_owner": "config/ai-taste-signals.md",
+  "stage": "post_generation_only"
+}

@@ -1,0 +1,16 @@
+{
+  "ok": true,
+  "method": "unchanged Node video controller over real unified HTTP; local draft save, no browser",
+  "full_display_body_equal": true,
+  "source_version_fixed": 9,
+  "old_structured_only_provenance": true,
+  "screens": 5,
+  "duration_seconds": 22.759999999999998,
+  "saved_segments_equal": true,
+  "requests": [],
+  "resumed_persisted_live_result": true,
+  "fixture_correction": "source intentionally stores identity only; full Markdown/provenance live in editorial. Reused already-persisted real HTTP import + font layout; did not issue them again.",
+  "model_calls": 0,
+  "catalog_calls": 0,
+  "encodes": 0
+}

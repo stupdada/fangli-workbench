@@ -1,0 +1,3 @@
+# Backend: Python 3.10+ standard library only; no pip dependencies.
+# WorkBuddy transport additionally needs Node.js 20+ (built-in fetch/VM/streams).
+# The SDK is bundled at vendor/workbuddy-sdk.js; no npm install is required.

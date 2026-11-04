@@ -1,0 +1,62 @@
+{
+  "ok": true,
+  "tests": 7,
+  "failures": 0,
+  "errors": 0,
+  "external_model_calls": 0,
+  "external_catalog_calls": 0,
+  "encodes": 0,
+  "boundaries": {
+    "configuration": {
+      "crud_persisted": true,
+      "native_pref_cleanup": true,
+      "arbitrary_configured_formats_in_queue": true,
+      "disabled_or_deleted_draft_rejected": true,
+      "inflight_configuration_frozen": true,
+      "target_ai_distinct_from_writer": true
+    },
+    "native_empty_stream_failure": {
+      "actual_transport_calls": 1,
+      "native_fallback_cannot_redispatch": true,
+      "current_and_raw_preserved": true
+    },
+    "history_archive": {
+      "same_client_visible_options_and_documents_reused": true,
+      "no_articles_or_false_completion_cloned": true,
+      "logical_history_delete_retains_video_source": true,
+      "real_zip_and_docx_download": true,
+      "versions_audits_comparisons_real_notes_and_parsed_text_included": true,
+      "credentials_private_dirs_and_diagnostics_excluded": true
+    },
+    "failure_and_guards": {
+      "active_delete_clone_write_one_regenerate_rejected": true,
+      "uncertain_not_retried": true,
+      "failed_native_audit_preserves_adopted_and_raw": true,
+      "lock_released": true
+    },
+    "native_actions": {
+      "original_regenerate_function": true,
+      "original_audit_function": true,
+      "regenerate_calls": 2,
+      "explicit_audit_calls": 1,
+      "identity_and_group_preserved": true,
+      "native_automatic_audit_correction": true,
+      "adopted_restorable_versions": true,
+      "version_bound_evidence": true
+    },
+    "manual_metadata": {
+      "tags_decl_versioned": true,
+      "old_versions_unchanged": true,
+      "other_fields_preserved": true,
+      "old_audit_cleared": true,
+      "cas_lock_ownership": true
+    },
+    "write_one_delete": {
+      "one_pending_only": true,
+      "quota_unchanged": true,
+      "concurrent_rejected": true,
+      "logical_article_delete_frees_pending_slot": true,
+      "immutable_video_source_retained": true
+    }
+  }
+}

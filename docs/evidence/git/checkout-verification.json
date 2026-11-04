@@ -1,0 +1,78 @@
+{
+  "ok": true,
+  "source_tree": "f3453f700c269879edc70062568621d9cacd8c83",
+  "source_has_local_connection_config": false,
+  "checks": [
+    {
+      "command": [
+        "python",
+        "tools/check_handoff.py",
+        "--runtime"
+      ],
+      "exit_code": 0
+    },
+    {
+      "command": [
+        "node",
+        "--check",
+        "web/workbench/app.mjs"
+      ],
+      "exit_code": 0
+    },
+    {
+      "command": [
+        "node",
+        "--check",
+        "web/workbench/client.mjs"
+      ],
+      "exit_code": 0
+    },
+    {
+      "command": [
+        "node",
+        "--check",
+        "video/workspace-context.cjs"
+      ],
+      "exit_code": 0
+    }
+  ],
+  "http": [
+    {
+      "path": "/",
+      "status": 200,
+      "bytes": 31918
+    },
+    {
+      "path": "/workbench",
+      "status": 200,
+      "bytes": 1126
+    },
+    {
+      "path": "/workbench/zip",
+      "status": 200,
+      "bytes": 1125
+    },
+    {
+      "path": "/video/",
+      "status": 200,
+      "bytes": 2246
+    },
+    {
+      "path": "/api/workbench/bootstrap",
+      "status": 200,
+      "bytes": 16195
+    },
+    {
+      "path": "/api/workbench/runtime",
+      "status": 200,
+      "bytes": 185
+    }
+  ],
+  "exit_code": 0,
+  "external_model_calls": 0,
+  "external_catalog_calls": 0,
+  "media_encodes": 0,
+  "startup_seconds": 1.12,
+  "method": "git archive of frozen index tree -> independent checkout with empty runtime data -> startup HTTP checks -> normal shutdown",
+  "date": "2026-11-04"
+}

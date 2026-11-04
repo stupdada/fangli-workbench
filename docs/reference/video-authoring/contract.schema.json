@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:fangli:video-creative:2.0.0",
+  "title": "视频文案创作输入",
+  "type": "object",
+  "required": ["requestId", "direction", "domain", "topic", "client", "company", "brand", "products", "publisherIdentity", "facts", "sourceRefs", "questionTopics", "visualBrief", "target"],
+  "properties": {
+    "requestId": { "$ref": "#/$defs/id" },
+    "direction": { "enum": ["store_intro", "promotion", "education", "image_caption"] },
+    "domain": { "type": "string", "minLength": 1, "maxLength": 100 },
+    "topic": { "type": "string", "minLength": 1, "maxLength": 500 },
+    "client": { "type": "object", "required": ["id", "name"], "properties": { "id": { "$ref": "#/$defs/id" }, "name": { "type": "string", "minLength": 1, "maxLength": 200 } } },
+    "company": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/entity" }] },
+    "brand": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/entity" }] },
+    "products": { "type": "array", "maxItems": 20, "items": { "$ref": "#/$defs/entity" } },
+    "publisherIdentity": {
+      "type": "object", "required": ["kind", "displayName"],
+      "properties": {
+        "kind": { "enum": ["brand_official", "company_official", "third_party"] },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "speakingAs": { "anyOf": [{ "type": "null" }, { "type": "object", "required": ["type", "id"], "properties": { "type": { "enum": ["brand", "company"] }, "id": { "$ref": "#/$defs/id" } } }] }
+      }
+    },
+    "facts": { "type": "array", "maxItems": 100, "items": { "$ref": "#/$defs/fact" } },
+    "sourceRefs": { "type": "array", "maxItems": 60, "items": { "$ref": "#/$defs/source" } },
+    "questionTopics": { "type": "array", "maxItems": 40, "items": { "type": "object", "required": ["text", "sourceIds"], "properties": { "text": { "type": "string", "minLength": 1, "maxLength": 500 }, "sourceIds": { "type": "array", "items": { "$ref": "#/$defs/id" } } } } },
+    "visualBrief": {
+      "type": "object", "required": ["description", "visibleDetails", "sourceIds"],
+      "properties": { "description": { "type": "string", "maxLength": 3000 }, "visibleDetails": { "type": "array", "maxItems": 20, "items": { "type": "string", "minLength": 1, "maxLength": 2000 } }, "sourceIds": { "type": "array", "items": { "$ref": "#/$defs/id" } } }
+    },
+    "target": { "type": "object", "required": ["minCharacters", "maxCharacters"], "properties": { "minCharacters": { "type": "integer", "minimum": 1, "maximum": 10000 }, "maxCharacters": { "type": "integer", "minimum": 1, "maximum": 10000 } } }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9_.:-]{1,128}$" },
+    "entity": { "type": "object", "required": ["id", "name"], "properties": { "id": { "$ref": "#/$defs/id" }, "name": { "type": "string", "minLength": 1, "maxLength": 200 }, "aliases": { "type": "array", "maxItems": 10, "items": { "type": "string", "minLength": 1, "maxLength": 2000 } } } },
+    "source": {
+      "type": "object", "required": ["id", "kind", "title", "evidenceText"],
+      "properties": { "id": { "$ref": "#/$defs/id" }, "kind": { "enum": ["document", "client_profile", "visual", "general_reference"] }, "title": { "type": "string", "minLength": 1, "maxLength": 300 }, "clientId": { "$ref": "#/$defs/id" }, "digest": { "type": "string", "pattern": "^[a-fA-F0-9]{64}$" }, "evidenceText": { "type": "string", "minLength": 1, "maxLength": 20000 }, "url": { "type": "string", "pattern": "^https?://" } }
+    },
+    "subject": { "type": "object", "required": ["type"], "properties": { "type": { "enum": ["company", "brand", "product", "general", "visual"] }, "id": { "$ref": "#/$defs/id" } } },
+    "fact": {
+      "type": "object", "required": ["id", "status", "subject", "statement", "evidence"],
+      "properties": { "id": { "$ref": "#/$defs/id" }, "status": { "const": "confirmed" }, "subject": { "$ref": "#/$defs/subject" }, "statement": { "type": "string", "minLength": 1, "maxLength": 2000 }, "evidence": { "type": "array", "minItems": 1, "maxItems": 10, "items": { "type": "object", "required": ["sourceId", "quote"], "properties": { "sourceId": { "$ref": "#/$defs/id" }, "quote": { "type": "string", "minLength": 1, "maxLength": 5000 } } } } }
+    },
+    "modelOutput": {
+      "type": "object", "required": ["title", "body", "claims", "observations", "issues"],
+      "properties": { "title": { "type": "string", "minLength": 1, "maxLength": 100 }, "body": { "type": "string", "minLength": 1, "maxLength": 12000 }, "claims": { "type": "array", "maxItems": 100, "items": { "type": "object", "required": ["text", "factIds"], "properties": { "text": { "type": "string", "minLength": 1, "maxLength": 3000 }, "factIds": { "type": "array", "minItems": 1, "maxItems": 20, "items": { "type": "string", "minLength": 1, "maxLength": 2000 } } } } }, "observations": { "$ref": "#/$defs/notes" }, "issues": { "$ref": "#/$defs/notes" } }
+    },
+    "notes": { "type": "array", "maxItems": 50, "items": { "type": "string", "minLength": 1, "maxLength": 2000 } },
+    "editedModelOutput": {
+      "allOf": [{ "$ref": "#/$defs/modelOutput" }, { "type": "object", "required": ["edit"], "properties": { "edit": { "type": "object", "required": ["decision", "summary"], "properties": { "decision": { "enum": ["kept", "revised"] }, "summary": { "type": "string", "minLength": 1, "maxLength": 2000 } } } } }]
+    }
+  },
+  "$comment": "运行时另查Unicode去空白字数、非空白、max>=min、当前客户归属、主体绑定、来源引文包含、引用ID、画面来源、总证据预算。未识别字段丢弃，不进入模型。schema不宣称事实语义已经核实。"
+}

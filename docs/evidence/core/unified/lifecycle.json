@@ -1,0 +1,123 @@
+{
+  "ok": true,
+  "tests": 2,
+  "evidence": {
+    "parent_loss": {
+      "main_pid": 61508,
+      "command": [
+        "D:\\DevTools\\Python311\\python.exe",
+        "-B",
+        "D:\\Codex\\方立\\fangli-workbench\\main.py",
+        "--no-browser",
+        "--port",
+        "0",
+        "--data-dir",
+        "C:\\Users\\ADMINI~1\\AppData\\Local\\Temp\\fangli-parent-z8_xlbep"
+      ],
+      "video": {
+        "status": "ready",
+        "pid": 80964,
+        "port": 65504,
+        "start_count": 1,
+        "error": "",
+        "owned_pids": [
+          79744,
+          81548,
+          80964,
+          54528
+        ]
+      },
+      "owned_exits": [
+        [
+          79744,
+          true
+        ],
+        [
+          81548,
+          true
+        ],
+        [
+          80964,
+          true
+        ],
+        [
+          54528,
+          true
+        ]
+      ],
+      "windows_kill_on_job_close": true,
+      "new_model_calls": 0,
+      "new_encodes": 0
+    },
+    "graceful": {
+      "first": {
+        "status": "ready",
+        "pid": 47588,
+        "port": 65509,
+        "start_count": 1,
+        "error": "",
+        "owned_pids": [
+          15852,
+          80396,
+          47588,
+          74072
+        ]
+      },
+      "restarted": {
+        "status": "ready",
+        "pid": 32528,
+        "port": 65515,
+        "start_count": 2,
+        "error": "",
+        "owned_pids": [
+          71108,
+          50740,
+          32528,
+          75080
+        ]
+      },
+      "old_owned_exits": [
+        [
+          15852,
+          true
+        ],
+        [
+          80396,
+          true
+        ],
+        [
+          47588,
+          true
+        ],
+        [
+          74072,
+          true
+        ]
+      ],
+      "final_owned_exits": [
+        [
+          71108,
+          true
+        ],
+        [
+          50740,
+          true
+        ],
+        [
+          32528,
+          true
+        ],
+        [
+          75080,
+          true
+        ]
+      ],
+      "conflicting_data_dir_rejected": true,
+      "other_owner_preserved": true,
+      "ready_restart_shutdown_http": true
+    }
+  },
+  "model_calls": 0,
+  "catalog_calls": 0,
+  "encodes": 0
+}

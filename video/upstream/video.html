@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>方立 · 图文视频制作</title>
+  <link rel="stylesheet" href="video-ui.css?v=20261104-geo-1">
+  <script src="video-ui.js?v=20261104-geo-1" defer></script>
+</head>
+<body>
+  <header class="topbar"><a class="brand" href="chat.html">方立</a><h1>图文视频制作</h1><a href="chat.html">返回文案工作区</a></header>
+  <div id="notice" role="status" aria-live="polite"></div>
+  <div id="fixture-banner" hidden>离线交互演示 · 任务与进度为替身，媒体下载仅展示地址。</div>
+  <div class="workspace">
+    <aside class="rail" aria-label="客户和本批视频">
+      <label for="client">客户</label><select id="client"><option value="">选择客户</option></select>
+      <div class="section-head"><h2>本批视频</h2><span id="job-count">0 / 30</span></div>
+      <nav id="jobs" aria-label="待制作视频"></nav>
+      <button id="add-job" class="secondary" disabled>添加视频</button>
+      <p class="muted">图片、文字与样式按客户保存草稿。</p>
+      <hr>
+      <p id="renderer-info" class="muted">正在读取本地合成配置…</p>
+      <button id="reload-config" class="text-button">重新读取配置</button>
+      <div class="rail-action"><p id="batch-duration" class="duration-summary"></p><button id="start-batch" class="primary" disabled>开始制作本批视频</button></div>
+    </aside>
+    <main id="editor" tabindex="-1"><div class="empty"><h2>让图片成为视频</h2><p>选择客户，按选题生成150—250字GEO文案并分屏，或手填展示文字。</p><p>一张图单独成片，多张图也可按顺序连成一条。</p></div></main>
+    <aside class="history" aria-label="视频任务历史"><div class="section-head"><h2>制作记录</h2><button id="refresh-history" class="text-button" disabled>刷新</button></div><p id="history-note" class="muted">选择客户后读取已保存的任务。</p><div id="batches"></div></aside>
+  </div>
+  <noscript>图文视频制作需要启用 JavaScript。请通过本机服务打开此页面。</noscript>
+</body>
+</html>

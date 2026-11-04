@@ -1,0 +1,453 @@
+{
+  "version": "1.2",
+  "budget_note": "编辑写作预算，不是平台限制。机器计数默认按对应正文/口播/配文的非空白Unicode字符计算；用户显式metric和范围覆盖预算。资料不足须说明未满足篇幅及具体缺项，不能标为已完成长文。视频实读时间另行验证。",
+  "profiles": [
+    {
+      "id": "douyin_enterprise_images",
+      "platform": "抖音",
+      "account_type": "enterprise",
+      "forms": [
+        "images"
+      ],
+      "default_form": "images",
+      "evidence": {
+        "status": "editorial_choice",
+        "sources": [
+          "G03",
+          "P01"
+        ],
+        "limits": "本批无抖音图文文风数据集；口播项目和小程序视频指南不能证明图文效果"
+      },
+      "intent": "读者翻看图片时，就能明白一个与自己有关的具体问题。",
+      "voice": "企业中的人把产品、过程或区别说清楚；语气直接，有细节，品牌身份按实际表达。",
+      "entry_options": [
+        "具体对象或使用位置",
+        "一个值得看清的操作或区别",
+        "有材料支持的前后变化"
+      ],
+      "organization": [
+        "封面指出这一组图值得看的内容。",
+        "每页只承担一个推进任务，图片与文字互相补充。",
+        "必要条件放在对应页，配文补充图片没讲到的信息。"
+      ],
+      "short": {
+        "budget": "3—4页；发布配文80—160字",
+        "focus": "围绕一个重点，按读者理解的顺序排页；不强制凑页"
+      },
+      "long": {
+        "budget": "5—7页；发布配文150—300字",
+        "focus": "围绕同一主题加入细节或对比，每增加一页必须有新信息"
+      },
+      "output_contract": [
+        "封面文案",
+        "逐页图片建议与页内文字",
+        "发布配文",
+        "确有需要的话题"
+      ],
+      "asset_rules": "只使用任务中可用或可拍摄的画面。概念图可以建议，实验效果图、客户现场和对比结果须有事实材料。",
+      "example_section": "抖音企业号图文",
+      "length_constraints": {
+        "short": {
+          "metric": "nonWhitespace",
+          "field": "caption",
+          "min": 80,
+          "max": 160,
+          "enforcement": "budget"
+        },
+        "long": {
+          "metric": "nonWhitespace",
+          "field": "caption",
+          "min": 150,
+          "max": 300,
+          "enforcement": "budget"
+        }
+      }
+    },
+    {
+      "id": "douyin_enterprise_video",
+      "platform": "抖音",
+      "account_type": "enterprise",
+      "forms": [
+        "video"
+      ],
+      "default_form": "video",
+      "evidence": {
+        "status": "editorial_choice_with_guidance",
+        "sources": [
+          "G03",
+          "P01"
+        ],
+        "limits": "指南针对小程序挂载视频，项目偏AI工具；本库的口语和时长为待校准编辑配置"
+      },
+      "intent": "用一段说得出口、看得明白的讲解，让观众记住一个重点。",
+      "voice": "对着一个人说话，具体名词和动作优先；语气强度与内容相称。",
+      "entry_options": [
+        "画面中正在发生的事",
+        "直接交代要解决的问题",
+        "有依据的具体结果再说明过程"
+      ],
+      "organization": [
+        "第一句话进入主题，随后提供让人能看懂的细节。",
+        "口播和画面同时构思；画面能显示的内容只补必要解释。",
+        "按话题自然停顿，不把文章加换行当口播；一条视频只覆盖材料足够支持的重点。"
+      ],
+      "short": {
+        "budget": "约25—40秒；口播约100—160字",
+        "focus": "一个问题或一次简短演示，保留理解所需的条件"
+      },
+      "long": {
+        "budget": "约60—90秒；口播约240—360字",
+        "focus": "同一主题展开2—3个相连细节，安排画面承接和停顿"
+      },
+      "output_contract": [
+        "封面文案",
+        "时间段／画面／口播／字幕重点",
+        "完整连续口播",
+        "发布配文"
+      ],
+      "asset_rules": "只使用任务可用或能拍摄的素材。没有实测材料时不写测试演示，不许诺无法拍到的镜头。",
+      "example_section": "抖音企业号短视频",
+      "length_constraints": {
+        "short": {
+          "metric": "nonWhitespace",
+          "field": "script",
+          "min": 100,
+          "max": 160,
+          "enforcement": "budget"
+        },
+        "long": {
+          "metric": "nonWhitespace",
+          "field": "script",
+          "min": 240,
+          "max": 360,
+          "enforcement": "budget"
+        }
+      }
+    },
+    {
+      "id": "toutiao_personal",
+      "platform": "今日头条",
+      "account_type": "personal",
+      "forms": [
+        "article"
+      ],
+      "default_form": "article",
+      "evidence": {
+        "status": "editorial_choice_with_guidance",
+        "sources": [
+          "D01",
+          "D02",
+          "G01"
+        ],
+        "limits": "标题数据来自2018年，正文材料偏新闻摘要；不能证明当下个人号平台偏好"
+      },
+      "intent": "从读者能理解的事情切入，讲出一个有依据的看法或实用判断。",
+      "voice": "平实、自然、有明确看法；个人身份和经历按任务提供的事实表达。",
+      "entry_options": [
+        "一个实际细节",
+        "读者面临的具体选择",
+        "直接给出本文要讲的判断"
+      ],
+      "organization": [
+        "标题和开篇围绕同一件事。",
+        "用具体细节推进看法，段落随内容自然分开。",
+        "结尾停在明确结论或实际建议，不必复述全文。"
+      ],
+      "short": {
+        "budget": "250—450字",
+        "focus": "一件事加一个判断；短版仍是完整短文，不自动改成微头条"
+      },
+      "long": {
+        "budget": "700—1200字",
+        "focus": "展开影响判断的细节和取舍；按已有资料决定篇幅"
+      },
+      "output_contract": [
+        "标题",
+        "正文"
+      ],
+      "example_section": "头条个人号",
+      "length_constraints": {
+        "short": {
+          "metric": "nonWhitespace",
+          "field": "body",
+          "min": 250,
+          "max": 450,
+          "enforcement": "budget"
+        },
+        "long": {
+          "metric": "nonWhitespace",
+          "field": "body",
+          "min": 700,
+          "max": 1200,
+          "enforcement": "budget"
+        }
+      }
+    },
+    {
+      "id": "sohu_personal",
+      "platform": "搜狐",
+      "account_type": "personal",
+      "forms": [
+        "article"
+      ],
+      "default_form": "article",
+      "evidence": {
+        "status": "editorial_choice",
+        "sources": [
+          "O01",
+          "O05"
+        ],
+        "limits": "本批无搜狐专属文风数据集；与其他文章平台共享自然表达底层规则"
+      },
+      "intent": "把一个主题写成可独立读懂、标题准确的通俗文章。",
+      "voice": "顺畅、具体，有作者表达，兼顾初次接触主题的读者。",
+      "entry_options": [
+        "主题中的具体对象",
+        "与主题直接相关的情境",
+        "一项有材料支持的发现"
+      ],
+      "organization": [
+        "开篇交代对象和文章要解决的事。",
+        "按理解顺序组织内容，需要时用少量小标题。",
+        "名称自然出现，出处服务于理解，不堆叠同义关键词。"
+      ],
+      "short": {
+        "budget": "300—450字",
+        "focus": "聚焦一个用途、区别或问题"
+      },
+      "long": {
+        "budget": "700—1200字",
+        "focus": "把相关细节组织成完整文章，保留重点和自然段落"
+      },
+      "output_contract": [
+        "标题",
+        "正文"
+      ],
+      "example_section": "搜狐个人号",
+      "length_constraints": {
+        "short": {
+          "metric": "nonWhitespace",
+          "field": "body",
+          "min": 300,
+          "max": 450,
+          "enforcement": "budget"
+        },
+        "long": {
+          "metric": "nonWhitespace",
+          "field": "body",
+          "min": 700,
+          "max": 1200,
+          "enforcement": "budget"
+        }
+      }
+    },
+    {
+      "id": "zhihu_personal",
+      "platform": "知乎",
+      "account_type": "personal",
+      "forms": [
+        "answer",
+        "article"
+      ],
+      "default_form": "answer",
+      "evidence": {
+        "status": "sample_observation_and_editorial_choice",
+        "sources": [
+          "D04",
+          "D05",
+          "G02",
+          "O02",
+          "O03",
+          "O04"
+        ],
+        "limits": "小样本不代表全站；回答样本不能直接推出专栏文章规律，且互动数不证明因果"
+      },
+      "intent": "针对具体问题给有依据的回答，或围绕明确议题展开文章。",
+      "voice": "清楚、有判断，解释到普通读者能跟上；不强制学术腔、术语密度或固定五段式。",
+      "entry_options": [
+        "直接回应问题",
+        "指出真正影响答案的一个条件",
+        "用已有的具体例子进入解释"
+      ],
+      "organization": [
+        "answer先处理提问的核心；article先交代自己的议题。",
+        "结论后接足够理由，条件不同导致答案变化时说清差别。",
+        "有资料再举例和引用；解释完即可结束，不强制总结与展望。"
+      ],
+      "short": {
+        "budget": "200—400字",
+        "focus": "回答一个核心疑问并给出必要理由"
+      },
+      "long": {
+        "budget": "600—1100字",
+        "focus": "补充相连的区别、例子与依据；仍围绕原问题或议题"
+      },
+      "output_contract": [
+        "问题或文章标题",
+        "正文",
+        "有实际来源时的参考链接"
+      ],
+      "example_section": "知乎个人号",
+      "length_constraints": {
+        "short": {
+          "metric": "nonWhitespace",
+          "field": "body",
+          "min": 200,
+          "max": 400,
+          "enforcement": "budget"
+        },
+        "long": {
+          "metric": "nonWhitespace",
+          "field": "body",
+          "min": 600,
+          "max": 1100,
+          "enforcement": "budget"
+        }
+      },
+      "form_overrides": {
+        "answer": {
+          "intent": "直接回答本次具体问题，说明会改变答案的条件。",
+          "organization": [
+            "第一段直接回应提问。",
+            "按影响答案的条件和依据展开，解释完即可结束。"
+          ],
+          "output_contract": [
+            "对应问题",
+            "完整回答",
+            "有实际来源时的参考链接"
+          ]
+        },
+        "article": {
+          "example_section": "知乎个人号文章",
+          "intent": "围绕本次议题展开可独立理解的文章。",
+          "organization": [
+            "开篇交代本文议题和具体判断。",
+            "按实际内容安排细节、比较与依据，不套答题开场。"
+          ],
+          "output_contract": [
+            "文章标题",
+            "完整正文",
+            "有实际来源时的参考链接"
+          ]
+        }
+      }
+    },
+    {
+      "id": "netease_personal",
+      "platform": "网易",
+      "account_type": "personal",
+      "forms": [
+        "article"
+      ],
+      "default_form": "article",
+      "evidence": {
+        "status": "editorial_choice",
+        "sources": [
+          "O01",
+          "O05"
+        ],
+        "limits": "本批无网易专属文风数据集；此配置是文章组织方案，不是平台算法或受众统计结论"
+      },
+      "intent": "围绕一个明确观察或选择，写出有细节、有推进的文章。",
+      "voice": "有作者看法，措辞平实，强度由事实决定。",
+      "entry_options": [
+        "引人注意的真实细节",
+        "有依据的看法",
+        "一个实际选择的两难"
+      ],
+      "organization": [
+        "围绕一个角度，避免每个特点平均分配篇幅。",
+        "观点后接具体材料，细节之间有承接。",
+        "收尾落在该角度得出的判断，不额外制造争议。"
+      ],
+      "short": {
+        "budget": "250—450字",
+        "focus": "一项观察加足够细节"
+      },
+      "long": {
+        "budget": "700—1200字",
+        "focus": "展开观察背后的取舍与变化；不为了观点增造故事"
+      },
+      "output_contract": [
+        "标题",
+        "正文"
+      ],
+      "example_section": "网易个人号",
+      "length_constraints": {
+        "short": {
+          "metric": "nonWhitespace",
+          "field": "body",
+          "min": 250,
+          "max": 450,
+          "enforcement": "budget"
+        },
+        "long": {
+          "metric": "nonWhitespace",
+          "field": "body",
+          "min": 700,
+          "max": 1200,
+          "enforcement": "budget"
+        }
+      }
+    },
+    {
+      "id": "baijiahao_personal",
+      "platform": "百家号",
+      "account_type": "personal",
+      "forms": [
+        "article"
+      ],
+      "default_form": "article",
+      "evidence": {
+        "status": "editorial_choice",
+        "sources": [
+          "G04",
+          "O01",
+          "O05"
+        ],
+        "limits": "百度搜索内容指南不是百家号个人文风数据；本批无百家号专属语料"
+      },
+      "intent": "围绕读者的具体疑问，提供容易找到、容易理解的答案。",
+      "voice": "通俗、直接、细节明确，自然解释读者需要知道的部分。",
+      "entry_options": [
+        "具体问题及其答案",
+        "读者需要分清的选择",
+        "实际使用前需要知道的一点"
+      ],
+      "organization": [
+        "标题明确主题，开头尽快进入答案。",
+        "按读者后续会关心的事展开，必要时分点。",
+        "产品名和术语自然出现；搜索目的不进入读者正文。"
+      ],
+      "short": {
+        "budget": "250—450字",
+        "focus": "一个疑问的简明答案，保留关键条件"
+      },
+      "long": {
+        "budget": "700—1200字",
+        "focus": "围绕同一主题回答相连疑问，补充具体区别和用法"
+      },
+      "output_contract": [
+        "标题",
+        "正文"
+      ],
+      "example_section": "百家号个人号",
+      "length_constraints": {
+        "short": {
+          "metric": "nonWhitespace",
+          "field": "body",
+          "min": 250,
+          "max": 450,
+          "enforcement": "budget"
+        },
+        "long": {
+          "metric": "nonWhitespace",
+          "field": "body",
+          "min": 700,
+          "max": 1200,
+          "enforcement": "budget"
+        }
+      }
+    }
+  ]
+}

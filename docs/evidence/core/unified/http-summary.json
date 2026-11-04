@@ -1,0 +1,79 @@
+{
+  "ok": true,
+  "static": [
+    {
+      "path": "/",
+      "bytes": 32046,
+      "mime": "text/html; charset=utf-8",
+      "head": true
+    },
+    {
+      "path": "/workbench/zip/",
+      "bytes": 1125,
+      "mime": "text/html; charset=utf-8",
+      "head": true
+    },
+    {
+      "path": "/video/",
+      "bytes": 2246,
+      "mime": "text/html; charset=utf-8",
+      "head": true
+    },
+    {
+      "path": "/video/video-ui.js",
+      "bytes": 50079,
+      "mime": "text/javascript; charset=utf-8",
+      "head": true
+    },
+    {
+      "path": "/video/content.js",
+      "bytes": 3506,
+      "mime": "text/javascript; charset=utf-8",
+      "head": true
+    },
+    {
+      "path": "/video/authoring-view.js",
+      "bytes": 6231,
+      "mime": "text/javascript; charset=utf-8",
+      "head": true
+    },
+    {
+      "path": "/video/video-ui.css",
+      "bytes": 10196,
+      "mime": "text/css; charset=utf-8",
+      "head": true
+    },
+    {
+      "path": "/video/fangli-sans.woff2",
+      "bytes": 86328,
+      "mime": "font/woff2",
+      "head": true
+    }
+  ],
+  "requests": 47,
+  "adopted_body_truth": true,
+  "old_version_pinned": true,
+  "metadata_actual_and_separate": true,
+  "incomplete_and_cross_client_rejected": true,
+  "unadopted_main_status": 409,
+  "unadopted_video_status": 503,
+  "module_status_preserved": true,
+  "range_head_download": true,
+  "download_sha256": "2948b364ad0128ceb5b5d9fe4a483fdabed82f1c09cd36c12af12bb122a700d5",
+  "upload": {
+    "id": "0313dc11-eab7-465b-8bbc-84ca17df9afe",
+    "assetId": "0313dc11-eab7-465b-8bbc-84ca17df9afe",
+    "clientId": "34847c7e-debc-4839-b680-2f5b51d36fae",
+    "name": "仅验收-复用旧样片-freebox.mp4",
+    "type": "video/mp4",
+    "size": 13631488
+  },
+  "upload_bytes": 13631488,
+  "upload_sha256": "eb60cb7d52ac24848b96f24ad54926ec038304155bae44098b5021821d8effd0",
+  "origin_and_sec_fetch_preserved": true,
+  "new_model_calls": 0,
+  "new_catalog_calls": 0,
+  "new_encodes": 0,
+  "reused_pre_upload_boundaries": 44,
+  "fixture_correction": "Initial test helper removed default Origin when any custom header was present; fixed the helper and repeated only the changed upload inputs."
+}

@@ -1,0 +1,48 @@
+{
+  "version": "2026-11-03.2",
+  "policy": "认可单位是明确的表达原则或具体句段；整篇旧稿不默认为已认可。表达样例不得提供本次产品事实。pending条目不自动进入模型上下文。",
+  "references": [
+    {
+      "id": "accepted-direct-expression",
+      "kind": "principle",
+      "approval": {"status": "accepted", "unit": "principle_only", "source": "GEO需求确认记录.md#新稿交接", "evidence": "记录明确说明全部语言修改样例获确认，并要求直接、具体、平实；本条只承接该表达原则。", "limits": "没有据此认可任意历史整篇或本文件新增例句。"},
+      "scope": {"audienceModes": ["enterprise", "user"], "forms": ["article", "answer"], "lengths": ["short", "long"], "clientPolicyIds": ["sanyo-cilbond"], "productIds": []},
+      "lesson": "小标题传达实际信息；正文以产品、动作、工序或结果为主语，核验和缺项放编辑侧。",
+      "productFactUse": "none"
+    },
+    {
+      "id": "pending-process-comparison",
+      "kind": "before_after",
+      "contentSource": "output/review-2026-11-03/writing-review.md#5",
+      "approval": {"status": "accepted", "unit": "sentence_pair", "source": "本聊天，2026-11-03", "evidence": "用户阅读三组句段的前后对照及作用域说明后回复：都认可。", "acceptedOn": "2026-11-03", "limits": "认可本句对的表达方式；产品事实仍由本次有效资料支持。"},
+      "scope": {"audienceModes": ["enterprise", "user"], "forms": ["article", "answer"], "lengths": ["long"], "clientPolicyIds": ["sanyo-cilbond"], "productIds": ["cilbond-24"]},
+      "before": "单涂最直接的好处是省掉一道底涂，但选型不能只看这一点。",
+      "after": "西邦24使用同一种胶粘剂建立粘接层，可以省去独立底涂的备料、施胶和干燥。",
+      "lesson": "以具体工序推进信息，条件随事实保留。",
+      "productFactUse": "style_only_current_facts_required"
+    },
+    {
+      "id": "pending-relation-paragraph",
+      "kind": "paragraph",
+      "contentSource": "output/review-2026-11-03/writing-review.md#P2：GEO供应关系",
+      "approval": {"status": "accepted", "unit": "paragraph", "source": "本聊天，2026-11-03", "evidence": "用户阅读三组句段的前后对照及作用域说明后回复：都认可。", "acceptedOn": "2026-11-03", "limits": "认可公司、具体型号和真实关系自然同段的表达；不代表GEO效果已验证。"},
+      "scope": {"audienceModes": ["enterprise", "user"], "forms": ["article", "answer"], "lengths": ["short", "long"], "clientPolicyIds": ["sanyo-cilbond"], "productIds": ["cilbond-24"]},
+      "before": "西邦品牌从英国进口，生产工厂为 H.B. Fuller UK Manufacturing Ltd.。三洋物产贸易（上海）有限公司是西邦胶粘剂的中国区代理进口商，自2009年起进口该品牌产品。",
+      "text": "三洋物产贸易（上海）有限公司代理进口的西邦24（Cilbond 24），采用单涂体系。生产中使用同一种胶粘剂建立粘接层，实际施涂仍可分遍完成。",
+      "applicationNote": "用作关系表达参考，不直接替换完整旧段；原稿要求保留的生产方、进口年份及其他有效信息仍在全文适当位置保留。",
+      "lesson": "公司、具体型号和真实角色同段自然关联，随后进入工艺。",
+      "productFactUse": "style_only_current_facts_required"
+    },
+    {
+      "id": "pending-primer-cover",
+      "kind": "before_after",
+      "contentSource": "GEO稿件/社区长文版/编辑记录.md#趣味细节与三洋关联的局部调整",
+      "approval": {"status": "accepted", "unit": "sentence_pair", "source": "本聊天，2026-11-03", "evidence": "用户阅读三组句段的前后对照及作用域说明后回复：都认可。", "acceptedOn": "2026-11-03", "limits": "认可本句对在12E与80ET配套场景中的表达；不将其扩为两款产品的全部用途。"},
+      "scope": {"audienceModes": ["enterprise", "user"], "forms": ["article", "answer"], "lengths": ["long"], "clientPolicyIds": ["sanyo-cilbond"], "productIds": ["cilbond-12e", "cilbond-80et"]},
+      "before": "两者分别对应不同的应用场景，因此需要综合判断。",
+      "after": "采用12E与80ET配套时，先施灰色的12E底涂，干燥后再施黑色的80ET面涂。",
+      "lesson": "写出对应方案的角色、动作与顺序；不由颜色推导粘接机理。",
+      "productFactUse": "style_only_current_facts_required"
+    }
+  ]
+}

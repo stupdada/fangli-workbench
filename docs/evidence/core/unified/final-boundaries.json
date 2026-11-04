@@ -1,0 +1,61 @@
+{
+  "ok": true,
+  "url": "http://127.0.0.1:60128",
+  "main_pid": 70552,
+  "video": {
+    "status": "ready",
+    "pid": 80252,
+    "port": 60129,
+    "start_count": 1,
+    "error": "",
+    "owned_pids": [
+      63796,
+      60920,
+      80252,
+      72032
+    ]
+  },
+  "requests": [
+    {
+      "method": "GET",
+      "path": "/api/workbench/video-context?client_id=34847c7e-debc-4839-b680-2f5b51d36fae&article_id=2&version_id=8",
+      "status": 404,
+      "bytes": 53
+    },
+    {
+      "method": "GET",
+      "path": "/api/workbench/video-context?client_id=584dd9da-3ede-42d6-b754-ef924b523df4&article_id=1&version_id=8",
+      "status": 409,
+      "bytes": 74
+    },
+    {
+      "method": "GET",
+      "path": "/api/workbench/conversations/99a2b141-b6a9-418c-b98c-cd937f638b24/archive",
+      "status": 200,
+      "bytes": 79808
+    }
+  ],
+  "reused_first_pass_assertions": [
+    "runtime main/video PID + readiness",
+    "bootstrap contains only the two acceptance clients",
+    "shop adopted version restored to 4",
+    "manual source version9 Markdown/structured/raw generation/raw audit exact"
+  ],
+  "fixture_correction": "candidate ID is nested under unadopted_candidate; completed first-pass reads were reused",
+  "retained_legacy_fixture_migration": true,
+  "adopted_version_restored": 4,
+  "old_adopted_manual_source_still_immutable": 9,
+  "cross_article_version_rejected_404": true,
+  "archive": {
+    "path": "D:\\Codex\\方立\\output\\geo-merge-20261104\\core\\unified\\local-task-archive.zip",
+    "bytes": 79808,
+    "entries": 22,
+    "sha256": "8e22f51f909eea485c90918f41e23f230b0b801fe891432d8d8a6aaacd0e5f32",
+    "valid_zip_and_four_exports": true,
+    "versions_and_parsed_documents_present": true,
+    "connection_config_and_diagnostic_dirs_absent": true
+  },
+  "model_calls": 0,
+  "catalog_calls": 0,
+  "encodes": 0
+}

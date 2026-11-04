@@ -1,0 +1,2 @@
+# Video rendering uses Pillow; FFmpeg/ffprobe and CJK fonts are system dependencies.
+Pillow>=10

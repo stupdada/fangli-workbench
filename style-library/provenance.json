@@ -1,0 +1,8 @@
+{
+  "snapshot_date": "2026-11-04",
+  "source": "共享平台风格库",
+  "files_sha256": {
+    "profiles.json": "d2adb3db9b72c8c854b56cefaa792278a4135a5c57bc9d36291dd0e628b40700",
+    "expression-references.json": "2167edd63aaef2d8f9e4b4a9638d77204a34c8b6d7616a16f90e7e3a7538155e"
+  }
+}

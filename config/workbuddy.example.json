@@ -1,0 +1,5 @@
+{
+  "endpoint": "https://YOUR-WORKBUDDY-ENDPOINT.example",
+  "oauthRelayBaseUrl": "https://YOUR-OAUTH-RELAY.example",
+  "publishableKey": "REPLACE_WITH_YOUR_WORKBUDDY_PUBLISHABLE_KEY"
+}
