@@ -55,6 +55,7 @@ export async function createPreview({persistPath=null,segmentDelay=350,operation
       if(n<chunks.length){job.partial+=chunks[n];emit(job,{type:'chunk',text:chunks[n++],chars:job.partial.length});later(tick,segmentDelay);return;}
       job.phase='audit';job.message='正在完成原生核查（离线替身）';emit(job,{type:'status',message:job.message,phase:job.phase,done:job.done,planned:job.planned});
       later(()=>{
+        a.geo={score:85,chars:body.replace(/\s/g,'').length,checks:[{name:'标题含核心关键词',ok:true,hint:''},{name:'小标题分层',ok:true,hint:''},{name:'关键信息独立成段',ok:false,hint:'把数字、参数、对比差异单独列出来，至少 3 条'}]};
         const draft=addVersion(a,'zip_draft','原生初稿（离线示例）',body,a.title,null,null);
         const complete=addVersion(a,'zip','ZIP 成稿（离线示例）',body,a.title,{preview:true,assessment:'离线演示核查记录，不是真实模型核查。'},draft.id);adopt(a,complete);
         job.done++;job.items.push({article_id:a.id,title:a.title,platform:a.platform_name,account_type:a.account_type});job.message='本篇已保存';persist();

@@ -108,6 +108,19 @@ export function markdown(value) {
 
 export function articleBody(article) { return article?.body_md ?? article?.body ?? article?.content_md ?? ''; }
 export function valueText(value) { return typeof value === 'string' ? value : value == null ? '' : JSON.stringify(value, null, 2); }
+// Original ZIP `render.geo_check` output: {checks:[{name,ok,hint}],score,chars}. Read-only view of saved data.
+export function selfCheck(article) {
+  const geo = article?.geo || {};
+  const checks = (Array.isArray(geo.checks) ? geo.checks : [])
+    .filter(item => item && typeof item === 'object')
+    .map(item => ({name: String(item.name ?? ''), ok: Boolean(item.ok), hint: String(item.hint ?? '')}));
+  const raw = Number(geo.score);
+  const score = Number.isFinite(raw) ? Math.round(raw) : null;
+  const failed = checks.filter(item => !item.ok);
+  return {score, chars: Number(geo.chars) || 0, checks, failed,
+    total: checks.length, rated: score !== null || checks.length > 0,
+    tone: score === null ? 'none' : score >= 88 ? 'good' : score >= 70 ? 'mid' : 'bad'};
+}
 
 export function streamReducer(previous = {}, event) {
   if (event.type === 'next') return { ...event, text: '', status: 'running', phase: '', message: '正在写作' };
