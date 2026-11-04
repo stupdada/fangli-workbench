@@ -65,12 +65,14 @@ main.py通过本机随机内部端口托管视频服务，原路径流式转发 
 $env:PYTHONUTF8='1'
 $env:PYTHONIOENCODING='utf-8'
 python tools/check_handoff.py
+python tools/check_workbuddy.py
 python tests/core/test_effective_inputs.py
 python tests/core/test_native_operations.py
+node --test tests/frontend/contract.test.mjs tests/frontend/selfcheck.test.mjs
 ```
 
-上面三条分别检查交接文件与相对风格库、有效输入事务、原生操作边界，不访问外部模型或目录。完整历史 verify.py 还需要原交接 ZIP 等夹具；SDK 测试需要本机配置（占位配置可用于注入 fetch 的离线测试），相关前置条件见交接说明。历史独立 ZIP 回放、Word 正文 XML、并发锁与停止边界的证据见 docs/evidence/。
+上面几条分别检查交接文件与相对风格库、本机连接依赖与配置格式、有效输入事务、原生操作边界、前端契约与发布前自检视图，不访问外部模型或目录。`check_workbuddy.py` 在缺少本机配置时会明确列出缺哪些字段；加 `--live` 才做一次模型目录查询。完整历史 verify.py 还需要原交接 ZIP 等夹具；SDK 测试需要本机配置（占位配置可用于注入 fetch 的离线测试），相关前置条件见交接说明。历史独立 ZIP 回放、Word 正文 XML、并发锁与停止边界的证据见 docs/evidence/。
 
 core-001离线证据的外部调用数为0。core-002另用隔离合成夹具完成了真实WorkBuddy接通和版本边界验收：8次内容调用、1次目录查询，均使用精确模型ID deepseek-v4.1-flash，正常完整结束；原始输入、初稿、核查后稿、候选及只读复核均保留在 [样稿与质量记录](docs/evidence/README.md)。两份样稿仍有流程文字残留、无充分依据的工艺推论与审阅误报，不能据此声称内容质量普遍通过。Codex已实际审阅并保存意见，用户保持未审。视频既有链路已完成 video-005 运行时终验；前端增量布局与异步状态仍在收尾，完整阶段终验尚待回报。详细状态见开发交接说明。
 
-接口与产品约定见 [docs/integration-contract.md](docs/integration-contract.md)。
+接口与产品约定见 [docs/integration-contract.md](docs/integration-contract.md)。两套项目合并时逐项核对的功能对照见 [docs/merge-review.md](docs/merge-review.md)。

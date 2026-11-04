@@ -10,7 +10,8 @@
 2. [PRODUCT.md](../PRODUCT.md) 与 [integration-contract.md](integration-contract.md)：产品意图、接口、状态和版本语义。
 3. [video/README.md](../video/README.md)：视频来源、分屏、队列和媒体边界。
 4. [AGENT_START.md](AGENT_START.md)：可直接交给开发 Agent 的完整接手提示词。
-5. [证据索引](evidence/README.md)：本次交接整理的代表性合成样稿、对比、质量评审和阶段证据。
+5. [合并功能对照](merge-review.md)：两套项目合并时逐项核对「原有功能是否保留」，含原始证据、判定与本次恢复项。
+6. [证据索引](evidence/README.md)：本次交接整理的代表性合成样稿、对比、质量评审和阶段证据。
 
 文档之间出现阶段状态差异时，结合对应提交、源码和该状态的验收证据判断。例如，较早产品文档中记载配置写接口尚未接通，后续 `core-003` 已实现后台合同，而前端完整接线仍在单独验收。不能仅凭较早的一行状态重做整个功能。
 
@@ -92,6 +93,8 @@ python -m pip install -r requirements-video.txt
 
 WorkBuddy 连接从 `config/workbuddy.example.json` 复制到本机 `config/workbuddy.json`，再通过安全渠道填写自己的连接参数。真实连接配置由服务端读取，身份凭据不写入仓库、前端、样稿、日志附件或 PR。SDK 文件随源码提供。默认模型精确 ID 为 `deepseek-v4.1-flash`，明确执行模型操作时会核对目录并缓存；目录缺该 ID 时停止，不自动换模型。
 
+填好本机文件后先跑连接检查：`python tools/check_workbuddy.py` 只做离线核对（Node ≥ 20、Python ≥ 3.10、SDK 能否在隔离上下文加载、`endpoint`/`publishableKey`/`oauthRelayBaseUrl` 格式与占位值），不回显凭据。`--live` 才做一次模型目录查询，`--live-chat` 才做一次最小对话并消耗你账号的额度。
+
 风格库位于仓库内 `style-library/`，`config/style-library.json` 使用相对路径，由 `bridge/style_library.py` 按仓库位置解析，与启动时的工作目录无关。来源见 [style-library/README.md](../style-library/README.md) 及同目录 `provenance.json`。客户绑定仍需按当前环境真实标识配置。
 
 完成依赖和本机连接配置后，运行：
@@ -120,6 +123,8 @@ python tools/check_handoff.py --runtime
 ```
 
 默认检查可入库文件中的凭据和私有运行文件、11 个原 ZIP 核心哈希、相对风格库加载、连接示例与交接文档；`--runtime` 额外检查 Node、Python、Pillow、FFmpeg / ffprobe 和中文字体。`--staged` 检查暂存区中的确切内容，适合提交前使用。这些检查不调用外部模型、不编码，不能代替模型接通、内容质量或浏览器验收。
+
+`python tools/check_workbuddy.py` 单独核对本机连接：Node 版本、SDK 在隔离上下文中的加载与配置契约、`config/workbuddy.json` 的字段格式。默认不外发；`--live` 与 `--live-chat` 分别是「一次目录查询」和「一次最小对话」，后者消耗额度。`tools/test_ui_static.py` 面向合并前的单文件界面，当前 checkout 缺少 `web/app.js` 与 `web/styles.css` 时会明确跳过并提示现行覆盖位置，不产生假通过。
 
 后续修改选择受影响的最小测试集合。例如：
 
@@ -158,6 +163,9 @@ python -B tests/core/verify.py --output ./data/verification/core.json
 5. **视频文案入口。** 四方向模块和八稿实测已收录于 `docs/reference/video-authoring/`，先读 [八稿阅读](reference/video-authoring/八稿阅读.md) 及该目录原 README、schema 和离线验证。八稿中有一条梳毛稿包含无依据商家事实而失败，样例复用和结尾挂店名仍有问题；生产“写视频文案”入口待评审接入。`video/public/authoring-view.js` 有预留位置，需先评估真实模块与当前接口，再实现接线。
 6. **阅读界面评审。** `fangli-readability-preview` 是正式项目之外的独立前端副本，等待用户评审后决定合并，当前基线不含其设计。先确认评审和代码来源，避免把效果预览当成已上线能力。
 7. **干净克隆验收。** 连接示例、便携风格库、相对路径、合成样稿及历史证据、离线检查已纳入交接。新设备仍需准备运行依赖和自己的连接配置；历史测试外部夹具与字体前提见上文。提交冻结时以 Git 暂存内容为准核对，其他开发可能仍在更新工作区。
+8. **发布前自检已接回界面。** `feature/merge-review` 恢复了稿件页的自检清单（分数、通过数、逐项 `✓/!` 与原 `geo_check` 提示）和写作实时字数，数据来源仍是 `article.geo`，未改 `app/`。`docs/merge-review.md` 记录了完整对照与仍然开着的差异。
+9. **`使用说明.md` 与现行界面不一致。** 该文件仍是合并前单页界面的手册（「开始写第一篇」「确认无误，上传服务器」等按钮已不存在）。属文档问题，改写前先确认是要沿用旧手册口径还是按 `/workbench` 重写。
+10. **`geo_check` 既有缺陷待授权修复。** `app/render.py` 的「关键信息独立成段」硬编码匹配 `## 关键信息速览`，非默认平台断言恒失败、总分被压低，会影响「仅选自检 ≥85 分」的实际筛选。修它要动受哈希保护的 `app/`，需单独授权并更新保真合同与测试。
 
 新任务以最新需求为目标，先分析实际原因和上下游影响，再完成必要实现与验证。
 
