@@ -42,3 +42,6 @@ build/
 # ---- 本地临时 ----
 *.log
 *_local.py
+
+# ---- 开发 Agent 的本机工作记录 ----
+.workbuddy/
