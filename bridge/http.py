@@ -115,6 +115,20 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, data, status=200):
         self._send(status, json.dumps({'ok': True, **data}, ensure_ascii=False, allow_nan=False).encode('utf-8'))
 
+    def deliver(self, body, ctype, name):
+        """Write a finished file into the configured folder, or fall back to a browser download.
+
+        A rejected folder must not lose the export: the same bytes still stream to the page,
+        and the page explains why the chosen folder was not used.
+        """
+        try:
+            target = self.service.downloads.write(name, body)
+        except Problem as exc:
+            return self._send(200, body, ctype, {
+                'Content-Disposition': "attachment; filename*=UTF-8''" + urllib.parse.quote(name),
+                'X-Download-Error': urllib.parse.quote(str(exc))})
+        return self._json({'path': str(target), 'name': target.name})
+
     def _boundary(self):
         host = self.headers.get('Host', '')
         allowed = {f'127.0.0.1:{self.server.server_port}', f'localhost:{self.server.server_port}'}
@@ -246,10 +260,12 @@ class Handler(BaseHTTPRequestHandler):
                 if not raw or any(not v.strip().isdigit() for v in raw.split(',')): raise Problem('导出稿件ID不正确')
                 ids = [int(v.strip()) for v in raw.split(',')]
             body, ctype, name = exports.export(s, match[1], (query.get('fmt') or ['docx'])[0], ids)
+            if (query.get('save') or [''])[0] == '1': return self.deliver(body, ctype, name)
             return self._send(200, body, ctype, {'Content-Disposition': "attachment; filename*=UTF-8''" + urllib.parse.quote(name)})
         match = re.fullmatch(r'/api/workbench/conversations/([^/]+)/archive', path)
         if match:
             body, ctype, name = exports.archive(s, match[1])
+            if (query.get('save') or [''])[0] == '1': return self.deliver(body, ctype, name)
             return self._send(200, body, ctype, {'Content-Disposition': "attachment; filename*=UTF-8''" + urllib.parse.quote(name)})
         if path == '/api/workbench/video-context': return self._json(self.video_context(query))
         raise Missing('接口不存在')
@@ -265,6 +281,9 @@ class Handler(BaseHTTPRequestHandler):
             threading.Thread(target=self.server.shutdown, name='workbench-stop', daemon=True).start()
             return
         if path in ('/api/workbench/settings', '/api/settings') and method == 'POST': return self._json({'settings': s.save_settings(body)})
+        if path == '/api/workbench/downloads/pick' and method == 'POST':
+            if body: raise Problem('选择下载路径无需额外字段')
+            return self._json(s.downloads.pick())
         if path == '/api/workbench/clients' and method == 'POST':
             if body.get('id') is not None: raise Problem('已有客户请使用客户独立更新接口')
             return self._json({'client': ws.save_client(body.get('name'), body.get('profile'))})

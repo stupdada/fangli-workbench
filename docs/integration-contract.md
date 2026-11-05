@@ -59,10 +59,11 @@
 | POST `…/articles/{aid}/revise` | `{expected_version,instruction}` → operation_id；针对当前正文的修改候选，不能误用原ZIP整篇重写冒充局部修改 |
 | PUT `…/articles/{aid}/review-record` | `{candidate_version,codex_review,user_review}`，分别保存真正的双方意见 |
 | GET `…/articles/{aid}/compare?candidate_version=…` | base, candidate, diff, review, review_records；可支持fmt=json/md下载 |
-| GET `/api/workbench/conversations/{id}/export?fmt=docx|md|json|txt&ids=…` | 导出当前明确采用版本；ZIP原生正文与导出渲染规则保留 |
-| GET `/api/workbench/conversations/{id}/archive` | 下载真实application/zip本地归档，运行中409；包含有效安排、解析文字、冻结输入、生成参考、全部工作版本/核查/差异/实际意见与当前四格式导出；不打包连接配置、私有目录或诊断日志，不外发 |
+| GET `/api/workbench/conversations/{id}/export?fmt=docx|md|json|txt&ids=…` | 导出当前明确采用版本；ZIP原生正文与导出渲染规则保留。带 `save=1` 时写入设置的下载目录，返回 `{path,name}` 绝对路径；目录不可用时仍返回同一文件流并附 `X-Download-Error`，不丢失本次导出 |
+| GET `/api/workbench/conversations/{id}/archive` | 下载真实application/zip本地归档，运行中409；包含有效安排、解析文字、冻结输入、生成参考、全部工作版本/核查/差异/实际意见与当前四格式导出；不打包连接配置、私有目录或诊断日志，不外发。带 `save=1` 时与导出相同的落盘与回退规则 |
 | GET `/api/workbench/zip-config` | ZIP有效平台、目标AI、偏好、风险、写作设置，完整展开配置使用 |
-| POST `/api/workbench/settings` | 白名单保存model/temperature/max_tokens/title_prefix等，不暴露密钥 |
+| POST `/api/workbench/settings` | 白名单保存model/temperature/max_tokens/title_prefix等，不暴露密钥；`download_dir` 为成品交付目录，仅接受已存在且可写的绝对路径，空字符串表示恢复默认（项目目录下 `下载`）。该值只影响本机交付位置，不进入生成快照 |
+| POST `/api/workbench/downloads/pick` | 打开本机 Windows 文件夹选择框并保存所选目录，返回 `{cancelled,settings}`；取消不改变设置，选择框启动失败或超时明确报错而不是伪装成取消，非 Windows 平台提示改用手动填写 |
 | POST `/api/models`、PUT/DELETE `/api/models/{id}` | 目标AI配置name/note/enabled；新增默认启用，删除同步清理原生prefs |
 | POST `/api/platforms`、PUT/DELETE `/api/platforms/{id}` | name/formats/style/length_hint/structure_hint/audience/account_type/enabled；新增默认启用，删除同步清理prefs和该平台risks |
 | POST `/api/risks`、PUT/DELETE `/api/risks/{id}` | item/platform_id/category/level/tip；platform_id=null为通用，level为高/中/低；适用平台可编辑 |
@@ -131,7 +132,7 @@ regenerate/audit、逻辑删除与历史复用要求本任务所有模型操作�
 
 成功时在一次事务里保存可恢复工作版本、来源证据、采用记录和显式原生参考更新。重写初稿origin=zip_regenerate_draft（核查前未自动采用），重写核查后origin=zip_regenerate，再核查origin=zip_audit；异步kind为zip_regenerate/zip_audit，result含article_id/base_version/adopted_version/audit，重写额外含draft_version。旧版本和旧来源不改。失败或不完整结束不提交新采用稿，保留旧参考和旧版本；同一操作一旦发生传输失败，禁止原生后备循环再次外发。人工及style/revision候选继续独立于生成参考，人工保存任一正文/标题/标签/声明变更均清除继承核查和评分。
 
-本地归档是当前任务的内容ZIP下载，客户端可保存到选定目录；无远程upload动作或upload_url/token设置。旧网页API base/key/直连测试由本机WorkBuddy配置与精确模型目录校验替代。以上是明确产品合同变化，不能用旧接口旁路恢复凭据或外发。
+本地归档是当前任务的内容ZIP下载，与成品导出一样写入 工作台设置 的「文件下载路径」；默认是项目目录下的 `下载` 文件夹，可在设置中改为其他已存在的绝对路径，同名文件追加序号不覆盖。存放位置属于本机交付配置，不写入任务快照，也不改变导出内容；目录失效时回退为浏览器下载并如实提示原因。客户资料原件仍在数据目录，不随该设置移动。无远程upload动作或upload_url/token设置。旧网页API base/key/直连测试由本机WorkBuddy配置与精确模型目录校验替代。以上是明确产品合同变化，不能用旧接口旁路恢复凭据或外发。
 
 ## 审阅交互与素材处理增量
 

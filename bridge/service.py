@@ -14,7 +14,9 @@ from .storage import Workspace, PROFILE_FIELDS, dumps, integer, text_value, uid
 ROOT = Path(__file__).resolve().parent.parent
 OPTION_FIELDS = set(PROFILE_FIELDS) | {'client', 'keywords', 'selections', 'models', 'rivals', 'aliases',
     'note', 'format_overrides', 'platform_types', 'keyword_brands', 'topic', 'points', 'extra'}
-SETTING_FIELDS = {'model', 'temperature', 'max_tokens', 'title_prefix', 'disable_thinking', 'brand'}
+SETTING_FIELDS = {'model', 'temperature', 'max_tokens', 'title_prefix', 'disable_thinking', 'brand', 'download_dir'}
+# Delivered files are a local machine setting, not part of the native writing snapshot.
+LOCAL_SETTING_FIELDS = {'download_dir'}
 
 
 class FrozenStore:
@@ -169,17 +171,22 @@ class Service:
         install_context()
         from .customers import Customers
         from .batches import Batches
+        from .downloads import Downloads
         self.customers = Customers(self)
         self.batches = Batches(self)
+        self.downloads = Downloads(self)
         self.batches.boot()
 
     def public_settings(self):
         settings = self.store.get_settings()
-        return {**{k: settings[k] for k in SETTING_FIELDS}, 'transport': 'workbuddy'}
+        native = {k: settings[k] for k in SETTING_FIELDS - LOCAL_SETTING_FIELDS if k in settings}
+        return {**native, **self.downloads.public(), 'transport': 'workbuddy'}
 
     def save_settings(self, patch):
         if not isinstance(patch, dict) or set(patch) - SETTING_FIELDS:
-            raise Problem('设置只接受写作模型、采样参数、标题前缀及原生写作开关')
+            raise Problem('设置只接受写作模型、采样参数、标题前缀、原生写作开关及下载路径')
+        if 'download_dir' in patch and not isinstance(patch['download_dir'], str):
+            raise Problem('下载路径需为文字，留空表示使用默认路径')
         if 'model' in patch:
             text_value(patch['model'], '模型ID', 120, empty=False)
         if 'temperature' in patch and (type(patch['temperature']) not in (float, int) or not 0 <= patch['temperature'] <= 1.5):
@@ -189,8 +196,11 @@ class Service:
         for key in ('title_prefix', 'disable_thinking'):
             if key in patch and not isinstance(patch[key], bool): raise Problem(f'{key}需为布尔值')
         if 'brand' in patch: text_value(patch['brand'], '默认品牌', 4000)
+        native = {k: v for k, v in patch.items() if k not in LOCAL_SETTING_FIELDS}
         with self.guard:
-            self.store.save_settings(patch)
+            # Validate the folder before touching native settings so a rejected path changes nothing.
+            if 'download_dir' in patch: self.downloads.save(patch['download_dir'])
+            if native: self.store.save_settings(native)
         return self.public_settings()
 
     def ensure_model(self, settings=None):

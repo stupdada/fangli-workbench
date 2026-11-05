@@ -1,4 +1,23 @@
 let pdfModule;
+const decode = value => { try { return decodeURIComponent(value); } catch { return value || ''; } };
+export const saveUrl = url => `${url}${url.includes('?') ? '&' : '?'}save=1`;
+
+// Finished files go straight to the folder set in 工作台设置. A rejected folder must not lose
+// the export: the response is then the same bytes plus a reason, and the browser downloads them.
+export async function fetchDelivery(url, filename, { fetcher = globalThis.fetch } = {}) {
+  const response = await fetcher(saveUrl(url));
+  if (!response.ok) {
+    let data; try { data = await response.json(); } catch {}
+    throw new Error(data?.error || '下载失败，请核对当前状态');
+  }
+  if ((response.headers?.get?.('content-type') || '').includes('application/json')) {
+    const data = await response.json();
+    if (data?.path) return { saved: data.path, name: data.name || filename };
+    throw new Error('保存结果不完整，请重试');
+  }
+  return { saved: null, warning: decode(response.headers?.get?.('x-download-error')), blob: await response.blob() };
+}
+
 export async function parseFile(file, api) {
   if (file.size > 8 * 1024 * 1024) throw new Error(`${file.name} 超过 8 MB，请拆分后添加`);
   if (file.name.toLowerCase().endsWith('.pdf')) {

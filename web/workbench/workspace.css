@@ -29,3 +29,10 @@ input[type=text],input[type=search],input[type=url],input[type=number],select,te
 .chat-workbench .composer-foot [data-action="start"]{border-radius:999px;padding-inline:20px}
 
 .conversation-log .message.user .message-label{color:#d9dce3}
+
+/* 下载位置：与系统「下载」设置一致的「位置 + 更改」结构。 */
+.download-location{display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap;padding:18px 0;border-bottom:1px solid var(--line)}
+.download-location strong{display:block;font-size:16px;font-weight:550}
+.download-location p{margin:6px 0 0;font-size:14px;line-height:1.7;color:var(--muted);overflow-wrap:anywhere}
+.download-location small{display:inline-block;margin-top:6px;font-size:12px;color:var(--muted)}
+@media(max-width:760px){.download-location{align-items:flex-start;flex-direction:column;gap:12px}}

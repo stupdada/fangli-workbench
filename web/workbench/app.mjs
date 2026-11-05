@@ -5,6 +5,7 @@ import { PROFILE_FIELDS, clone, enabled, running, accountName, splitWords, norma
   togglePlatform, planSummary, optionIssues, escapeHTML as e, markdown, articleBody, valueText, selfCheck, OPERATION_KIND,latestOperation,reviewDefaults,reviewSelection,interviewMessageText } from './model.mjs';
 import { CustomersWorkspace } from './customers.mjs';
 import { CustomerClient, importCustomerFile } from './customers-client.mjs';
+import { fetchDelivery } from './files.mjs';
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -319,7 +320,43 @@ function settingsPanel() {
   if (!names.includes(s.model)) names.unshift(s.model);
   return `<h3>写作模型</h3><label class="field"><span>WorkBuddy 模型</span><select id="setting-model">${names.map(name => `<option ${name === s.model ? 'selected' : ''} value="${e(name)}">${e(name)}${models.length && !models.some(m => (typeof m === 'string' ? m : m.id || m.name) === name) ? '（当前目录未确认）' : ''}</option>`).join('')}</select></label>${button('provider-models','查询可用模型',null,'quiet sm')}<div class="form-grid" style="margin-top:20px"><label class="field"><span>Temperature</span><input type="number" id="setting-temperature" min="${e(limits.temperature.min)}" max="${e(limits.temperature.max)}" step="0.1" value="${e(settings.temperature ?? 0.7)}"></label><label class="field"><span>最大输出 Token</span><input type="number" id="setting-max-tokens" min="${e(limits.max_tokens.min)}" max="${e(limits.max_tokens.max)}" step="1" value="${e(settings.max_tokens || 8000)}"></label><label class="check-label field wide"><span><input type="checkbox" id="setting-title-prefix" ${settings.title_prefix ? 'checked' : ''}>标题附平台与账号前缀</span></label></div><label class="field" style="margin-top:20px"><span>默认品牌</span><input type="text" id="setting-brand" value="${e(settings.brand||'')}" placeholder="新建客户时预填，可在档案中清空"></label><label class="check-label" style="margin-top:14px"><input type="checkbox" id="setting-disable-thinking" ${settings.disable_thinking?'checked':''}>关闭模型深度思考</label>`;
 }
-const settingsSections=[['writing','写作模型'],['platforms','发布平台'],['targets','目标 AI'],['preferences','抓取偏好'],['risks','风险清单']];
+const settingsSections=[['writing','写作模型'],['platforms','发布平台'],['targets','目标 AI'],['preferences','抓取偏好'],['risks','风险清单'],['downloads','文件下载路径']];
+function downloadPanel() {
+  const settings=client.state.bootstrap?.settings||{};
+  const current=settings.download_dir||'',effective=settings.download_dir_effective||'',fallback=settings.download_dir_default||'';
+  return `<h3>文件下载路径</h3><p class="helper">成品导出与任务归档会直接写入这个文件夹，不再弹出浏览器下载框。同名文件追加序号，不覆盖已有文件。客户资料原件仍在原数据目录，不受此设置影响。</p><div class="download-location"><div><strong>位置</strong><p>${e(effective||fallback)}</p><small>${current?'自定义文件夹':'默认文件夹'}</small></div><div class="inline-actions"><button type="button" class="button quiet sm" data-download-pick>更改</button>${current?'<button type="button" class="button quiet sm" data-download-reset>恢复默认</button>':''}</div></div><details><summary>手动填写路径</summary><div class="details-content"><label class="field"><span>文件夹绝对路径</span><input type="text" id="setting-download-dir" value="${e(current)}" placeholder="留空使用默认路径"><small>需填写已存在且可写的绝对路径；留空保存即恢复默认。</small></label></div></details>`;
+}
+async function saveDownloadSettings() {
+  const dir=$('#setting-download-dir').value.trim();
+  const d=await client.api('/api/workbench/settings','POST',{download_dir:dir});
+  client.state.bootstrap.settings={...client.state.bootstrap.settings,...d.settings};
+  client.emit();
+  toast(dir?`下载路径已改为 ${d.settings.download_dir_effective}`:'已恢复默认下载路径');
+}
+async function pickDownloadFolder() {
+  const button=$('[data-download-pick]');
+  if(button){button.disabled=true;button.textContent='等待选择…';}
+  try{
+    await act(async()=>{
+      const d=await client.api('/api/workbench/downloads/pick','POST',{});
+      if(d.cancelled){toast('未更改下载路径');return;}
+      client.state.bootstrap.settings={...client.state.bootstrap.settings,...d.settings};
+      if(settingsSession?.current?.section==='downloads')openSettings('downloads',true);
+      toast(`下载路径已改为 ${d.settings.download_dir_effective}`);
+    });
+  }finally{
+    const again=$('[data-download-pick]');
+    if(again&&again.disabled){again.disabled=false;again.textContent='更改';}
+  }
+}
+async function resetDownloadFolder() {
+  await act(async()=>{
+    const d=await client.api('/api/workbench/settings','POST',{download_dir:''});
+    client.state.bootstrap.settings={...client.state.bootstrap.settings,...d.settings};
+    openSettings('downloads',true);
+    toast('已恢复默认下载路径');
+  });
+}
 function captureSettings() {
   if(!settingsSession?.current)return;
   settingsSession.current.values=$$('input,textarea,select',$('#settings-content')).map(el=>({value:el.value,checked:el.checked}));
@@ -344,8 +381,8 @@ function openSettings(section='writing',reset=false) {
   const saved=settingsSession.views.get(section);
   if(saved){settingsDisplay(saved.title,saved.html,saved.submit,saved.options);$$('input,textarea,select',$('#settings-content')).forEach((el,i)=>{if(saved.values?.[i]){el.value=saved.values[i].value;el.checked=saved.values[i].checked;}});return;}
   const title=settingsSections.find(([key])=>key===section)?.[1]||'写作模型';
-  const html=section==='writing'?settingsPanel():['platforms','targets'].includes(section)?catalogueMarkup(section):configBlock(section);
-  settingsDisplay(title,html,section==='writing'?saveSettings:null,{settingsMain:true,label:'保存设置'});
+  const html=section==='writing'?settingsPanel():section==='downloads'?downloadPanel():['platforms','targets'].includes(section)?catalogueMarkup(section):configBlock(section);
+  settingsDisplay(title,html,section==='writing'?saveSettings:section==='downloads'?saveDownloadSettings:null,{settingsMain:true,label:'保存设置'});
 }
 function inspector() {
   if (!panel) return '';
@@ -569,10 +606,13 @@ function deleteTaskDialog() {
   dialog('删除任务',`<p>确认删除“${e(client.state.conversation.title)}”？</p><p class="helper">任务将从历史列表移除。客户档案和已固定的视频来源保留，未保存的编辑也会移除。</p>`,async()=>{await client.deleteConversation();history.replaceState(null,'',location.pathname);panel=null;toast('任务已删除');},{label:'确认删除任务'});
 }
 async function downloadFile(url,filename) {
-  const response=await fetch(url);if(!response.ok){let result;try{result=await response.json();}catch{}throw new Error(result?.error||'下载失败，请核对当前状态');}
-  const blob=await response.blob(),link=document.createElement('a'),objectUrl=URL.createObjectURL(blob);link.href=objectUrl;link.download=filename;link.click();setTimeout(()=>URL.revokeObjectURL(objectUrl),2000);
+  const result=await fetchDelivery(url,filename);
+  if(result.saved){toast(`已保存到 ${result.saved}`);return result;}
+  const link=document.createElement('a'),objectUrl=URL.createObjectURL(result.blob);link.href=objectUrl;link.download=filename;link.click();setTimeout(()=>URL.revokeObjectURL(objectUrl),2000);
+  toast(result.warning?`未能保存到指定下载路径：${result.warning}。已改为浏览器下载`:'已开始下载');
+  return result;
 }
-async function archiveTask() {client.assertSettled();if(client.state.dirty)await client.saveDraft();await downloadFile(client.path('/archive'),`方立-任务归档-${client.state.conversation.id}.zip`);toast('本地归档已下载');}
+async function archiveTask() {client.assertSettled();if(client.state.dirty)await client.saveDraft();await downloadFile(client.path('/archive'),`方立-任务归档-${client.state.conversation.id}.zip`);}
 async function articleOperation(kind) {
   const a=currentArticle();if(!a)return; if(localEditor(a)?.dirty)throw new Error('请先保存当前编辑，再处理这个版本');
   const cid=client.state.conversation.id;
@@ -611,7 +651,7 @@ async function compareDialog(aid,candidate,result={}) {
 async function exportDialog() {
   const articles=client.state.articles.filter(a=>!a.locked);
   const omitted=client.state.ui.exportOmitted?.[client.state.conversation.id]||[];
-  dialog('导出当前采用稿',`<p class="helper">导出默认使用 ZIP 成稿；人工保存或明确采用候选后，使用相应采用版。</p><label class="field"><span>格式</span><select name="fmt"><option value="docx">Word（DOCX）</option><option value="md">Markdown</option><option value="txt">纯文本</option><option value="json">JSON</option></select></label><div class="inline-actions"><button type="button" class="button quiet sm" data-export-pick="all">全选</button><button type="button" class="button quiet sm" data-export-pick="none">全不选</button></div><div class="library-list">${articles.map(a=>`<label><input type="checkbox" name="ids" value="${a.id}" ${omitted.includes(String(a.id))?'':'checked'}><span>${e(a.title)}<small>${e(a.platform_name||a.platform||'')} · ${accountName(a.account_type)} · 版本 ${a.current_version}</small></span></label>`).join('')}</div>`,async data=>{const ids=data.getAll('ids');if(!ids.length)throw new Error('至少选择一篇稿件');const fmt=data.get('fmt');const url=client.path(`/export?fmt=${encodeURIComponent(fmt)}&ids=${ids.map(encodeURIComponent).join(',')}`);const response=await fetch(url);if(!response.ok){let d;try{d=await response.json();}catch{}throw new Error(d?.error||'导出失败，请确认后台状态');}const blob=await response.blob();const link=document.createElement('a'),objectUrl=URL.createObjectURL(blob);link.href=objectUrl;link.download=`方立-${client.state.conversation.id}.${fmt}`;link.click();setTimeout(()=>URL.revokeObjectURL(objectUrl),2000);toast('已导出所选采用版本');},{label:'导出文件'});
+  dialog('导出当前采用稿',`<p class="helper">导出默认使用 ZIP 成稿；人工保存或明确采用候选后，使用相应采用版。</p><label class="field"><span>格式</span><select name="fmt"><option value="docx">Word（DOCX）</option><option value="md">Markdown</option><option value="txt">纯文本</option><option value="json">JSON</option></select></label><div class="inline-actions"><button type="button" class="button quiet sm" data-export-pick="all">全选</button><button type="button" class="button quiet sm" data-export-pick="none">全不选</button></div><div class="library-list">${articles.map(a=>`<label><input type="checkbox" name="ids" value="${a.id}" ${omitted.includes(String(a.id))?'':'checked'}><span>${e(a.title)}<small>${e(a.platform_name||a.platform||'')} · ${accountName(a.account_type)} · 版本 ${a.current_version}</small></span></label>`).join('')}</div>`,async data=>{const ids=data.getAll('ids');if(!ids.length)throw new Error('至少选择一篇稿件');const fmt=data.get('fmt');const url=client.path(`/export?fmt=${encodeURIComponent(fmt)}&ids=${ids.map(encodeURIComponent).join(',')}`);await downloadFile(url,`方立-${client.state.conversation.id}.${fmt}`);},{label:'导出文件'});
 }
 function rememberExportSelection() {
   const omitted=$$('input[name="ids"]',modal).filter(input=>!input.checked).map(input=>input.value);
@@ -648,6 +688,8 @@ function deleteRisk(id) { dialog('删除风险点','<p class="helper">此操作�
 
 document.addEventListener('click', event => {
   const settingsNav=event.target.closest('[data-settings-section]');if(settingsNav){event.preventDefault();openSettings(settingsNav.dataset.settingsSection);return;}
+  if(event.target.closest('[data-download-pick]')){event.preventDefault();pickDownloadFolder();return;}
+  if(event.target.closest('[data-download-reset]')){event.preventDefault();resetDownloadFolder();return;}
   for(const menu of $$('.toolbar-menu[open]'))if(!menu.contains(event.target))menu.open=false;
   const exportPick=event.target.closest('[data-export-pick]');
   if(exportPick){for(const input of $$('input[name="ids"]',modal))input.checked=exportPick.dataset.exportPick==='all';rememberExportSelection();return;}

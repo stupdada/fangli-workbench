@@ -10,6 +10,8 @@
 /data/*
 !/data/README.md
 .data/
+# 成品交付目录：工作台设置里的默认下载路径
+/下载/
 *.db
 *.db-*
 *.sqlite
