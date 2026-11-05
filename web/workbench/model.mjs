@@ -1,3 +1,4 @@
+import MarkdownIt from './vendor/markdown-it.mjs';
 export const DEFAULT_MODEL = 'deepseek-v4.1-flash';
 // HTTP action paths and persisted operation kinds are separate contracts.
 export const OPERATION_KIND = Object.freeze({ chat:'interview', review:'style_review', rewrite:'style_rewrite', revise:'revision', writing:'writing', regenerate:'zip_regenerate', audit:'zip_audit' });
@@ -6,7 +7,16 @@ export function latestOperation(operations, kind, articleId) {
     .sort((a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||'')))[0] || null;
 }
 export function reviewDefaults(review) {
-  return { selected:(review.recommended||[]).map(String), mode:['full','standard','light'].includes(review.default_mode)?review.default_mode:'full' };
+  const suggestions=new Set((review.suggestions||[]).map((item,i)=>String(item.id??i)));
+  return { selected:(review.recommended||[]).map(String).filter(id=>suggestions.has(id)), mode:['full','standard','light'].includes(review.default_mode)?review.default_mode:'full' };
+}
+export function reviewSelection(review,{selected=[],conservative=[],material='',mode='full'}={}) {
+  const items=[...(review.suggestions||[]),...(review.observations||[])], ids=new Set(selected.map(String));
+  const chosen=items.filter((item,i)=>ids.has(String(item.id??i)));
+  const known=new Set(items.map((item,i)=>String(item.id??i)));
+  const safe=new Set(conservative.map(String));
+  return {selected:[...ids],invalid:[...ids].filter(id=>!known.has(id)),conservative:chosen.filter(item=>item.requires_material&&safe.has(String(item.id))).map(item=>String(item.id)),material,mode,
+    missing:chosen.filter(item=>item.requires_material&&!safe.has(String(item.id))&&!material.trim()).map(item=>String(item.id))};
 }
 export function interviewMessageText(message) {
   const content=message.content??message.text;
@@ -66,7 +76,6 @@ export function validateStart(options, platforms, targets) {
   for (const s of options.selections || []) {
     if (!['official', 'personal'].includes(s.account_type) || !Number.isInteger(s.count) || s.count < 1 || s.count > 20) errors.push('账号篇数配置无效');
   }
-  if (!options.models?.length) errors.push('请选择希望被谁搜到的目标 AI');
   return [...new Set(errors)];
 }
 export function optionIssues(options,platforms,targets) {
@@ -85,26 +94,8 @@ export function escapeHTML(value) {
   return String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-export function markdown(value) {
-  const inline = text => escapeHTML(text).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/`(.+?)`/g, '<code>$1</code>');
-  let out = [], paragraph = [], list = null, code = null;
-  const flush = () => { if (paragraph.length) { out.push(`<p>${inline(paragraph.join(' '))}</p>`); paragraph = []; } };
-  const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
-  for (const line of String(value || '').split(/\r?\n/)) {
-    if (line.startsWith('```')) { flush(); closeList(); if (code) { out.push(`<pre><code>${escapeHTML(code.join('\n'))}</code></pre>`); code = null; } else code = []; continue; }
-    if (code) { code.push(line); continue; }
-    if (!line.trim()) { flush(); closeList(); continue; }
-    const heading = /^(#{1,6})\s+(.+)$/.exec(line);
-    if (heading) { flush(); closeList(); out.push(`<h${heading[1].length}>${inline(heading[2])}</h${heading[1].length}>`); continue; }
-    const item = /^\s*(?:([-*+])|\d+\.)\s+(.+)$/.exec(line);
-    if (item) { flush(); const kind = item[1] ? 'ul' : 'ol'; if (list !== kind) { closeList(); out.push(`<${kind}>`); list = kind; } out.push(`<li>${inline(item[2])}</li>`); continue; }
-    if (/^>\s?/.test(line)) { flush(); closeList(); out.push(`<blockquote>${inline(line.replace(/^>\s?/, ''))}</blockquote>`); continue; }
-    if (/^---+$/.test(line.trim())) { flush(); closeList(); out.push('<hr>'); continue; }
-    closeList(); paragraph.push(line);
-  }
-  flush(); closeList(); if (code) out.push(`<pre><code>${escapeHTML(code.join('\n'))}</code></pre>`);
-  return out.join('\n');
-}
+const markdownEngine = new MarkdownIt({html:false,breaks:false,linkify:false,typographer:false});
+export function markdown(value) { return markdownEngine.render(String(value||'')); }
 
 export function articleBody(article) { return article?.body_md ?? article?.body ?? article?.content_md ?? ''; }
 export function valueText(value) { return typeof value === 'string' ? value : value == null ? '' : JSON.stringify(value, null, 2); }

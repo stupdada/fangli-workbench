@@ -4,13 +4,15 @@
 
 ## 启动
 
-开发交接与后续工作见 [docs/HANDOFF.md](docs/HANDOFF.md)，给接手开发 Agent 的完整提示词见 [docs/AGENT_START.md](docs/AGENT_START.md)。当前 main 是开发基线，页面集成与文案质量的验收状态以交接说明为准。
+开发交接与后续工作见 [docs/HANDOFF.md](docs/HANDOFF.md)，给接手开发 Agent 的完整提示词见 [docs/AGENT_START.md](docs/AGENT_START.md)。2026-11-05 的交接分支为 `feature/customer-batch-storage`；同事从提供的交接提交继续开发，无需等待合并 main。已有本机配置与源码修改按接手说明保留，验收范围以各报告为准。
 
 建议 Python 3.11+、Node.js 20+。文章后端使用 Python 标准库，SDK 已随仓库提供，无 npm 安装步骤；整站启动还会托管视频服务，需要 Pillow、FFmpeg/ffprobe 和中文字体。先安装视频 Python 依赖，并创建本机连接配置：
 
 ```powershell
 python -m pip install -r requirements-video.txt
-Copy-Item config/workbuddy.example.json config/workbuddy.json
+if (-not (Test-Path -LiteralPath config/workbuddy.json)) {
+    Copy-Item config/workbuddy.example.json config/workbuddy.json
+}
 ```
 
 把 `config/workbuddy.json` 中的三个占位值替换为自己的有效 WorkBuddy 配置。该文件被 Git 忽略；配置示例不可用于真实模型调用。SDK为 `vendor/workbuddy-sdk.js`，连接只在服务端读取。FFmpeg/ffprobe 需位于 PATH；Windows 使用微软雅黑，Linux 字体路径要求见视频引擎说明。打开页面不会主动调用外部模型。
@@ -21,7 +23,7 @@ Copy-Item config/workbuddy.example.json config/workbuddy.json
 python main.py
 ```
 
-首页：`http://127.0.0.1:8770/`；对话创作：`/workbench`；ZIP分步：`/workbench/zip`；视频：`/video/`。同一次启动自动拉起并管理视频子服务，终端输出实际主端口、主PID及视频PID。关闭窗口或Ctrl+C退出。`启动_开发模式.bat` 保留终端但不自动打开浏览器。
+展示首页：`http://127.0.0.1:8770/`；内部使用指南：`/guide/index.html`；对话创作：`/workbench`；ZIP分步：`/workbench/zip`；视频：`/video/`。同一次启动自动拉起并管理视频子服务，终端输出实际主端口、主PID及视频PID。关闭窗口或Ctrl+C退出。`启动_开发模式.bat` 保留终端但不自动打开浏览器。
 
 可指定独立数据目录、端口或让系统分配端口：
 
@@ -35,8 +37,12 @@ python main.py --no-browser --port 0 --data-dir "./data/dev-workbench"
 
 ## 稿件与操作
 
+客户独立管理与批量生成接口见 [客户与批次合同](docs/customer-batch-contract.md)。客户资料在数据库之外还保存原件与解析文字，位置为本数据目录的 `clients/<客户ID>/documents/`；同客户原件哈希去重，上传新版本不覆盖旧任务。历史仅有解析文字的资料保持可用，原件需重新导入补齐。每客户一套常用方案，新建任务自动带出；批次可同日多次提交，按提交快照排队执行，重复请求使用同一个request_key。
+
+普通任务档案修改默认只影响本次；独立客户更新或明确保存为默认才改变后续任务。批次提交后不再直接修改其安排，复用为普通任务或创建新批次调整。新增离线边界测试为 `python -B -m unittest discover -s tests/core -p test_customers_batches.py`。
+
 - 对话与分步入口共享任务、资料选择、草稿与稿件。品牌、公司和产品分别保存；原生完整字段与配置通过zip-config提供。
-- 八项客户字段以当前任务brief为准，资料弹窗一次事务保存任务和后续新任务使用的客户默认值。当前可见说明是唯一有效note，历史原话保留，不重复追加到生成要求。新任务平台空选、启用目标AI全选；确认别名沿用原生分组。
+- 八项客户字段以当前任务brief为准；任务编辑默认仅本次，明确save_as_default才同步客户档案。当前可见说明是唯一有效note，历史原话不重复追加到生成要求。新任务优先带出客户常用方案；没有方案时平台空选、启用目标AI全选。确认别名沿用原生分组。
 - 一批写作冻结资料和有效配置。正在处理的稿件只读；已经完成的稿件可以编辑。人工修改产生工作版本，ZIP后续标题、FAQ与角度参考继续读取原生生成记录。
 - 写作中补充新要求会保存输入、暂停后续。当前篇按ZIP原生流程收尾；确认新安排后再开始续写。超时、断线、截断和不完整结束不会当作成功，也不会自动重复调用。
 - 原生事实核查与修改行为保留，初稿和核查后稿分开留档。人工修改版清空旧审核与旧评分，允许直接保存和导出。
@@ -71,6 +77,6 @@ python tests/core/test_native_operations.py
 
 上面三条分别检查交接文件与相对风格库、有效输入事务、原生操作边界，不访问外部模型或目录。完整历史 verify.py 还需要原交接 ZIP 等夹具；SDK 测试需要本机配置（占位配置可用于注入 fetch 的离线测试），相关前置条件见交接说明。历史独立 ZIP 回放、Word 正文 XML、并发锁与停止边界的证据见 docs/evidence/。
 
-core-001离线证据的外部调用数为0。core-002另用隔离合成夹具完成了真实WorkBuddy接通和版本边界验收：8次内容调用、1次目录查询，均使用精确模型ID deepseek-v4.1-flash，正常完整结束；原始输入、初稿、核查后稿、候选及只读复核均保留在 [样稿与质量记录](docs/evidence/README.md)。两份样稿仍有流程文字残留、无充分依据的工艺推论与审阅误报，不能据此声称内容质量普遍通过。Codex已实际审阅并保存意见，用户保持未审。视频既有链路已完成 video-005 运行时终验；前端增量布局与异步状态仍在收尾，完整阶段终验尚待回报。详细状态见开发交接说明。
+core-001离线证据的外部调用数为0。core-002另用隔离合成夹具完成了真实WorkBuddy接通和版本边界验收：8次内容调用、1次目录查询，均使用精确模型ID deepseek-v4.1-flash，正常完整结束；原始输入、初稿、核查后稿、候选及只读复核均保留在 [样稿与质量记录](docs/evidence/README.md)。两份样稿仍有流程文字残留、无充分依据的工艺推论与审阅误报，不能据此声称内容质量普遍通过。Codex已实际审阅并保存意见，用户保持未审。视频既有链路已完成 video-005 运行时终验；客户与批次、消息与审阅、连续创作及内部指南已有各自验收记录。需求整理漏回写作说明的提示词约定已修正，6项离线检查通过，实际模型重试尚未验证。工作台视觉动效及后续首页优化由原开发者继续负责。详细状态见开发交接说明。
 
 接口与产品约定见 [docs/integration-contract.md](docs/integration-contract.md)。

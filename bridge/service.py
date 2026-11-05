@@ -1,6 +1,8 @@
 """Same ZIP writing engine, frozen runs, shared drafts and working versions."""
 import copy
+import inspect
 import json
+import re
 import threading
 import time
 from pathlib import Path
@@ -17,17 +19,22 @@ SETTING_FIELDS = {'model', 'temperature', 'max_tokens', 'title_prefix', 'disable
 
 class FrozenStore:
     """A run owns all its input; native records alone feed subsequent titles/FAQ/angles."""
-    def __init__(self, service, pid, brief, sid):
+    def __init__(self, service, pid, brief, sid, snapshot=None):
         self.service, self.raw, self.pid, self.sid = service, service.store, pid, sid
         self.jid, self.active = None, None
-        self.settings = copy.deepcopy(self.raw.get_settings())
-        self.platforms = copy.deepcopy(self.raw.list_platforms())
+        source = snapshot or {}
+        self.settings = copy.deepcopy(source.get('settings', self.raw.get_settings()))
+        self.platforms = copy.deepcopy(source.get('platforms', self.raw.list_platforms()))
         for platform in self.platforms:
             override = brief.get('format_overrides', {}).get(str(platform['id']))
             if override:
                 platform['formats'] = copy.deepcopy(override)
-        self.materials = copy.deepcopy(self.raw.list_materials(pid))
-        self.models, self.risks, self.prefs = self.raw.list_models(), self.raw.list_risks(), self.raw.get_prefs()
+        self.materials = copy.deepcopy(source.get('documents', self.raw.list_materials(pid)))
+        self.models = copy.deepcopy(source.get('models', self.raw.list_models()))
+        self.risks = copy.deepcopy(source.get('risks', self.raw.list_risks()))
+        self.prefs = copy.deepcopy(source.get('prefs', self.raw.get_prefs()))
+        self.reference_articles = copy.deepcopy(source.get('reference_articles', []))
+        self.topic_offset = source.get('topic_offset', len(self.reference_articles))
         self.plan = copy.deepcopy(self.raw.get_plan(pid))
         self.plan['articles'] = service.ws.visible_articles(pid)
         self.articles = {a['id']: a for a in self.plan['articles']}
@@ -65,6 +72,9 @@ class FrozenStore:
         return aid
 
     def update_article(self, aid, **values):
+        if 'geo' in values:
+            from .checks import article_checks
+            values['geo'] = article_checks({**self.articles[aid], **values}, values['geo'])
         self.raw.update_article(aid, **values)
         self.articles[aid] = self.raw.get_article(aid)
 
@@ -101,6 +111,49 @@ def install_lifecycle():
     generator._write_one_core = with_lifecycle
 
 
+def install_context():
+    """Keep ZIP source intact; enrich only workspace-owned facts and references."""
+    if not getattr(generator.audit_article, '_workspace_context', False):
+        audit = generator.audit_article
+        def audit_with_profile(store, settings, article_id, brief=None):
+            if isinstance(store, FrozenStore) or hasattr(store, 'source'):
+                effective = copy.deepcopy(brief or store.get_plan(store.get_article(article_id)['plan_id'])['brief'])
+                profile = {k: effective.get(k, '') for k in ('client', *PROFILE_FIELDS)}
+                effective['note'] = (effective.get('note') or '') + '\n【本任务已确认的客户档案】\n' + dumps(profile)
+                brief = effective
+            return audit(store, settings, article_id, brief)
+        audit_with_profile._workspace_context = True
+        generator.audit_article = audit_with_profile
+    if not getattr(generator.build_messages, '_workspace_context', False):
+        build = generator.build_messages
+        signature = inspect.signature(build)
+        def messages_with_history(*args, **kwargs):
+            values = signature.bind(*args, **kwargs)
+            values.apply_defaults()
+            store = values.arguments['store']
+            if isinstance(store, FrozenStore) and (store.reference_articles or store.topic_offset):
+                platform = values.arguments['platform']['id']
+                history = [a for a in store.reference_articles if a.get('platform_id') == platform]
+                titles = [a['title'] for a in history if a.get('title')]
+                values.arguments['avoid_titles'] = list(dict.fromkeys((values.arguments['avoid_titles'] or []) + titles[-8:]))
+                faqs = [q.strip() for a in history for q in re.findall(r'(?m)^###\s*(.+)$', a.get('body_md') or '')]
+                values.arguments['avoid_faqs'] = list(dict.fromkeys((values.arguments['avoid_faqs'] or []) + faqs[-20:]))
+            return build(*values.args, **values.kwargs)
+        messages_with_history._workspace_context = True
+        generator.build_messages = messages_with_history
+    if not getattr(generator.next_task, '_workspace_context', False):
+        next_task = generator.next_task
+        def task_with_history(store, *args, **kwargs):
+            task = next_task(store, *args, **kwargs)
+            if task and isinstance(store, FrozenStore) and store.topic_offset:
+                index = store.topic_offset + len(store.articles)
+                task['angle'] = prompts.ANGLES[index % len(prompts.ANGLES)]
+                task['sub'] = prompts.SUB_ANGLES[(index * 5) % len(prompts.SUB_ANGLES)]
+            return task
+        task_with_history._workspace_context = True
+        generator.next_task = task_with_history
+
+
 class Service:
     def __init__(self, store):
         self.store, self.ws = store, Workspace(store)
@@ -113,6 +166,12 @@ class Service:
             store.set_meta('wb_initialized', '1')
         provider.install()
         install_lifecycle()
+        install_context()
+        from .customers import Customers
+        from .batches import Batches
+        self.customers = Customers(self)
+        self.batches = Batches(self)
+        self.batches.boot()
 
     def public_settings(self):
         settings = self.store.get_settings()
@@ -168,27 +227,29 @@ class Service:
 
     def bootstrap(self):
         return {**self.zip_config(), 'clients': self.ws.clients(), 'conversations': self.ws.conversations(),
-                'provider_models': copy.deepcopy(self.catalog or [])}
+                'provider_models': copy.deepcopy(self.catalog or []),
+                'setting_limits': {'temperature': {'min': 0, 'max': 1.5}, 'max_tokens': {'min': 800, 'max': 8000}}}
 
     def create_conversation(self, cid):
-        defaults = {'keywords': [], 'selections': [],
-                    'models': [m['name'] for m in self.store.list_models() if m['enabled']],
-                    'aliases': [], 'rivals': [], 'note': '', 'format_overrides': {}}
-        return self.ws.create_conversation(cid, defaults)
+        with self.guard:
+            return self.customers.new_task(cid)
 
-    def save_task_profile(self, ident, name, profile):
+    def save_task_profile(self, ident, name, profile, save_as_default=False):
         text_value(name, '客户名称', 100, empty=False)
         if not isinstance(profile, dict) or set(profile) != set(PROFILE_FIELDS):
             raise Problem('资料保存需包含全部七项档案字段；清空请明确传空字符串')
         patch = {'client': name.strip(), **{k: text_value(profile[k], k, 4000).strip() for k in PROFILE_FIELDS}}
         with self.guard:
             conv = self.ws.conversation(ident)
+            if self.batches.managed(ident):
+                raise Conflict('批次已冻结客户信息，请在客户管理修改后用于新批次')
             brief = self.normalize_options(patch, conv['brief'])
             changed = brief != conv['brief']
             job = self.running_job(conv)
             running = bool(changed and job and job['status'] == 'running')
             if running: generator.cancel_job(job['id'])
-            return self.ws.save_task_profile(ident, brief, running)
+            if type(save_as_default) is not bool: raise Problem('save_as_default需为布尔值')
+            return self.ws.save_task_profile(ident, brief, running, save_as_default)
 
     def running_job(self, conv):
         return generator.get_job(conv.get('job_id')) if conv.get('job_id') else None
@@ -201,7 +262,7 @@ class Service:
             if not job and conv.get('job_id'):
                 job = {'id': conv['job_id'], 'status': 'interrupted', 'message': '服务重启，已有稿件已保留，请明确决定是否续写'}
             return {'conversation': conv, 'articles': articles, 'documents': self.ws.selected_documents(conv),
-                    'job': job, 'operations': self.ws.operations_for(ident)}
+                    'job': job, 'operations': self.ws.operations_for(ident), 'batch': self.batches.context(ident)}
 
     def normalize_options(self, patch, base=None):
         if not isinstance(patch, dict) or set(patch) - OPTION_FIELDS - {'document_ids'}:
@@ -259,6 +320,8 @@ class Service:
             if mode is not None and mode not in ('chat', 'zip'): raise Problem('创作模式需为chat或zip')
             if followup is not None and not isinstance(followup, bool): raise Problem('followup需为布尔值')
             changed = value != conv['brief'] or [d['id'] for d in docs] != conv['document_ids']
+            if changed and self.batches.managed(ident):
+                raise Conflict('批次安排已经提交，请复用为新任务或创建新批次调整')
             job = self.running_job(conv)
             values = {'brief': value, 'document_ids': [d['id'] for d in docs], 'draft_revision': conv['draft_revision'] + int(changed)}
             if mode is not None: values['mode'] = mode
@@ -309,6 +372,8 @@ class Service:
                     if cancel.is_set(): status = 'stopped'
                 except Exception as exc:
                     error = provider.public_error(exc)
+                    if isinstance(exc, Problem):
+                        result = {'error_status': exc.status}
                     status = 'stopped' if cancel.is_set() else 'interrupted' if getattr(exc, 'kind', '') == 'uncertain' else 'error'
                 finally:
                     with self.guard:
@@ -376,28 +441,37 @@ class Service:
             for r in risks if r['platform_id'] is None or r['platform_id'] == p['id']]} for p in platforms],
             'levels': {'high': '高优先抓取', 'mid': '中等抓取', 'low': '低抓取'}, 'created_at': time.strftime('%Y-%m-%d %H:%M:%S')}
 
-    def start(self, ident, options=None, one=False):
+    def start(self, ident, options=None, one=False, _frozen=None, _batch=False):
         with self.guard:
             if self.closed: raise Conflict('服务正在退出')
+            if self.batches.managed(ident) and not _batch:
+                raise Conflict('请从批次入口继续任务，或复用为新任务')
             conv = self.ws.conversation(ident)
             old = self.running_job(conv)
             if old and old['status'] == 'running': raise Conflict('本批仍在运行，请等待当前篇收尾后确认续写')
             if any(o['status'] == 'running' for o in self.ws.operations_for(ident)): raise Conflict('当前模型处理尚未结束')
-            conv = self.save_draft(ident, options)
-            brief = self.build_brief(conv)
-            docs = self.ws.selected_documents(conv)
+            conv = conv if _frozen else self.save_draft(ident, options)
+            brief = copy.deepcopy(_frozen['brief']) if _frozen else self.build_brief(conv)
+            docs = copy.deepcopy(_frozen['documents']) if _frozen else self.ws.selected_documents(conv)
             # Synchronous validation performs no generation; failure leaves a saved draft.
-            self.ensure_model()
+            self.ensure_model(_frozen['settings'] if _frozen else None)
             pid = conv['plan_id']
-            brief['snapshot'] = self.zip_snapshot(brief)
+            brief['snapshot'] = copy.deepcopy(_frozen.get('zip_snapshot', {})) if _frozen else self.zip_snapshot(brief)
             if not pid:
                 pid = self.store.create_plan(brief['keyword'], brief['client'] + ' · ' + brief['keyword'], brief)
             self.store.update_plan(pid, brief=brief, keyword=brief['keyword'], title=brief['client'] + ' · ' + brief['keyword'], status='generating')
             self.store.replace_materials(pid, [{'filename': d['filename'], 'kind': d['kind'], 'text': d['text']} for d in docs])
-            sid = self.ws.save_snapshot(ident, {'brief': brief, 'documents': docs, 'settings': self.public_settings(),
+            source = copy.deepcopy(_frozen) if _frozen else {'brief': brief, 'documents': docs, 'settings': self.public_settings(),
                 'platforms': self.store.list_platforms(), 'models': self.store.list_models(), 'prefs': self.store.get_prefs(),
-                'risks': self.store.list_risks(), 'format_overrides': conv['brief'].get('format_overrides', {})})
-            view = FrozenStore(self, pid, conv['brief'], sid)
+                'risks': self.store.list_risks(), 'format_overrides': conv['brief'].get('format_overrides', {}),
+                'reference_articles': self.customers.reference_articles(conv['client_id'], ident)}
+            source.update(brief=brief, documents=docs)
+            sid = self.ws.save_snapshot(ident, source)
+            view = FrozenStore(self, pid, source, sid, snapshot=source)
+            # Format overrides live alongside the executable brief in the snapshot.
+            for platform in view.platforms:
+                formats = source.get('format_overrides', {}).get(str(platform['id']))
+                if formats: platform['formats'] = copy.deepcopy(formats)
             tasks, _, pending = generator.pending_tasks(view, pid, brief['keywords'], brief['selections'], brief.get('aliases'), brief.get('platform_types'))
             if not pending:
                 self.store.update_plan(pid, status='generated')
@@ -467,6 +541,8 @@ class Service:
 
     def require_stopped(self, ident):
         conv = self.ws.conversation(ident)
+        if self.batches.managed(ident) in ('queued', 'running'):
+            raise Conflict('本任务属于排队或运行的批次，请先从批次入口停止并等待收尾')
         job = self.running_job(conv)
         if job and job.get('status') == 'running' or any(o['status'] == 'running' for o in self.ws.operations_for(ident)):
             raise Conflict('请先停止并等待当前任务收尾，再执行此操作')
@@ -498,9 +574,9 @@ class Service:
         from .editing import style_review
         return style_review(self, ident, aid, expected)
 
-    def rewrite(self, ident, aid, expected, review_id, selected, mode='full', material=''):
+    def rewrite(self, ident, aid, expected, review_id, selected, mode='full', material='', conservative=None):
         from .editing import style_rewrite
-        return style_rewrite(self, ident, aid, expected, review_id, selected, mode, material)
+        return style_rewrite(self, ident, aid, expected, review_id, selected, mode, material, conservative)
 
     def revise(self, ident, aid, expected, instruction):
         from .editing import revise
@@ -509,10 +585,13 @@ class Service:
     def close(self):
         with self.guard:
             self.closed = True
+            self.batches.close()
             for conv in self.ws.conversations():
                 if conv.get('job_id'): generator.cancel_job(conv['job_id'])
             for cancel in self.cancellations.values(): cancel.set()
             threads = list(self.threads.values())
         deadline = time.monotonic() + 8
         for thread in threads: thread.join(timeout=max(0, deadline - time.monotonic()))
-        return not any(thread.is_alive() for thread in threads)
+        if self.batches.worker:
+            self.batches.worker.join(timeout=max(0, deadline - time.monotonic()))
+        return not any(thread.is_alive() for thread in threads) and not (self.batches.worker and self.batches.worker.is_alive())

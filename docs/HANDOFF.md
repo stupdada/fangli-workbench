@@ -1,8 +1,10 @@
 # 方立内容工作台开发交接
 
-本项目把客户资料、文章创作、生成后编辑、版本采用、导出与无声视频制作放在同一个本机工作台中。仓库为 <https://github.com/stupdada/fangli-workbench>，`main` 是后续开发基线。
+本项目把客户资料、文章创作、生成后编辑、版本采用、导出与无声视频制作放在同一个本机工作台中。仓库为 <https://github.com/stupdada/fangli-workbench>。2026-11-05 交接分支为 `feature/customer-batch-storage`，以交接者提供的提交 SHA 固定版本；接手可直接从该版本创建自己的功能分支，无需等待合并 `main`。
 
-本文是 2026-11-04 的交接快照。开始新任务时，先核对最新提交、当前文件和已有验收记录；并行开发的结果可能已更新这里列出的待办。本文说明完整项目，具体任务可沿业务链修改必要代码。
+本文在 2026-11-04 快照上更新至 2026-11-05。开始新任务时，先核对交接提交、当前文件和已有验收记录。本文说明完整项目，具体任务可沿业务链修改必要代码。交接后，工作台视觉动效和首页后续优化由原开发者继续负责，同事在自己的功能分支推进本次指定任务。
+
+同日新增的客户长期资产与多批生成实现见 [客户与批次合同](customer-batch-contract.md)：bridge/customers.py、documents.py、batches.py 分别维护独立客户/常用方案、原件/修订和持久队列。普通任务档案默认仅本次，显式保存为默认才同步客户；新任务优先带出方案。批次不按日期去重，只按一次提交request_key去重。资料保存在当前数据目录的clients/，历史文本记录原ID保留，原件缺失如实标注。新增测试入口 tests/core/test_customers_batches.py；工作台层还补齐核查档案、跨任务参考和平台检查，不修改app/原始字节。前端本轮由“优化工作台前端设计”聊天负责，阶段终验以该轮证据为准。
 
 ## 先读什么
 
@@ -90,7 +92,7 @@ python -m pip install -r requirements-video.txt
 
 这部分是完整视频运行依赖；仅执行 `pip install -r requirements.txt` 不会安装 Pillow。中文字体候选见 `video/runtime/video-engine/silent_renderer.py`。原机 Windows 字体及特定字体哈希属于历史验收条件，新设备需核对字体选择和实际排版。
 
-WorkBuddy 连接从 `config/workbuddy.example.json` 复制到本机 `config/workbuddy.json`，再通过安全渠道填写自己的连接参数。真实连接配置由服务端读取，身份凭据不写入仓库、前端、样稿、日志附件或 PR。SDK 文件随源码提供。默认模型精确 ID 为 `deepseek-v4.1-flash`，明确执行模型操作时会核对目录并缓存；目录缺该 ID 时停止，不自动换模型。
+WorkBuddy 连接保存在各自本机的 `config/workbuddy.json`，仅在该文件不存在时从 `config/workbuddy.example.json` 创建，再通过安全渠道填写自己的连接参数。该文件被 Git 忽略且未被跟踪，正常更新源码不会替换已有连接。换目录克隆时需自行迁移本机配置。同事对 `bridge/workbuddy.cjs`、`bridge/provider.py` 或 `vendor/workbuddy-sdk.js` 的本地适配属于源码修改，接手前先保存，再合并交接代码并检查适配行为。真实连接配置由服务端读取，身份凭据不写入仓库、前端、样稿、日志附件或 PR。SDK 文件随源码提供。默认模型精确 ID 为 `deepseek-v4.1-flash`，明确执行模型操作时会核对目录并缓存；目录缺该 ID 时停止，不自动换模型。
 
 风格库位于仓库内 `style-library/`，`config/style-library.json` 使用相对路径，由 `bridge/style_library.py` 按仓库位置解析，与启动时的工作目录无关。来源见 [style-library/README.md](../style-library/README.md) 及同目录 `provenance.json`。客户绑定仍需按当前环境真实标识配置。
 
@@ -151,19 +153,20 @@ python -B tests/core/verify.py --output ./data/verification/core.json
 
 ## 当前待办与并行工作快照
 
-1. **主站完整业务验收。** 前端正在 `web/` 完成最后的增量布局和异步操作状态检查。真实服务已经验证标题／正文／标签／声明保存、清空后的版本与旧审核失效、恢复原 ZIP 版本及本地归档；最新整阶段终验尚未回报。先核对最新提交与证据，再补尚未完成的操作和端到端边界。
+1. **工作台交互增量已完成。** 客户与批次、消息输入与审阅、连续创作工作区三个任务均已回报完成，分别见 `tests/frontend/customer-batch-acceptance.md`、`composer-settings-acceptance.md`、`live-workspace-acceptance.md`。最后一项有32项前端与合同检查及内置Browser交互证据；复用这些记录，不再等待旧回报。证据覆盖各报告注明的接口与交互范围，真实模型成稿质量另行评估。
 2. **视频既有链路已终验。** `video-005` 已完成一次受控子服务重载，真实页面未采用版本返回 409、正文保持为空；既存 95 字／6 屏草稿、素材关联和源 Markdown 保持。证据见 [运行时终验](evidence/video/runtime-005/verification.md)，本次模型、目录、编码与新批次均为 0。后续业务修改再按影响范围验证。
 3. **文案质量。** 继续用资料—原稿—候选—审核—采用的完整链路评估，重点检查重复、过程说明、无依据推论和事实复核准确性。已有个别改写收益，不代表所有场景已达到交付质量。
 4. **写作策略接入。** 旧写作策略已在 `frontend-examples` 与平台风格库完成，可读 [阶段交付](reference/editorial/阶段交付.md) 与 [校准示例](reference/editorial/校准示例.md)；这不代表新项目已经全部接入。
 5. **视频文案入口。** 四方向模块和八稿实测已收录于 `docs/reference/video-authoring/`，先读 [八稿阅读](reference/video-authoring/八稿阅读.md) 及该目录原 README、schema 和离线验证。八稿中有一条梳毛稿包含无依据商家事实而失败，样例复用和结尾挂店名仍有问题；生产“写视频文案”入口待评审接入。`video/public/authoring-view.js` 有预留位置，需先评估真实模块与当前接口，再实现接线。
-6. **阅读界面评审。** `fangli-readability-preview` 是正式项目之外的独立前端副本，等待用户评审后决定合并，当前基线不含其设计。先确认评审和代码来源，避免把效果预览当成已上线能力。
-7. **干净克隆验收。** 连接示例、便携风格库、相对路径、合成样稿及历史证据、离线检查已纳入交接。新设备仍需准备运行依赖和自己的连接配置；历史测试外部夹具与字体前提见上文。提交冻结时以 Git 暂存内容为准核对，其他开发可能仍在更新工作区。
+6. **工作台视觉动效与内部指南。** 内部指南第一版已完成，见 `tests/frontend/internal-guide-acceptance.md`。当前交接保留已落地的视觉和弹性动效代码，阶段进度以相关验收报告为准；后续视觉与首页优化由原开发者继续负责。
+7. **阅读界面评审。** `fangli-readability-preview` 是正式项目之外的独立前端副本，等待用户评审后决定合并，当前基线不含其设计。先确认评审和代码来源，避免把效果预览当成已上线能力。
+8. **干净克隆验收。** 连接示例、便携风格库、相对路径、合成样稿及历史证据、离线检查已纳入交接。新设备仍需准备运行依赖和自己的连接配置；历史测试外部夹具与字体前提见上文。提交冻结时以 Git 暂存内容为准核对，其他开发可能仍在更新工作区。
 
 新任务以最新需求为目标，先分析实际原因和上下游影响，再完成必要实现与验证。
 
 ## Git 协作约定
 
-新环境克隆私有仓库需要自己的 GitHub 访问权限。已有目录先检查当前仓库、`origin`、工作区和分支，核对远程确实指向本项目后再 `fetch`。干净工作区可从最新 `origin/main` 创建功能分支：
+新环境克隆私有仓库需要自己的 GitHub 访问权限。已有目录先检查当前仓库、`origin`、工作区和分支，核对远程确实指向本项目后再 `fetch`。已有本机配置先在仓库外保存一份副本，并保留自己的源码提交。未提交的源码修改应检查敏感内容后，在自己的分支明确暂存并提交；不要把真实配置加入 Git。已有源码适配时，在自己的功能分支合并交接提交并处理冲突，检查后再提交，不用远程文件覆盖本机 SDK 或桥接代码。干净的新克隆可从 `origin/feature/customer-batch-storage` 创建功能分支：
 
 ```powershell
 git clone https://github.com/stupdada/fangli-workbench.git
@@ -171,7 +174,7 @@ Set-Location fangli-workbench
 git remote get-url origin
 git status --short --branch
 git fetch origin
-git switch -c feature/your-task origin/main
+git switch -c feature/your-task origin/feature/customer-batch-storage
 ```
 
 开发结束后只暂存本次确认的文件，检查差异与敏感内容，运行相应验证，再提交并推送功能分支：
