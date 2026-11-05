@@ -19,3 +19,20 @@ dialog{border:0;border-radius:16px;padding:0;width:min(620px,calc(100% - 36px));
 [data-dropzone]{transition:background .15s,outline-color .15s}[data-dropzone].drop-over{background:#eef2fb;outline:2px dashed var(--blue);outline-offset:9px}.drop-hint{font-size:10px;margin:10px 0 0}.keyword-editor{margin-bottom:24px}.keyword-editor .reply-row{margin:10px 0 13px}.keyword-list{display:flex;flex-direction:column;gap:8px}.keyword-row{display:flex;align-items:center;gap:10px}.keyword-row input{flex:1;min-width:0}.rival-list{display:flex;flex-wrap:wrap;gap:6px}.rival-chip{display:inline-flex;align-items:center;gap:6px;font-size:11px;padding:4px 8px;background:#f1f3f7;border-radius:6px}.rival-chip button{display:grid;place-items:center;padding:2px}.rival-chip .icon{width:12px;height:12px}
 .toolbar-menu{position:relative;flex:none}.toolbar-menu>summary{list-style:none;cursor:pointer}.toolbar-menu>summary::after{content:none}.toolbar-menu>summary::-webkit-details-marker{display:none}.menu-items{position:absolute;z-index:50;right:0;top:calc(100% + 7px);width:196px;padding:6px;background:#fff;border:1px solid var(--line);border-radius:10px}.toolbar-menu .menu-items .button,.top-actions .toolbar-menu .menu-items .button{display:flex;width:100%;justify-content:flex-start;min-height:36px;text-align:left}.button.danger{color:#973b32}.invalid-choice{display:inline-flex;align-items:center;gap:7px;color:#973b32;font-size:12px}#article-metadata{margin:24px 0}#article-metadata .field{margin:12px 0}@media(max-width:760px){.menu-items{width:188px}#article-metadata input,#article-metadata textarea{font-size:16px}}
 .toolbar-menu[open]>summary::after{content:none}#workspace>.operation-row{width:min(720px,calc(100% - 44px));margin:10px auto 0}@media(max-width:760px){.toolbar-menu .menu-items .button,.top-actions .toolbar-menu .menu-items .button{min-height:44px}}
+
+/* 发布前自检：沿用原 ZIP render.geo_check 的逐项结果 */
+.selfcheck-head{display:flex;align-items:center;gap:10px;margin:10px 0 8px;flex-wrap:wrap}
+.selfcheck-score{font-variant-numeric:tabular-nums;font-weight:600;font-size:13px;padding:3px 10px;border-radius:999px;background:#eef0f4;color:var(--muted)}
+.selfcheck-score.good{background:#e8f3ec;color:#256b41}
+.selfcheck-score.mid{background:#fdf1de;color:#8a5a10}
+.selfcheck-score.bad{background:#fbeae8;color:#973b32}
+.selfcheck-list{list-style:none;margin:0;padding:0;display:grid;gap:7px}
+.selfcheck-list li{display:flex;gap:9px;align-items:flex-start;font-size:13px;line-height:1.55}
+.selfcheck-list .ck{width:18px;height:18px;flex:none;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:2px}
+.selfcheck-list li.pass .ck{background:#e8f3ec;color:#256b41}
+.selfcheck-list li.fail .ck{background:#fbeae8;color:#973b32}
+.selfcheck-list li.fail strong{color:#973b32}
+.selfcheck-list .hint{display:block;color:var(--muted);margin-top:2px}
+.selfcheck-block{max-width:800px;width:100%;margin:16px auto 0;padding:12px 18px;border:1px solid var(--line);border-radius:12px;background:#fff}
+.selfcheck-block>summary{cursor:pointer;font-weight:600;font-size:13px}
+@media(max-width:760px){.selfcheck-block{padding:10px 14px}}
