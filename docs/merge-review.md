@@ -116,3 +116,9 @@
 **为何放弃总分**：远程版本用 `checksOnly()` 显式剥离 `score`，并取消了导出侧「仅选自检 ≥85 分」；这与本机记录的 `geo_check`「关键信息独立成段」硬编码 `## 关键信息速览`、非默认平台恒失败一致。总分不可作为选稿依据，逐项清单才是可用信息。
 
 **连接代码**：交接提交未改动 `bridge/workbuddy.cjs`、`bridge/provider.py`、`vendor/workbuddy-sdk.js`、`main.py`、`config/`，本机 `Origin: http://127.0.0.1` 适配原样保留。
+
+**本次合并的启动与真实调用验证（2026-11-05）**
+
+- 独立数据目录 `data/dev-integration`（未提交，`.gitignore` 已忽略），`python main.py --no-browser --port 0` 正常拉起主站在 61747、视频子服务在 61749，`/api/workbench/runtime` 报 `video: ready`；`/api/workbench/shutdown` 可正常关闭，两个端口均已释放。
+- 真实写作 1 篇（抖音官方号 · 图文，`deepseek-v4.1-flash`，合成资料）：约 15 秒完成生成与原生核查，成稿 1561 字，版本 `ZIP 成稿`，核查 `ok=true / applied=true / 2 处`，`geo.checks` 12 项、未通过 1 项（品牌露出适度）。后端仍保存 `geo.score`，界面按合同不展示。
+- 本机 `config/workbuddy.json` 与合并前备份 sha256 一致（`7d23c9c1…`），未被覆盖。
