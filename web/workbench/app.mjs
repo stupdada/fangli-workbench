@@ -1,17 +1,29 @@
 import { activityMarkup, liveMarkup, reconcile, setupLiveUI, tickElapsed, captureFollowing, restoreFollowing } from './live-workspace.mjs';
 import { remainingCount } from './live-model.mjs';
+import { createModeSwitcher } from './mode-switch.mjs';
+import { createTaskPresentation } from './task-presentation.mjs';
+import { createWorkbenchPaperFeedback } from './paper-feedback.mjs';
+import { paperMotionEnabled, setPaperMotionEnabled } from '../assets/paper-motion.mjs';
+import { liveReplyMarkup } from './dialogue-view.mjs';
 import { WorkbenchClient } from './client.mjs';
 import { PROFILE_FIELDS, clone, enabled, running, accountName, splitWords, normalizeOptions, selectionCounts, setCount,
   togglePlatform, planSummary, optionIssues, escapeHTML as e, markdown, articleBody, valueText,OPERATION_KIND,latestOperation,reviewDefaults,reviewSelection,interviewMessageText } from './model.mjs';
 import { CustomersWorkspace } from './customers.mjs';
 import { CustomerClient, importCustomerFile } from './customers-client.mjs';
+import { applyFontSizes, changeFontSize, fontSizeControl, installReadingLayout, restoreReadingScroll } from './reading-view.mjs';
+import { generationLengthField, generationContextMarkup } from './generation-style.mjs';
+import { articleEditorialMarkup } from './article-editorial.mjs';
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
-const mode = document.body.dataset.mode;
+let mode = document.body.dataset.mode;
 const client = new WorkbenchClient();
+const updatePaperFeedback = createWorkbenchPaperFeedback();
+const taskPresentation = createTaskPresentation(document, {reduced:()=>matchMedia('(prefers-reduced-motion: reduce)').matches});
 const customerService = new CustomerClient(client.api.bind(client));
 let pendingChat=null;
+const syncReadingLayout = installReadingLayout($('#root'));
+applyFontSizes(client.state.ui);
 let customerArea = new URLSearchParams(location.search).get('area') === 'customers', wasWriting = false;
 const paths = {
   logo: '<circle cx="12" cy="12" r="10"/><path d="M8.5 18V6h9M8.5 12h6M13 18h3"/>',
@@ -50,6 +62,10 @@ let selectedSuggestions = new Set(),conservativeSuggestions=new Set(),reviewErro
 let tooltipTimer, toastTimer, importing = false, operationBusy = false, lastFocus, lastFocusAction, intentionalNavigation = false;
 let settingsSession=null, renderParts=new Map(), lastInspectorKey='', renderedArticleId=null;
 let aliasTimer, aliasState = { key: '', groups: [], status: 'idle' };
+const modeViews = new Map();
+let stepGeneration = 0;
+const modeSwitcher = createModeSwitcher({getMode:()=>mode, getTaskId:()=>client.state.conversation?.id,
+  saveMode:next=>client.saveDraft(next), applyMode:applyMode});
 const aliasCache = new Map();
 const modal = $('#modal');
 $('.dialog-head [data-close]').innerHTML = icon('close');
@@ -86,7 +102,7 @@ async function openGuideTarget(intent) {
 }
 async function act(fn) {
   try { client.state.error = ''; await fn(); }
-  catch (error) { if(error.status===400){if(error.operationKind===OPERATION_KIND.chat){client.setMessageError(error.message,error.conversationId);if(client.state.conversation?.id===error.conversationId){surface='compose';render();}}else if(panel==='review'){reviewError=error.message;render();if(/素材/.test(error.message))$('#rewrite-material')?.focus();}else if(mode==='chat'&&/关键词|平台|安排/.test(error.message)){panel='sources';render();}if(error.operationKind!==OPERATION_KIND.chat)toast(error.message);}else{client.fail(error);toast(error.message);} }
+  catch (error) { if(error.status===400){if(error.operationKind===OPERATION_KIND.chat){client.setMessageError(error.message,error.conversationId);if(client.state.conversation?.id===error.conversationId){surface='compose';render();}}else if(panel==='review'){reviewError=error.message;render();if(/素材/.test(error.message))$('#rewrite-material')?.focus();}else if(mode==='chat'&&/关键词|平台|安排/.test(error.message)){panel='arrangement';render();}if(error.operationKind!==OPERATION_KIND.chat)toast(error.message);}else{client.fail(error);toast(error.message);} }
 }
 function currentClient() { const c=client.state.clients.find(c=>c.id===client.state.conversation?.client_id);if(!c)return null;const o=client.state.options;return {...c,name:o.client??'',profile:Object.fromEntries(PROFILE_FIELDS.filter(([key])=>key!=='name').map(([key])=>[key,o[key]??'']))}; }
 function moreMenu(id,label,items) { return `<details class="toolbar-menu" id="${id}"><summary class="icon-button" aria-label="${label}" title="${label}">${icon('more')}</summary><div class="menu-items">${items}</div></details>`; }
@@ -119,7 +135,7 @@ function topbar(s) {
   if(customerArea)return `<header class="topbar"><div class="task-heading"><strong>客户</strong><span class="save-status">档案、资料、常用方案与批次</span></div>${button('compose','返回创作',null,'quiet')}</header>`;
   const a = currentArticle();
   return `<header class="topbar"><div class="task-heading"><strong>${e(s.conversation?.title || '新建内容')}</strong><span class="save-status" role="status">${s.dirty ? '草稿待保存' : s.saved ? '草稿已保存' : s.conversation ? '已从后台恢复' : '先选择客户，开始本次创作'}</span></div>
-    <div class="mode-switch" role="group" aria-label="创作方式"><button data-action="mode-chat" class="${mode === 'chat' ? 'active' : ''}" aria-pressed="${mode === 'chat'}">对话创作</button><button data-action="mode-zip" class="${mode === 'zip' ? 'active' : ''}" aria-pressed="${mode === 'zip'}">分步创作</button></div>
+    <div class="mode-switch" role="group" aria-label="创作方式"><button data-action="mode-chat" class="${mode === 'chat' ? 'active' : ''}" aria-pressed="${mode === 'chat'}"><span class="mode-label">对话</span></button><button data-action="mode-zip" class="${mode === 'zip' ? 'active' : ''}" aria-pressed="${mode === 'zip'}"><span class="mode-label">分步</span></button></div>
     <div class="top-actions">${button('sources', '<span class="action-label">资料</span>', 'file', 'quiet', false, `aria-expanded="${panel === 'sources'}"`)}${button('review', '<span class="action-label">审阅</span>', 'review', 'quiet', !a, `aria-expanded="${panel === 'review'}"`)}${s.conversation?moreMenu('task-menu','任务更多操作',button('clone-task','复用为新任务',null,'quiet sm',client.activeJob||isOperationRunning())+button('archive-task','下载本地归档',null,'quiet sm',client.activeJob||isOperationRunning())+button('delete-task','删除任务',null,'quiet sm danger',client.activeJob||isOperationRunning())):''}${button('export', '导出', 'download', 'quiet', !s.articles.some(a => !a.locked))}</div></header>`;
 }
 function notices(s) {
@@ -133,12 +149,39 @@ function clientLine() {
   const c = currentClient();
   return `<div class="client-line"><span>本次客户</span>${c ? `<strong>${e(c.name)}</strong>${button('profile', '查看档案', null, 'quiet sm')}` : '<strong>尚未选择</strong>'}${button('choose-client', c ? '切换 / 新建任务' : '选择或创建客户', null, c ? 'quiet sm' : 'outline sm')}</div>`;
 }
-function docRows(docs, { removable = false } = {}) {
-  return docs.length ? docs.map(doc => `<div class="doc-row">${icon('file')}<div class="doc-info"><strong>${e(doc.filename)}</strong><small>${e(doc.kind || '资料')} · ${(doc.text || '').length.toLocaleString()} 字${doc.digest ? ' · 已入库' : ''}</small></div><button class="icon-button" data-doc="${e(doc.id)}" aria-label="查看 ${e(doc.filename)}" title="核对正文">${icon('search')}</button>${removable ? `<button class="icon-button" data-remove-doc="${e(doc.id)}" aria-label="取消选择 ${e(doc.filename)}" title="仅从本次选择移除">${icon('close')}</button>` : ''}</div>`).join('') : '<p class="empty">添加客户资料，开始这次创作。</p>';
+function docRows(docs, { removable = false, compact = false } = {}) {
+  return docs.length ? docs.map(doc => `<div class="doc-row">${icon('file')}<div class="doc-info"><strong>${e(doc.filename)}</strong>${compact ? '' : `<small>${e(doc.kind || '资料')} · ${(doc.text || '').length.toLocaleString()} 字${doc.digest ? ' · 已入库' : ''}</small>`}</div><button class="icon-button" data-doc="${e(doc.id)}" aria-label="查看 ${e(doc.filename)}" title="核对正文">${icon('search')}</button>${removable ? `<button class="icon-button" data-remove-doc="${e(doc.id)}" aria-label="取消选择 ${e(doc.filename)}" title="仅从本次选择移除">${icon('close')}</button>` : ''}</div>`).join('') : '<p class="empty">添加客户资料，开始这次创作。</p>';
 }
 function selectedDocs() { const docs=new Map([...client.state.documents,...client.state.library].map(d=>[String(d.id),d]));return client.state.documentIds.map(id=>docs.get(String(id))).filter(Boolean); }
+function narratedVideoHref(conversation, article) {
+  if (!conversation?.client_id) return '';
+  const query = new URLSearchParams({client_id: conversation.client_id});
+  if (article) {
+    if (!Number.isSafeInteger(article.id) || article.id < 1 || !Number.isSafeInteger(article.current_version) || article.current_version < 1) return '';
+    query.set('article_id', article.id);
+    query.set('version_id', article.current_version);
+  } else {
+    if (!conversation.id) return '';
+    query.set('conversation_id', conversation.id);
+  }
+  return `/video/narrated/?${query}`;
+}
+function materialsVideoButton() {
+  return narratedVideoHref(client.state.conversation) && selectedDocs().length
+    ? button('narrated-from-materials', '用本次资料制作视频', 'video', 'quiet sm', importing)
+    : '';
+}
+async function openMaterialsVideo() {
+  const task = client.state.conversation;
+  const href = narratedVideoHref(task);
+  if (!href || !selectedDocs().length || importing) return;
+  if (client.state.dirty) await client.saveDraft();
+  if (client.state.conversation?.id !== task.id) return;
+  if (client.state.dirty) throw new Error('资料选择刚刚更新，请保存后再进入视频制作');
+  location.assign(href);
+}
 function sourceBlock() {
-  return `<div class="sources-preview" id="source-dropzone" data-dropzone><div class="spread"><h2 class="section-title">客户资料</h2><div class="inline-actions">${button('upload', '上传文件', 'plus', 'quiet sm', importing)}${button('paste', '粘贴', null, 'quiet sm')}${button('library', '从库中选择', null, 'quiet sm')}</div></div>${docRows(selectedDocs(), { removable: true })}${importing?'<p role="status">正在保存原件并解析…</p>':''}</div>`;
+  return `<div class="sources-preview" id="source-dropzone" data-dropzone><div class="spread"><h2 class="section-title">客户资料</h2><div class="inline-actions">${button('upload', '上传文件', 'plus', 'quiet sm', importing)}${button('paste', '粘贴', null, 'quiet sm')}${button('library', '从库中选择', null, 'quiet sm')}${materialsVideoButton()}</div></div>${docRows(selectedDocs(), { removable: true })}${importing?'<p role="status">正在保存原件并解析…</p>':''}</div>`;
 }
 function keywordEditor() {
   return `<section class="keyword-editor"><div class="spread"><label class="field" for="keyword-entry"><span>目标搜索关键词</span></label>${button('detect-aliases','别名分组',null,'quiet sm')}</div><div class="reply-row"><input type="text" id="keyword-entry" placeholder="输入关键词，回车添加">${button('add-keyword','添加','plus','outline')}</div><div class="keyword-list">${client.state.options.keywords.map((word,index)=>`<div class="keyword-row"><input type="text" id="keyword-${index}" data-keyword-index="${index}" value="${e(word)}" aria-label="关键词 ${index+1}"><button type="button" class="icon-button" data-remove-keyword="${index}" aria-label="移除关键词 ${e(word)}">${icon('close')}</button></div>`).join('')}</div>${aliasHint()}</section>`;
@@ -169,9 +212,12 @@ function targetsBlock(prefix = 'target') {
   const available=client.targets.filter(enabled),invalid=opts.models.filter(name=>!available.some(t=>(t.name||t)===name));
   return `<div class="target-list">${available.map((t, i) => { const name = typeof t === 'string' ? t : t.name; return `<label><input type="checkbox" id="${prefix}-${i}" data-target="${e(name)}" ${opts.models.includes(name) ? 'checked' : ''}>${e(name)}</label>`; }).join('') || '<span class="muted small">尚未配置目标 AI，请在配置管理中添加。</span>'}${invalid.map(name=>`<span class="invalid-choice">${e(name)} · 已失效 <button type="button" class="button quiet sm" data-remove-target="${e(name)}">移除</button></span>`).join('')}</div>`;
 }
-function expandedOptions({ open = false } = {}) {
+function expandedOptions() {
+  return `<details class="advanced" id="advanced-options"><summary>本次可选调整</summary><div class="details-content">${advancedFields()}</div></details>`;
+}
+function advancedFields() {
   const o=client.state.options;
-  return `<details class="advanced" id="advanced-options" ${open?'open':''}><summary>本次可选调整</summary><div class="details-content"><div class="form-grid"><label class="field"><span>同现品牌 / 公司 <span title="自家品牌与公司仍按原规则排除。">ⓘ</span></span><textarea class="input" id="option-rivals" data-option="rivals" rows="2">${e((o.rivals||[]).join('\n'))}</textarea></label><label class="field"><span>别名分组 <span title="每行一组，同组用逗号分隔；只在确认后生效。">ⓘ</span></span><textarea class="input" id="option-aliases" rows="2">${e((o.aliases||[]).map(g=>g.join('，')).join('\n'))}</textarea></label></div></div></details>`;
+  return `<div class="form-grid">${generationLengthField(o)}<label class="field"><span>同现品牌 / 公司 <span title="自家品牌与公司仍按原规则排除。">ⓘ</span></span><textarea class="input" id="option-rivals" data-option="rivals" rows="2">${e((o.rivals||[]).join('\n'))}</textarea></label><label class="field"><span>别名分组 <span title="每行一组，同组用逗号分隔；只在确认后生效。">ⓘ</span></span><textarea class="input" id="option-aliases" rows="2">${e((o.aliases||[]).map(g=>g.join('，')).join('\n'))}</textarea></label></div>`;
 }
 function messageTarget() {
   const draft=draftPanelState(),a=currentArticle();
@@ -201,9 +247,9 @@ async function reviseFromChat() {
 }
 function chatHistory() {
   const s=client.state,messages=(s.conversation?.messages||[]).filter(m=>m.role!=='system'&&m.role!=='tool'),result=s.results[OPERATION_KIND.chat];
-  const question=result?.ready?null:result?.questions?.[0],qText=question?.text||question?.question||question?.title,choices=question?.options||[];
-  const history=messages.map((m,index)=>`<div data-key="message-${index}" class="message ${m.role==='user'?'user':'assistant'}"><span class="message-label">${m.role==='user'?'你':'方立'}</span><div class="rendered-copy message-copy">${m.role==='user'?e(interviewMessageText(m)):markdown(interviewMessageText(m))}</div></div>${revisionMessagesMarkup(index+1)}`).join('');
-  return `<section class="conversation-log" id="conversation-log" aria-label="创作对话">${revisionMessagesMarkup(0)}${history}${pendingChat&&pendingChat.id===s.conversation?.id&&pendingChat.text&&interviewMessageText(messages.at(-1)||{})!==pendingChat.text?`<div class="message user" data-key="pending-message"><span class="message-label">你</span><div class="message-copy">${e(pendingChat.text)}</div></div>`:''}${s.ui.followup&&qText?`<section class="question"><h3>${e(qText)}</h3><div class="question-options">${choices.map((opt,i)=>{const label=typeof opt==='string'?opt:opt.text||opt.label;return `<button data-answer="${i}" data-answer-text="${e(label)}">${e(label)}</button>`;}).join('')}</div></section>`:''}</section>`;
+  const question=pendingChat||s.operations.some(op=>op.kind===OPERATION_KIND.chat&&running(op))||result?.ready?null:result?.questions?.[0],qText=question?.text||question?.question||question?.title,choices=question?.options||[];
+  const history=messages.map((m,index)=>`<div data-key="${m.role==='assistant'&&m.content?.operation_id?'reply-'+e(m.content.operation_id):'message-'+index}" class="message ${m.role==='user'?'user':'assistant'}"><span class="message-label">${m.role==='user'?'你':'方立'}</span><div class="rendered-copy message-copy">${m.role==='user'?e(interviewMessageText(m)):markdown(interviewMessageText(m))}</div></div>${revisionMessagesMarkup(index+1)}`).join('');
+  return `<section class="conversation-log" id="conversation-log" aria-label="创作对话">${revisionMessagesMarkup(0)}${history}${pendingChat&&pendingChat.id===s.conversation?.id&&pendingChat.text&&interviewMessageText(messages.findLast(m=>m.role==='user')||{})!==pendingChat.text?`<div class="message user" data-key="pending-message"><span class="message-label">你</span><div class="message-copy">${e(pendingChat.text)}</div></div>`:''}${liveReplyMarkup(s,!!pendingChat)}${s.ui.followup&&qText?`<section class="question" aria-label="${e(qText)}">${interviewMessageText(messages.at(-1)||{}).includes(qText)?'':`<h3>${e(qText)}</h3>`}<div class="question-options">${choices.map((opt,i)=>{const label=typeof opt==='string'?opt:opt.text||opt.label;return `<button data-answer="${i}" data-answer-text="${e(label)}">${e(label)}</button>`;}).join('')}</div></section>`:''}</section>`;
 }
 
 function operationRows(kinds=null) {
@@ -224,8 +270,8 @@ function fitMessageInput(followCaret=false) {
   input.closest('.chat-compose-area').classList.toggle('has-draft',!!input.value);
 }
 function composeView() {
-  const s=client.state,c=currentClient(),target=messageTarget(),hasMessages=!!s.conversation?.messages?.length||client.activeJob||!!s.articles.length||isOperationRunning()||operationBusy,plan=planSummary(s.options,client.platforms).text;
-  return `<section class="chat-workbench ${hasMessages?'is-conversation':'is-first'}">${!hasMessages?'<h1>这次想写什么？</h1>':''}<div class="chat-context">${button('choose-client',c?e(c.name):'选择客户','chevron','context-chip')}${button('sources',`资料 ${s.documentIds.length} 份`,'file','context-chip')}${button('sources','本次安排','settings','context-chip')}</div>${chatHistory()}${s.job||s.operations.some(running)?activityMarkup(s,'chat'):''}<div class="chat-compose-area"><div class="composer"><textarea id="message-input" rows="1" aria-label="创作消息" placeholder="${target==='article'?'说说这篇稿件需要怎样修改':'说说这次想写什么'}">${e(client.messageDraft())}</textarea><div class="composer-toolbar">${iconButton('upload','添加资料','plus')}<span class="spacer"></span><button type="button" class="context-chip composer-platform" data-action="platforms" aria-label="平台与篇数：${e(plan)}" title="${e(plan)}">${icon('settings')}<span>${e(plan)}</span></button><button class="send-button" data-action="interview" aria-label="发送消息" ${operationBusy||isOperationRunning()?'disabled':''}>${icon('arrow')}</button></div></div><div class="composer-foot"><div class="composer-followup">${s.articles.some(a=>a.current_version)?`<label class="message-target"><span class="sr-only">本条消息用途</span><select id="message-target" aria-label="本条消息用途"><option value="requirements" ${target==='requirements'?'selected':''} ${s.batch?.frozen?'disabled':''}>调整本次要求</option><option value="article" ${target==='article'?'selected':''} ${client.activeJob?'disabled':''}>修改第 ${s.articles.findIndex(a=>a.id===currentArticle()?.id)+1} 篇</option></select></label>`:''}<label class="check-label" ${target==='article'?'hidden':''}><input type="checkbox" id="followup-enabled" ${s.ui.followup?'checked':''}>追问</label></div><div class="inline-actions">${s.articles.length?button('articles',`查看 ${s.articles.length} 篇稿件`,null,'quiet'):''}${target==='requirements'&&!client.activeJob&&remainingCount(s,client.platforms)>0?button('start','开始写作','right','primary',isOperationRunning()||operationBusy):''}</div></div>${client.messageError()?`<div class="composer-error" role="alert"><span>${e(client.messageError())}</span><div>${button('sources','查看本次安排',null,'quiet sm')}${button('dismiss-message-error','关闭提示',null,'quiet sm')}</div></div>`:''}${!hasMessages?'<div class="prompt-examples chat-suggestions"><button data-prompt="0">介绍产品或服务</button><button data-prompt="1">解答常见问题</button><button data-prompt="2">介绍客户与业务</button></div>':''}</div></section>`;
+  const s=client.state,c=currentClient(),target=messageTarget(),hasMessages=!!s.conversation?.messages?.length||client.activeJob||!!s.articles.length||isOperationRunning()||operationBusy;
+  return `<section class="chat-workbench ${hasMessages?'is-conversation':'is-first'}">${!hasMessages?'<h1>这次想写什么？</h1>':''}<div class="chat-context">${button('choose-client',c?e(c.name):'选择客户','chevron','context-chip')}${button('sources',`资料 ${s.documentIds.length} 份`,'file','context-chip')}${button('arrangement','本次安排','settings','context-chip',false,'data-paper-arrangement')}</div>${chatHistory()}${s.job||s.operations.some(running)?activityMarkup(s,'chat'):''}<div class="chat-compose-area"><div class="composer"><textarea id="message-input" rows="1" aria-label="创作消息" placeholder="${target==='article'?'说说这篇稿件需要怎样修改':'说说这次想写什么'}">${e(client.messageDraft())}</textarea><div class="composer-toolbar">${iconButton('upload','添加资料','plus')}<span class="spacer"></span><button type="button" class="context-chip composer-platform" data-action="platforms" aria-label="平台安排" title="平台安排">${icon('settings')}</button><button class="send-button" data-action="interview" aria-label="发送消息" ${operationBusy||isOperationRunning()?'disabled':''}>${icon('arrow')}</button></div></div><div class="composer-foot"><div class="composer-followup">${s.articles.some(a=>a.current_version)?`<label class="message-target"><span class="sr-only">本条消息用途</span><select id="message-target" aria-label="本条消息用途"><option value="requirements" ${target==='requirements'?'selected':''} ${s.batch?.frozen?'disabled':''}>调整本次要求</option><option value="article" ${target==='article'?'selected':''} ${client.activeJob?'disabled':''}>修改第 ${s.articles.findIndex(a=>a.id===currentArticle()?.id)+1} 篇</option></select></label>`:''}<label class="check-label" ${target==='article'?'hidden':''}><input type="checkbox" id="followup-enabled" ${s.ui.followup?'checked':''}>追问</label></div><div class="inline-actions">${s.articles.length?button('articles',`查看 ${s.articles.length} 篇稿件`,null,'quiet'):''}${target==='requirements'&&!client.activeJob&&remainingCount(s,client.platforms)>0?button('start','开始写作','right','primary',isOperationRunning()||operationBusy):''}</div></div>${client.messageError()?`<div class="composer-error" role="alert"><span>${e(client.messageError())}</span><div>${button('arrangement','查看本次安排',null,'quiet sm')}${button('dismiss-message-error','关闭提示',null,'quiet sm')}</div></div>`:''}${!hasMessages?'<div class="prompt-examples chat-suggestions"><button data-prompt="0">介绍产品或服务</button><button data-prompt="1">解答常见问题</button><button data-prompt="2">介绍客户与业务</button></div>':''}</div></section>`;
 }
 function configBlock(section) {
   const cfg = client.state.config;
@@ -246,13 +292,15 @@ function taskPlatforms() {
 }
 function zipView() {
   const s=client.state;
-  if(step===4)return stepper()+articleView();
-  if(step===3)return stepper()+liveView(true);
+  if (step === 3 || step === 4) {
+    const steps = `<div class="reading-steps"><div id="reading-steps-full">${stepper()}</div><button type="button" class="button quiet sm reading-expand" data-expand-reading aria-controls="reading-steps-full" aria-expanded="false">展开步骤</button></div>`;
+    return steps + (step === 4 ? articleView() : liveView(true));
+  }
   if(step===2)return `${stepper()}<section class="step-surface"><div class="spread"><div><h1>平台安排</h1><p>${e(planSummary(s.options,client.platforms).text)}</p></div>${button('platforms','选择平台与形态','settings','outline')}</div>${taskPlatforms()}<div class="step-actions">${button('step-1','上一步','back','quiet')}${button('start','开始写作','right','primary',client.activeJob||isOperationRunning()||operationBusy)}</div></section>`;
   return `${stepper()}<section class="step-surface"><h1>创作准备</h1>${clientLine()}<div class="preparation-grid">${sourceBlock()}${keywordEditor()}</div><label class="field task-note"><span>本次方向与补充要求</span><textarea class="input" id="zip-note" data-option="note" rows="3" placeholder="说明本次想表达的重点">${e(s.options.note)}</textarea></label>${expandedOptions()}<div class="step-actions"><span></span>${button('step-2','下一步：平台安排','right','primary')}</div></section>`;
 }
 function liveView(inStep = false) {
-  return liveMarkup(client.state,client.platforms,button)+(inStep?`<div class="step-actions">${button('step-2','返回配置','back','quiet')}<span></span></div>`:'');
+  return liveMarkup(client.state,client.platforms,button,{inStep})+(inStep?`<div class="step-actions">${button('step-2','返回配置','back','quiet')}<span></span></div>`:'');
 }
 function draftPanelState() {
   const id=client.state.conversation?.id||'_new';client.state.ui.draftPanels??={};
@@ -270,8 +318,8 @@ function articleView() {
   if (!a) return `<section class="empty large"><h2>还没有稿件。</h2><p>从资料与关键词开始，后台完成后在这里编辑和导出。</p>${button('compose','开始创作','plus','primary')}</section>`;
   selectedId = a.id; const editor = localEditor(a);
   const bodyLines=articleBody(a).split(/\r?\n/);if(bodyLines[0]?.replace(/^#\s+/,'').trim()===a.title?.trim()&&/^#\s+/.test(bodyLines[0]))bodyLines.shift();
-  return `<section class="article-workspace"><div id="article-scroll" class="article-scroll"><div class="article-tabs" role="tablist" aria-label="本次稿件">${s.articles.map((art,i) => `<button class="article-tab ${art.id === a.id ? 'active' : ''}" id="article-tab-${art.id}" role="tab" tabindex="${art.id === a.id ? 0 : -1}" aria-controls="paper" aria-selected="${art.id === a.id}" data-select-article="${art.id}"><span class="article-dot ${art.locked ? 'locked' : ''}"></span>${e(art.platform_name || art.platform || '稿件')} · ${i+1}</button>`).join('')}${client.activeJob ? `<button class="article-tab" data-action="live"><span class="working-dot"></span>写作状态</button>` : ''}</div>
-    <div class="editor-toolbar"><span class="muted">${e(a.version_label || `工作版本 ${a.current_version}`)}${a.locked ? ' · 正在处理，只读' : ''}</span><div class="inline-actions">${button('compose','需求与安排',null,'quiet sm')}${button('versions','版本','clock','quiet sm',a.locked)}${button('sources','资料','file','quiet sm')}${button('review','去 AI 味审阅','review','quiet sm',a.locked)}${button('edit-article',editor && !editor.reading ? '阅读正文' : '编辑正文','edit','quiet sm',a.locked)}${moreMenu('article-menu','稿件更多操作',button('native-regenerate','整篇重写并核查',null,'quiet sm',a.locked||client.activeJob||isOperationRunning()||operationBusy||editor?.dirty)+button('native-audit','再核查一次',null,'quiet sm',a.locked||client.activeJob||isOperationRunning()||operationBusy||editor?.dirty)+button('delete-article','删除这篇稿件',null,'quiet sm danger',a.locked||client.activeJob||isOperationRunning()||operationBusy||editor?.dirty))}</div></div>
+  return `<section class="article-workspace"><div id="article-scroll" class="article-scroll" tabindex="0" aria-label="稿件正文"><div class="article-tabs" role="tablist" aria-label="本次稿件">${s.articles.map((art,i) => `<button class="article-tab ${art.id === a.id ? 'active' : ''}" id="article-tab-${art.id}" role="tab" tabindex="${art.id === a.id ? 0 : -1}" aria-controls="paper" aria-selected="${art.id === a.id}" data-select-article="${art.id}"><span class="article-dot ${art.locked ? 'locked' : ''}"></span>${e(art.platform_name || art.platform || '稿件')} · ${i+1}</button>`).join('')}${client.activeJob ? `<button class="article-tab" data-action="live"><span class="working-dot"></span>写作状态</button>` : ''}</div>
+    <div class="editor-toolbar"><span class="muted">${e(a.version_label || `工作版本 ${a.current_version}`)}${a.locked ? ' · 正在处理，只读' : ''}</span><div class="inline-actions">${fontSizeControl(editor && !editor.reading ? 'editor' : 'reading', s.ui)}${button('arrangement','本次安排','settings','quiet sm')}${button('versions','版本','clock','quiet sm',a.locked)}${button('sources','资料','file','quiet sm')}${button('review','文风审阅','review','quiet sm')}${button('revise-dialog','提出修改',null,'quiet sm',a.locked||!a.current_version||isOperationRunning()||operationBusy||editor?.dirty)}${button('edit-article',editor && !editor.reading ? '阅读正文' : '编辑正文','edit','quiet sm',a.locked)}${moreMenu('article-menu','稿件更多操作',articleReferenceActions(a)+button('accept-expression','保存为认可表达',null,'quiet sm',a.locked||!a.current_version||editor?.dirty)+button('native-regenerate','整篇重写并核查',null,'quiet sm',a.locked||client.activeJob||isOperationRunning()||operationBusy||editor?.dirty)+button('native-audit','再核查一次',null,'quiet sm',a.locked||client.activeJob||isOperationRunning()||operationBusy||editor?.dirty)+button('delete-article','删除这篇稿件',null,'quiet sm danger',a.locked||client.activeJob||isOperationRunning()||operationBusy||editor?.dirty))}</div></div>
     ${operationRows([OPERATION_KIND.regenerate,OPERATION_KIND.audit])}<article class="paper" id="paper" role="tabpanel" aria-labelledby="article-tab-${a.id}"><div class="paper-meta"><span>${e(a.platform_name || a.platform || '')} · ${accountName(a.account_type)}${a.fmt ? ` · ${e(a.fmt)}` : ''}</span><span>${a.review ? (a.review.status==='unverified'?'本版本尚未模型核查':a.origin?.startsWith('zip')?'原生模型核查记录可查看':'模型复核记录可查看') : '此版本无核查记录'}</span></div>
     ${editor && !editor.reading ? `<label class="field"><span class="small muted">标题</span><input type="text" id="article-title" class="title-input" value="${e(editor.title)}" ${a.locked ? 'disabled' : ''}></label><label class="field"><span class="small muted">正文 · Markdown</span><textarea id="article-body" class="body-input" ${a.locked ? 'readonly' : ''}>${e(editor.body)}</textarea></label><details id="article-metadata"><summary>标签与声明</summary><div class="details-content"><label class="field"><span>标签 · 空格或逗号分隔</span><input type="text" id="article-tags" value="${e(editor.tags??(a.tags||[]).join(' '))}" ${a.locked?'disabled':''}></label><label class="field"><span>声明 · 每行一条</span><textarea class="input" id="article-decl" ${a.locked?'readonly':''}>${e(editor.decl??(a.decl||[]).join('\n'))}</textarea><small>清空后保存即可移除此版本的标签或声明。</small></label></div></details>` : `<h1>${e(a.title || '未命名稿件')}</h1><div>${markdown(bodyLines.join('\n'))}</div>`}
     <footer class="paper-foot"><span>${editor?.dirty ? '有未保存的人工编辑' : '当前采用版 · 用于默认导出'}</span><span>${(editor?.body ?? articleBody(a)).replace(/\s/g,'').length.toLocaleString()} 字</span></footer></article>
@@ -279,8 +327,60 @@ function articleView() {
     </div>${mode==='zip'?`<div class="revision-box"><div class="reply-row"><textarea class="input" id="revise-instruction" aria-label="对当前稿的修改要求" placeholder="修改当前稿，例如：开头直接说明用途。">${e(revisionInstruction(a))}</textarea><button class="send-button" data-action="revise" aria-label="修改当前稿" title="修改当前稿" ${a.locked||isOperationRunning()||operationBusy||editor?.dirty?'disabled':''}>${icon('arrow')}</button></div></div>`:''}</section>`;
 }
 function sourcesPanel() {
-  const s = client.state, c = currentClient(), a = currentArticle(), summary = planSummary(s.options, client.platforms);
-  return `<h3>本次资料</h3>${docRows(selectedDocs())}<div class="inline-actions">${button('upload','上传','plus','quiet sm')}${button('paste','粘贴',null,'quiet sm')}${button('library','资料库',null,'quiet sm')}</div><h3>客户档案</h3>${c ? `<dl class="plain-dl">${PROFILE_FIELDS.map(([key,label]) => `<div><dt>${label}</dt><dd>${e(key === 'name' ? c.name : c.profile?.[key] || '未填写')}</dd></div>`).join('')}</dl>${button('profile','编辑档案',null,'quiet sm')}` : button('choose-client','选择客户',null,'outline')}<h3>本次要求</h3><p>${e(s.options.note || '尚未填写')}</p><h3>任务安排</h3><dl class="plain-dl"><div><dt>关键词</dt><dd>${e(s.options.keywords.join('、') || '未填写')}</dd></div><div><dt>平台</dt><dd>${e(summary.text)}</dd></div><div><dt>计划篇数</dt><dd>${summary.count}</dd></div><div><dt>目标 AI</dt><dd>${e(s.options.models.join('、'))}</dd></div><div><dt>写作模型</dt><dd>${e(s.model)}</dd></div></dl>${a?.review ? `<details id="native-review"><summary>当前版本核查记录</summary><div class="fact-report">${e(valueText(a.review))}</div></details>` : ''}${mode==='chat'?`<h3>关键词与有效要求</h3>${keywordEditor()}<label class="field"><span>当前有效写作要求</span><textarea class="input" id="context-note" data-option="note" rows="6">${e(s.options.note)}</textarea></label>${button('platforms','调整平台与篇数',null,'outline sm')}${expandedOptions()}<h3>本次实验目标</h3>${targetsBlock('task-target')}`:''}${nativeArticleInfo(a)}${a ? `<h3>视频</h3><a class="button outline" href="/video/?client_id=${encodeURIComponent(c?.id || '')}&article_id=${a.id}&version_id=${a.current_version}">${icon('video')}制作视频</a><p class="helper">绑定当前采用版本 ${a.current_version}。使用此版本进入独立视频工作区。</p>` : ''}`;
+  const c = currentClient();
+  const profile = c ? `<details class="inspector-disclosure" id="inspector-client-profile">
+    <summary>客户档案 <span>${e(c.name)}</span></summary>
+    <dl class="plain-dl">${PROFILE_FIELDS.filter(([key]) => key !== 'name' && c.profile?.[key]).map(([key,label]) => `<div><dt>${label}</dt><dd>${e(c.profile[key])}</dd></div>`).join('')}</dl>
+    ${button('profile','编辑档案',null,'quiet sm')}
+  </details>` : button('choose-client','选择客户',null,'outline sm');
+  return `<div class="inspector-sections">
+    <section><h3>本次资料</h3>${docRows(selectedDocs(), { compact: true })}
+      <details class="inspector-disclosure" id="inspector-add-materials">
+        <summary>添加资料</summary>
+        <div class="inline-actions">${button('upload','上传','plus','quiet sm',importing)}${button('paste','粘贴',null,'quiet sm')}${button('library','资料库',null,'quiet sm')}</div>
+      </details>
+      ${importing ? '<p class="helper" role="status">正在保存原件并解析…</p>' : ''}
+    </section>
+    ${profile}
+    ${materialsVideoButton()}
+  </div>`;
+}
+function arrangementPanel() {
+  const { options, model } = client.state;
+  const summary = planSummary(options, client.platforms);
+  const chat = mode === 'chat';
+  return `<div class="inspector-sections">
+    <section>
+      ${chat ? `<label class="field"><span class="inspector-section-title">本次要求</span><textarea class="input" id="context-note" data-option="note" rows="3" placeholder="尚未填写">${e(options.note)}</textarea></label>` : `
+        <div class="spread"><h3>本次要求</h3>${button('step-1','编辑要求与关键词',null,'quiet sm')}</div>
+        <p class="inspector-requirement">${e(options.note || '尚未填写')}</p>`}
+    </section>
+    ${chat ? keywordEditor() : `<section><h3>目标搜索关键词</h3><p>${e(options.keywords.join('、') || '尚未填写')}</p></section>`}
+    <section>
+      <div class="spread"><h3>平台与篇数</h3>${button(chat?'platforms':'step-2','调整',null,'quiet sm',!!client.state.batch?.frozen,'aria-label="调整平台与篇数"')}</div>
+      <p>${e(summary.count ? summary.text : '尚未安排平台')}${summary.count ? ` · 共 ${summary.count} 篇` : ''}</p>
+    </section>
+    <details class="inspector-disclosure" id="inspector-advanced">
+      <summary>高级设置</summary>
+      <div class="details-content inspector-sections">
+        <section><h4>目标 AI</h4>${chat ? targetsBlock('task-target') : `<p>${e(options.models.join('、') || '尚未选择')}</p>`}</section>
+        <section><h4>写作模型</h4><p>${e(model || '尚未配置')}</p></section>
+        ${chat ? advancedFields() : ''}
+      </div>
+    </details>
+  </div>`;
+}
+function articleReferenceActions(a) {
+  const videoHref = narratedVideoHref(client.state.conversation, a);
+  return button('article-records','稿件信息与核查',null,'quiet sm') + (videoHref ?
+    button('generation-context','本版创作配置',null,'quiet sm') +
+    `<a class="button quiet sm" href="${e(videoHref)}">${icon('video')}制作视频</a>` : '');
+}
+function articleRecords() {
+  const a = currentArticle();
+  if (!a) return;
+  const review = a.review ? `<h3>当前版本核查记录</h3><div class="fact-report">${e(valueText(a.review))}</div>` : '';
+  dialog('稿件信息与核查', review + nativeArticleInfo(a), null);
 }
 function reviewScope(r) { return {review_id:r?.operation_id||r?.review_id,base_version:r?.base_version}; }
 function reviewKey(a,r) { return client.articleDraftKey(a?.id,reviewScope(r)); }
@@ -299,7 +399,8 @@ function reviewPanel() {
     const id=String(item.id??index),inputId=`suggestion-${id}`;
     return `<section class="suggestion" data-review-item="${e(id)}"><div class="suggestion-select"><input id="${e(inputId)}" type="checkbox" data-suggestion="${e(id)}" ${selectedSuggestions.has(id)?'checked':''} ${stale?'disabled':''}><label for="${e(inputId)}"><strong>${e(id)} · ${e(item.signal)}</strong></label></div><div class="suggestion-body"><small>${e(observation?item.position:item.scope||'')}${item.requires_material?' · 需要新增真实素材':''}</small><blockquote>${e(item.quote||'')}</blockquote><p>${e(item.problem||item.reason||'')}</p><p>${e(item.proposal||'')}</p>${item.requires_material?`<fieldset class="material-choice"><legend>这条如何处理</legend><label><input type="radio" name="material-${e(id)}" data-material-choice="${e(id)}" value="material" ${conservativeSuggestions.has(id)?'':'checked'} ${stale?'disabled':''}>补充素材</label><label><input type="radio" name="material-${e(id)}" data-material-choice="${e(id)}" value="conservative" ${conservativeSuggestions.has(id)?'checked':''} ${stale?'disabled':''}>仅删减或收紧</label><p class="helper">保守处理只删除或收紧现有表述，不补充经历、案例或数字。</p></fieldset>`:''}</div></section>`;
   };
-  return `${button('run-review',r?'重新通读当前版':'开始文风审阅','review','primary',a.locked||isOperationRunning()||operationBusy)}${operationRows([OPERATION_KIND.review,OPERATION_KIND.rewrite,OPERATION_KIND.revise])}${r?`<p class="helper">${e(r.reviewer||'文风审阅')} · 基于版本 ${e(r.base_version)}${stale?'；当前版本已变化，请重新审阅。':''}</p><p>${e(r.assessment)}</p><h3>修改建议 · ${(r.suggestions||[]).length}</h3>${(r.suggestions||[]).map((item,i)=>itemMarkup(item,i)).join('')}<div class="observations"><h3>观察项 · 可手动选择</h3>${(r.observations||[]).map((item,i)=>itemMarkup(item,i,true)).join('')||'<p>暂无观察项。</p>'}</div><hr><label class="field"><span>修改范围</span><select id="rewrite-mode">${[['full','允许全文重组'],['standard','标准调整'],['light','轻量修改']].map(([v,t])=>`<option value="${v}" ${rewriteMode===v?'selected':''}>${t}</option>`).join('')}</select></label><label class="field" style="margin-top:16px"><span>真实补充素材</span><textarea class="input" id="rewrite-material" placeholder="填写可用于正文的真实经历、数据或原文">${e(material)}</textarea><small>用于支持选择“补充素材”的建议。一般修改指令请使用正文下方“修改当前稿”。</small></label><p id="review-validation" class="error-text" role="alert">${e(reviewError)}</p>${button('rewrite','生成候选并做模型复核',null,'primary',a.locked||stale||isOperationRunning()||operationBusy)}${r.candidate?button('open-candidate','查看已有候选与差异',null,'outline'):''}`:'<p class="helper">审阅按需开始，保留当前正文。</p>'}`;
+  const blocked=a.locked||!a.current_version||isOperationRunning()||operationBusy||localEditor(a)?.dirty;
+  return `<div class="inline-actions">${button('run-review',r?'重新通读当前版':'开始文风审阅','review','primary',blocked)}${button('revise-dialog','提出修改',null,'outline',blocked)}${button('article-editorial','查看资料与核查','file','quiet sm',!a.current_version)}</div>${operationRows([OPERATION_KIND.review,OPERATION_KIND.rewrite,OPERATION_KIND.revise])}${r?`<p class="helper">${e(r.reviewer||'文风审阅')} · 基于版本 ${e(r.base_version)}${stale?'；当前版本已变化，请重新审阅。':''}</p><p>${e(r.assessment)}</p><h3>修改建议 · ${(r.suggestions||[]).length}</h3>${(r.suggestions||[]).map((item,i)=>itemMarkup(item,i)).join('')}<div class="observations"><h3>观察项 · 可手动选择</h3>${(r.observations||[]).map((item,i)=>itemMarkup(item,i,true)).join('')||'<p>暂无观察项。</p>'}</div><hr><label class="field"><span>修改范围</span><select id="rewrite-mode">${[['full','允许全文重组'],['standard','标准调整'],['light','轻量修改']].map(([v,t])=>`<option value="${v}" ${rewriteMode===v?'selected':''}>${t}</option>`).join('')}</select></label><label class="field" style="margin-top:16px"><span>真实补充素材</span><textarea class="input" id="rewrite-material" placeholder="填写可用于正文的真实经历、数据或原文">${e(material)}</textarea><small>用于支持选择“补充素材”的建议。可通过“提出修改”提交具体要求。</small></label><p id="review-validation" class="error-text" role="alert">${e(reviewError)}</p>${button('rewrite','生成候选并做模型复核',null,'primary',blocked||stale)}${r.candidate?button('open-candidate','查看已有候选与差异',null,'outline'):''}`:'<p class="helper">审阅按需开始，保留当前正文。</p>'}`;
 }
 function versionsPanel() {
   const a = currentArticle(), data = a && versionsData[a.id];
@@ -312,7 +413,7 @@ function settingsPanel() {
   if (!names.includes(s.model)) names.unshift(s.model);
   return `<h3>写作模型</h3><label class="field"><span>WorkBuddy 模型</span><select id="setting-model">${names.map(name => `<option ${name === s.model ? 'selected' : ''} value="${e(name)}">${e(name)}${models.length && !models.some(m => (typeof m === 'string' ? m : m.id || m.name) === name) ? '（当前目录未确认）' : ''}</option>`).join('')}</select></label>${button('provider-models','查询可用模型',null,'quiet sm')}<div class="form-grid" style="margin-top:20px"><label class="field"><span>Temperature</span><input type="number" id="setting-temperature" min="${e(limits.temperature.min)}" max="${e(limits.temperature.max)}" step="0.1" value="${e(settings.temperature ?? 0.7)}"></label><label class="field"><span>最大输出 Token</span><input type="number" id="setting-max-tokens" min="${e(limits.max_tokens.min)}" max="${e(limits.max_tokens.max)}" step="1" value="${e(settings.max_tokens || 8000)}"></label><label class="check-label field wide"><span><input type="checkbox" id="setting-title-prefix" ${settings.title_prefix ? 'checked' : ''}>标题附平台与账号前缀</span></label></div><label class="field" style="margin-top:20px"><span>默认品牌</span><input type="text" id="setting-brand" value="${e(settings.brand||'')}" placeholder="新建客户时预填，可在档案中清空"></label><label class="check-label" style="margin-top:14px"><input type="checkbox" id="setting-disable-thinking" ${settings.disable_thinking?'checked':''}>关闭模型深度思考</label>`;
 }
-const settingsSections=[['writing','写作模型'],['platforms','发布平台'],['targets','目标 AI'],['preferences','抓取偏好'],['risks','风险清单']];
+const settingsSections=[['writing','写作模型'],['platforms','发布平台'],['targets','目标 AI'],['preferences','抓取偏好'],['risks','风险清单'],['appearance','外观']];
 function captureSettings() {
   if(!settingsSession?.current)return;
   settingsSession.current.values=$$('input,textarea,select',$('#settings-content')).map(el=>({value:el.value,checked:el.checked}));
@@ -333,6 +434,11 @@ function catalogueMarkup(kind) {
 function openSettings(section='writing',reset=false) {
   if(!settingsSession)settingsSession={section,views:new Map()};
   captureSettings();settingsSession.section=section;
+  if (section === 'appearance') {
+    const checked = paperMotionEnabled() ? 'checked' : '';
+    settingsDisplay('外观', `<label class="check-label"><input type="checkbox" data-paper-motion-toggle aria-describedby="paper-motion-description" ${checked}>纸页动效</label><p class="helper" id="paper-motion-description">用于本次安排、新稿提示和使用指南里的写作演示。开关即时生效，并记住此浏览器的选择。</p>`, null, {settingsMain:true});
+    return;
+  }
   if(reset)settingsSession.views.delete(section);
   const saved=settingsSession.views.get(section);
   if(saved){settingsDisplay(saved.title,saved.html,saved.submit,saved.options);$$('input,textarea,select',$('#settings-content')).forEach((el,i)=>{if(saved.values?.[i]){el.value=saved.values[i].value;el.checked=saved.values[i].checked;}});return;}
@@ -342,8 +448,8 @@ function openSettings(section='writing',reset=false) {
 }
 function inspector() {
   if (!panel) return '';
-  const titles = { sources: '资料与本次安排', review: '文风审阅', versions: '稿件版本', settings: '工作台设置' };
-  return `<aside class="inspector" aria-label="${titles[panel]}"><div id="inspector-resizer" class="inspector-resizer" role="separator" aria-label="调整辅助面板宽度" aria-orientation="vertical" tabindex="0"></div><header class="inspector-head"><h2>${titles[panel]}</h2>${iconButton('close-panel','关闭辅助面板','close')}</header><div class="inspector-body" id="inspector-body">${({ sources:sourcesPanel, review:reviewPanel, versions:versionsPanel, settings:settingsPanel })[panel]()}</div></aside>`;
+  const titles = { sources: '资料', arrangement: '本次安排', review: '文风审阅', versions: '稿件版本', settings: '工作台设置' };
+  return `<aside class="inspector" data-inspector-view="${panel}" aria-label="${titles[panel]}"><div id="inspector-resizer" class="inspector-resizer" role="separator" aria-label="调整辅助面板宽度" aria-orientation="vertical" tabindex="0"></div><header class="inspector-head"><h2>${titles[panel]}</h2>${iconButton('close-panel','关闭辅助面板','close')}</header><div class="inspector-body" id="inspector-body">${({ sources:sourcesPanel, arrangement:arrangementPanel, review:reviewPanel, versions:versionsPanel, settings:settingsPanel })[panel]()}</div></aside>`;
 }
 
 function freezeTaskInputs() {
@@ -358,18 +464,21 @@ function freezeTaskInputs() {
 
 function render() {
   if (composing) { renderPending = true; return; }
+  if(lastTask && client.state.conversation?.id && lastTask!==client.state.conversation.id && $('#root>.app') && !taskPresentation.applying){taskPresentation.present(render);return;}
   const previousTask=lastTask,previousArticle=renderedArticleId;
   const following=captureFollowing($('#root')),oldComposer=$('.chat-compose-area')?.getBoundingClientRect();
   const active = document.activeElement, focusId = active?.id, focusAction=active?.dataset.action;
   const rawValue=active?.matches('textarea,input[type=text],input[type=number],input[type=search]')?active.value:null;
   const selection = active?.selectionStart != null ? [active.selectionStart, active.selectionEnd] : null;
-  const scrolls = ['workspace','recent','inspector-body','article-scroll'].map(id => [id,$('#'+id)?.scrollTop || 0]);
+  const scrollIds = ['workspace','recent','article-scroll'];
+  if ($('.inspector')?.dataset.inspectorView === panel && previousTask === client.state.conversation?.id) scrollIds.push('inspector-body');
+  const scrolls = scrollIds.map(id => [id,$('#'+id)?.scrollTop || 0]);
   const details = new Map($$('details[id]', $('#root')).map(d => [d.id,d.open]));
   const s = client.state;
   if(wasWriting&&!client.activeJob&&s.job?.status==='done'&&s.articles.length&&draftPanelState().view==='live'){selectedId=s.articles.filter(a=>a.current_version!=null&&!a.locked).at(-1)?.id??selectedId;}
   wasWriting=client.activeJob;
   if (s.conversation?.id !== lastTask) {
-    lastTask = s.conversation?.id; reviews = {}; versionsData = {}; selectedId = null;selectedReviewId=null;
+    lastTask = s.conversation?.id; modeViews.clear(); modeSwitcher.reset(); stepGeneration++; reviews = {}; versionsData = {}; selectedId = null;selectedReviewId=null;
     surface = client.activeJob ? 'live' : s.articles.length ? 'articles' : 'compose';
     step = client.activeJob ? 3 : s.articles.length ? 4 : 1;
   }
@@ -377,7 +486,7 @@ function render() {
     $('#root').innerHTML = `<div class="boot-state"><h1>方立</h1><p>${e(s.error || '正在打开工作台…')}</p>${s.loaded ? '<p>请确认本机工作台服务已启动，然后刷新页面。</p>' : ''}</div>`; return;
   }
   document.documentElement.style.setProperty('--sidebar', `${s.ui.sidebarWidth}px`);
-  const html = `<div class="app ${s.ui.collapsed ? 'collapsed' : ''}">${sidebar(s)}<button class="mobile-scrim" data-action="collapse" aria-label="关闭任务导航"></button><main class="main">${topbar(s)}<div class="workspace-notices">${customerArea?'':notices(s)}</div><div class="content-wrap"><div class="workspace" id="workspace" tabindex="-1">${customerArea ? customers.view() : mode === 'zip' ? zipView() : chatWorkspace()}</div>${!customerArea||panel==='settings'?inspector():''}</div></main></div>`;
+  const html = `<div class="app ${s.ui.collapsed ? 'collapsed' : ''}">${sidebar(s)}<button class="mobile-scrim" data-action="collapse" aria-label="关闭任务导航"></button><main class="main">${topbar(s)}<div class="workspace-notices">${customerArea?'':notices(s)}</div><div class="content-wrap"><div class="workspace" id="workspace" tabindex="-1" data-workspace-view="${customerArea?'customers':mode==='zip'?'zip-'+step:'chat'}" data-task-id="${e(s.conversation?.id||'')}">${customerArea ? customers.view() : mode === 'zip' ? zipView() : chatWorkspace()}</div>${!customerArea||panel==='settings'?inspector():''}</div></main></div>`;
   const template=document.createElement('template');template.innerHTML=html;
   const desiredParts=new Map(['.sidebar','.topbar','.workspace-notices','.workspace','.inspector'].map(selector=>[selector,$(selector,template.content)?.outerHTML]));
   const fresh=template.content,oldApp=$('#root>.app');
@@ -387,7 +496,7 @@ function render() {
     oldApp.className=$('.app',fresh).className;
     for(const selector of ['.sidebar','.topbar','.workspace-notices','.workspace']){
       const next=$(selector,fresh),old=$(selector,$('#root')),key=next?.outerHTML;
-      if(old&&next&&renderParts.get(selector)!==key){if(selector==='.workspace')reconcile(old,next);else old.replaceWith(next);}
+      if(old&&next&&renderParts.get(selector)!==key){if(selector==='.workspace'){old.dataset.workspaceView=next.dataset.workspaceView;old.dataset.taskId=next.dataset.taskId;reconcile(old,next);}else old.replaceWith(next);}
     }
     const next=$('.inspector',fresh),old=$('.inspector',$('#root'));
     if(next&&!(old&&panel==='review'&&reviewKey===lastInspectorKey)){
@@ -398,17 +507,19 @@ function render() {
   lastInspectorKey=reviewKey;renderedArticleId=currentArticle()?.id;
   freezeTaskInputs();
   for (const [id, open] of details) if ($('#'+id)) $('#'+id).open = open;
-  for (const [id, top] of scrolls) if ($('#'+id)) $('#'+id).scrollTop = top;
+  for (const [id, top] of scrolls) if ($('#'+id)) restoreReadingScroll($('#'+id), top);
+  syncReadingLayout($('#workspace'), renderedArticleId);
   const focusTarget=focusId?$('#'+CSS.escape(focusId)):focusAction?$(`[data-action="${CSS.escape(focusAction)}"]`):null;
   if (focusTarget && previousTask===s.conversation?.id && (!['article-title','article-body','revise-instruction'].includes(focusId)||previousArticle===currentArticle()?.id)) {
     const next = focusTarget;if(rawValue!==null&&focusId!=='message-input')next.value=rawValue; next.focus({ preventScroll: true });
     if (selection && next.setSelectionRange && !['number','checkbox'].includes(next.type)) try { next.setSelectionRange(...selection); } catch {}
   }
   bindResize();bindInspectorResize();fitMessageInput();setupLiveUI($('#root'),{persist:()=>client.persist(),ui:s.ui});restoreFollowing($('#root'),previousTask===s.conversation?.id?following:[]);
-  if(oldComposer&&previousTask===s.conversation?.id&&!matchMedia('(prefers-reduced-motion: reduce)').matches){const next=$('.chat-compose-area'),rect=next?.getBoundingClientRect();if(rect&&Math.abs(oldComposer.top-rect.top)>40&&oldComposer.width===rect.width)next.animate([{transform:`translateY(${oldComposer.top-rect.top}px)`},{transform:'translateY(0)'}],{duration:280,easing:'cubic-bezier(.16,1,.3,1)'});}
+  updatePaperFeedback(s, $('#workspace'));
+  if(oldComposer&&previousTask===s.conversation?.id&&!document.documentElement.hasAttribute('data-task-transition')&&!matchMedia('(prefers-reduced-motion: reduce)').matches){const next=$('.chat-compose-area'),rect=next?.getBoundingClientRect();if(rect&&Math.abs(oldComposer.top-rect.top)>40&&oldComposer.width===rect.width)next.animate([{transform:`translateY(${oldComposer.top-rect.top}px)`},{transform:'translateY(0)'}],{duration:280,easing:'cubic-bezier(.16,1,.3,1)'});}
   if(!modal.open&&mode==='chat'&&surface==='compose'&&(previousTask!==s.conversation?.id||document.activeElement===document.body))$('#message-input')?.focus({preventScroll:true});
 }
-const customers=new CustomersWorkspace(client,{render,toast,openTask:async id=>{if(client.state.dirty)await client.saveDraft();customerArea=false;await client.load(id);history.replaceState(null,'',`${location.pathname}?conversation=${encodeURIComponent(id)}`);render();},newTask:async id=>{customerArea=false;await client.createConversation(id);surface='compose';step=1;history.replaceState(null,'',`${location.pathname}?conversation=${encodeURIComponent(client.state.conversation.id)}`);render();}});
+const customers=new CustomersWorkspace(client,{render,toast,openTask:async id=>{if(client.state.dirty)await client.saveDraft();customerArea=false;if(!await client.load(id))return;history.replaceState(null,'',`${location.pathname}?conversation=${encodeURIComponent(id)}`);render();},newTask:async id=>{customerArea=false;await client.createConversation(id);surface='compose';step=1;history.replaceState(null,'',`${location.pathname}?conversation=${encodeURIComponent(client.state.conversation.id)}`);render();}});
 client.subscribe(()=>render());
 document.addEventListener('compositionstart', () => composing = true);
 document.addEventListener('compositionend', () => { composing = false; if (renderPending) { renderPending = false; render(); } });
@@ -516,7 +627,7 @@ async function interview() {
   if(!await requireTask())return;
   if(messageTarget()==='article')return reviseFromChat();
   pendingChat={id:client.state.conversation.id,text:client.messageDraft()};operationBusy=true;render();
-  try { const done=await client.submitMessage();if(done){surface='compose';toast('需求已整理，可继续补充或开始写作');} }
+  try { const done=await client.submitMessage();if(done){surface='compose';} }
   finally {pendingChat=null;operationBusy=false;render();$('#message-input')?.focus();}
 }
 function confirmPlan(one=false) {
@@ -549,7 +660,7 @@ function nativeActionDialog(kind) {
     try { operationId=await client.beginArticleOperation(a.id,kind,regenerate?{extra_note:String(data.get('extra_note')||'').trim()}:{}); }
     catch(error){operationBusy=false;render();throw error;}
     modal.close();
-    act(async()=>{try {const result=await client.watchOperation(operationId);if(!result||client.state.conversation?.id!==cid)return;versionsData[a.id]=null;surface='articles';step=4;panel='sources';toast(regenerate?'已重新写作并核查，当前采用新版本':'再次核查已完成，请查看当前采用稿');}finally{operationBusy=false;render();}});
+    act(async()=>{try {const result=await client.watchOperation(operationId);if(!result||client.state.conversation?.id!==cid)return;versionsData[a.id]=null;surface='articles';step=4;toast(regenerate?'已重新写作并核查，当前采用新版本':'再次核查已完成，请查看当前采用稿');}finally{operationBusy=false;render();}});
     return false;
   },{label:regenerate?'重新写作并核查':'开始再次核查'});
 }
@@ -566,7 +677,55 @@ async function downloadFile(url,filename) {
   const blob=await response.blob(),link=document.createElement('a'),objectUrl=URL.createObjectURL(blob);link.href=objectUrl;link.download=filename;link.click();setTimeout(()=>URL.revokeObjectURL(objectUrl),2000);
 }
 async function archiveTask() {client.assertSettled();if(client.state.dirty)await client.saveDraft();await downloadFile(client.path('/archive'),`方立-任务归档-${client.state.conversation.id}.zip`);toast('本地归档已下载');}
-async function articleOperation(kind) {
+function acceptedExpressionDialog() {
+  const a=currentArticle();if(!a?.current_version)return;
+  const path=client.articlePath(a.id,'/accepted-expressions');
+  dialog('保存为认可表达',`<p class="helper">${e(a.title)} · 采用版本 ${e(a.current_version)}。后续创作可借鉴写法。</p>
+    <label class="field"><span>认可范围</span><select name="selection"><option value="excerpt">选段</option><option value="article">整篇正文</option></select></label>
+    <label class="field"><span>在正文原文中选中要保存的文字</span><textarea class="input" id="accepted-source" rows="8" readonly></textarea></label>
+    <label class="field"><span>适用形式</span><select name="medium"><option value="article">${e(a.platform_name)} · ${e(a.fmt)}</option><option value="video">短视频 · 页面式口播</option></select></label>
+    <label class="field"><span>写法用途</span><input name="purpose" maxlength="200" placeholder="例如用一个具体场景带出操作步骤" required></label>`,async data=>{
+    const selection=data.get('selection'),source=$('#accepted-source',modal);
+    const excerpt=source.value.slice(source.selectionStart,source.selectionEnd).trim();
+    if(selection==='excerpt'&&!excerpt)throw new Error('请先在正文原文中选中要保存的文字');
+    await client.api(path,'POST',{expected_version:a.current_version,selection,medium:data.get('medium'),
+      purpose:data.get('purpose'),...(selection==='excerpt'?{excerpt}:{})});
+    toast('认可表达已保存');
+  });
+  $('#accepted-source',modal).value=a.body_md||'';
+  $('[name=selection]',modal).onchange=event=>{
+    $('#accepted-source',modal).closest('label').hidden=event.target.value==='article';
+  };
+}
+function reviseDialog() {
+  const a=currentArticle();if(!a?.current_version)return;
+  const cid=client.state.conversation.id;
+  dialog('提出修改',`<p class="helper">基于版本 ${e(a.current_version)} 生成候选，完成后可查看前后差异。</p>
+    <label class="field"><span>对当前稿的修改要求</span><textarea class="input" name="instruction" required>${e(revisionInstruction(a))}</textarea></label>`,async data=>{
+    const current=currentArticle();
+    if(client.state.conversation?.id!==cid||current?.id!==a.id||current.current_version!==a.current_version)
+      throw new Error('当前正文版本已变化，请重新打开后修改');
+    const instruction=String(data.get('instruction')||'').trim();
+    if(!instruction)throw new Error('请填写对当前稿的修改要求');
+    client.setArticleDraft(a.id,{instruction});
+    await articleOperation('revise',instruction);
+  },{label:'生成修改候选'});
+}
+async function articleEditorialDialog() {
+  const a=currentArticle();if(!a?.current_version)return;
+  const cid=client.state.conversation.id;
+  const value=await client.api(client.articlePath(a.id,`/editorial?version_id=${a.current_version}`));
+  if(client.state.conversation?.id!==cid||currentArticle()?.id!==a.id||currentArticle()?.current_version!==value.version_id)return;
+  dialog('资料与核查',articleEditorialMarkup(value,e),null,{wide:true});
+  $('#modal-body').onclick=event=>{
+    const button=event.target.closest('[data-editorial-source]');if(!button)return;
+    const source=$(`[data-editorial-document="${button.dataset.editorialSource}"]`,modal);
+    source.open=true;
+    $('summary',source).focus();
+    source.scrollIntoView({block:'nearest'});
+  };
+}
+async function articleOperation(kind, explicitInstruction) {
   const a=currentArticle();if(!a)return; if(localEditor(a)?.dirty)throw new Error('请先保存当前编辑，再处理这个版本');
   const cid=client.state.conversation.id;
   let selection;
@@ -587,7 +746,7 @@ async function articleOperation(kind) {
       if(!result||client.state.conversation?.id!==cid)return;
       r.candidate=result.candidate_version; await compareDialog(a.id,result.candidate_version,result);
     } else {
-      const instruction=revisionInstruction(a).trim();if(!instruction)throw new Error('请填写对当前稿的修改要求');
+      const instruction=(explicitInstruction??revisionInstruction(a)).trim();if(!instruction)throw new Error('请填写对当前稿的修改要求');
       const result=await client.articleOperation(a.id,'revise',{instruction});if(!result||client.state.conversation?.id!==cid)return;await compareDialog(a.id,result.candidate_version,result);
     }
   } finally {operationBusy=false;render();}
@@ -598,13 +757,32 @@ async function compareDialog(aid,candidate,result={}) {
   const records=Array.isArray(data.review_records) ? data.review_records.find(x=>x.candidate_version===candidate)||{} : data.review_records||{};
   const fact=result.fact_check||data.review||data.candidate?.review||{};
   const changes=result.changes||data.candidate?.metadata?.changes||[],skipped=result.skipped||data.candidate?.metadata?.skipped||[];
-  dialog('版本全文与差异',`<p class="helper">候选未采用前，默认查看与导出仍使用当前采用版 ${a.current_version}。</p><div class="compare-grid"><section><h3>原稿 · 版本 ${e(data.base?.id||data.base?.version_id||a.current_version)}</h3><div class="compare-copy rendered-copy"><h3>${e(base.title||a.title)}</h3>${markdown(readingBody(base))}</div></section><section><h3>候选 / 历史稿 · 版本 ${e(candidate)}</h3><div class="compare-copy rendered-copy"><h3>${e(next.title)}</h3>${markdown(readingBody(next))}</div></section></div><details id="compare-diff" open><summary>前后差异</summary><pre class="diff-text">${e(valueText(data.diff||result.changes||'服务端未提供差异摘要，请对照两侧全文。'))}</pre></details><details id="candidate-fact" open><summary>${fact.readonly===true?'一次只读模型复核':['zip','zip_initial','zip_regenerate','zip_regenerate_draft','zip_audit'].includes(data.candidate?.origin)?'原生事实核查 · 可修正正文':'此版本核查状态'}</summary><div class="fact-report">${factMarkup(fact)}</div></details>${changes.length?`<details id="candidate-changes"><summary>模型修改清单 · ${changes.length} 条</summary>${changes.map(text=>`<p>${e(text)}</p>`).join('')}</details>`:''}${skipped.length?`<details id="candidate-skipped"><summary>其他处理说明 · 原返回</summary>${skipped.map(text=>`<p>${e(text)}</p>`).join('')}</details>`:''}<section class="saved-review"><h3>实际审阅记录</h3><div class="review-text">${records.codex_review?markdown(records.codex_review):'<p class="helper">尚无 Codex 意见记录。</p>'}</div>${records.user_review?`<h4>用户意见</h4><div class="review-text">${markdown(records.user_review)}</div>`:'<p class="helper">用户尚未提交审阅意见。</p>'}</section><details id="edit-review-record"><summary>编辑意见记录</summary><div class="form-grid record-grid"><label class="field"><span>Codex 审阅意见 · 真实记录</span><textarea class="input" name="codex_review" placeholder="尚未提交 Codex 意见；有真实审阅后再记录。">${e(records.codex_review||'')}</textarea></label><label class="field"><span>你的意见</span><textarea class="input" name="user_review" placeholder="记录你认可或仍需调整的地方">${e(records.user_review||'')}</textarea></label></div><div class="inline-actions" style="margin-top:14px"><button type="button" class="button outline" id="save-review-record">保存双方意见</button><span id="record-status" class="helper">${records.codex_review ? '已有 Codex 意见记录' : '尚无 Codex 意见记录'}</span></div></details>`,a.current_version===candidate ? null : async()=>{if(localEditor(a)?.dirty)throw new Error('请先保存人工编辑，再采用版本');await client.selectVersion(aid,candidate);versionsData[aid]=null;toast('已明确采用，此版本用于默认导出');},{wide:true,label:'采用此版并用于导出'});
+  dialog('版本全文与差异',`${fontSizeControl('reading',client.state.ui)}<p class="helper">候选未采用前，默认查看与导出仍使用当前采用版 ${a.current_version}。</p><div class="compare-grid"><section><h3>原稿 · 版本 ${e(data.base?.id||data.base?.version_id||a.current_version)}</h3><div class="compare-copy rendered-copy"><h3>${e(base.title||a.title)}</h3>${markdown(readingBody(base))}</div></section><section><h3>候选 / 历史稿 · 版本 ${e(candidate)}</h3><div class="compare-copy rendered-copy"><h3>${e(next.title)}</h3>${markdown(readingBody(next))}</div></section></div><details id="compare-diff" open><summary>前后差异</summary><pre class="diff-text">${e(valueText(data.diff||result.changes||'服务端未提供差异摘要，请对照两侧全文。'))}</pre></details><details id="candidate-fact" open><summary>${fact.readonly===true?'一次只读模型复核':['zip','zip_initial','zip_regenerate','zip_regenerate_draft','zip_audit'].includes(data.candidate?.origin)?'原生事实核查 · 可修正正文':'此版本核查状态'}</summary><div class="fact-report">${factMarkup(fact)}</div></details>${changes.length?`<details id="candidate-changes"><summary>模型修改清单 · ${changes.length} 条</summary>${changes.map(text=>`<p>${e(text)}</p>`).join('')}</details>`:''}${skipped.length?`<details id="candidate-skipped"><summary>其他处理说明 · 原返回</summary>${skipped.map(text=>`<p>${e(text)}</p>`).join('')}</details>`:''}<section class="saved-review"><h3>实际审阅记录</h3><div class="review-text">${records.codex_review?markdown(records.codex_review):'<p class="helper">尚无 Codex 意见记录。</p>'}</div>${records.user_review?`<h4>用户意见</h4><div class="review-text">${markdown(records.user_review)}</div>`:'<p class="helper">用户尚未提交审阅意见。</p>'}</section><details id="edit-review-record"><summary>编辑意见记录</summary><div class="form-grid record-grid"><label class="field"><span>Codex 审阅意见 · 真实记录</span><textarea class="input" name="codex_review" placeholder="尚未提交 Codex 意见；有真实审阅后再记录。">${e(records.codex_review||'')}</textarea></label><label class="field"><span>你的意见</span><textarea class="input" name="user_review" placeholder="记录你认可或仍需调整的地方">${e(records.user_review||'')}</textarea></label></div><div class="inline-actions" style="margin-top:14px"><button type="button" class="button outline" id="save-review-record">保存双方意见</button><span id="record-status" class="helper">${records.codex_review ? '已有 Codex 意见记录' : '尚无 Codex 意见记录'}</span></div></details>`,a.current_version===candidate ? null : async()=>{if(localEditor(a)?.dirty)throw new Error('请先保存人工编辑，再采用版本');await client.selectVersion(aid,candidate);versionsData[aid]=null;toast('已明确采用，此版本用于默认导出');},{wide:true,label:'采用此版并用于导出'});
   $('#save-review-record').onclick=()=>act(async()=>{await client.reviewRecord(aid,{candidate_version:candidate,codex_review:$('[name=codex_review]',modal).value,user_review:$('[name=user_review]',modal).value});$('#record-status').textContent='双方意见已留档';});
 }
 async function exportDialog() {
   const articles=client.state.articles.filter(a=>!a.locked);
   const omitted=client.state.ui.exportOmitted?.[client.state.conversation.id]||[];
-  dialog('导出当前采用稿',`<p class="helper">导出默认使用 ZIP 成稿；人工保存或明确采用候选后，使用相应采用版。</p><label class="field"><span>格式</span><select name="fmt"><option value="docx">Word（DOCX）</option><option value="md">Markdown</option><option value="txt">纯文本</option><option value="json">JSON</option></select></label><div class="inline-actions"><button type="button" class="button quiet sm" data-export-pick="all">全选</button><button type="button" class="button quiet sm" data-export-pick="none">全不选</button></div><div class="library-list">${articles.map(a=>`<label><input type="checkbox" name="ids" value="${a.id}" ${omitted.includes(String(a.id))?'':'checked'}><span>${e(a.title)}<small>${e(a.platform_name||a.platform||'')} · ${accountName(a.account_type)} · 版本 ${a.current_version}</small></span></label>`).join('')}</div>`,async data=>{const ids=data.getAll('ids');if(!ids.length)throw new Error('至少选择一篇稿件');const fmt=data.get('fmt');const url=client.path(`/export?fmt=${encodeURIComponent(fmt)}&ids=${ids.map(encodeURIComponent).join(',')}`);const response=await fetch(url);if(!response.ok){let d;try{d=await response.json();}catch{}throw new Error(d?.error||'导出失败，请确认后台状态');}const blob=await response.blob();const link=document.createElement('a'),objectUrl=URL.createObjectURL(blob);link.href=objectUrl;link.download=`方立-${client.state.conversation.id}.${fmt}`;link.click();setTimeout(()=>URL.revokeObjectURL(objectUrl),2000);toast('已导出所选采用版本');},{label:'导出文件'});
+  dialog('导出当前采用稿',`<p class="helper">选择要下载的当前采用稿。正文格式适合交付，任务资料适合留档。</p><label class="field"><span>格式</span><select name="fmt"><option value="docx">正文 Word（DOCX）</option><option value="md">正文 Markdown</option><option value="txt">正文 TXT</option><option value="json">任务资料 JSON</option></select></label><div class="inline-actions"><button type="button" class="button quiet sm" data-export-pick="all">全选</button><button type="button" class="button quiet sm" data-export-pick="none">全不选</button></div><div class="library-list">${articles.map(a=>`<label><input type="checkbox" name="ids" value="${a.id}" ${omitted.includes(String(a.id))?'':'checked'}><span>${e(a.title)}<small>${e(a.platform_name||a.platform||'')} · ${accountName(a.account_type)} · 版本 ${a.current_version}</small></span></label>`).join('')}</div>`,async data=>{
+    const ids=data.getAll('ids');
+    if(!ids.length)throw new Error('至少选择一篇稿件');
+    const fmt=data.get('fmt');
+    const query=new URLSearchParams({fmt,ids:ids.join(',')});
+    if(fmt==='md'||fmt==='txt')query.set('scope','body');
+    const response=await fetch(client.path(`/export?${query}`));
+    if(!response.ok){
+      let detail;
+      try{detail=await response.json();}catch{}
+      throw new Error(detail?.error||'导出失败，请确认后台状态');
+    }
+    const blob=await response.blob();
+    const link=document.createElement('a'),objectUrl=URL.createObjectURL(blob);
+    link.href=objectUrl;
+    link.download=`方立-${client.state.conversation.id}.${fmt}`;
+    link.click();
+    setTimeout(()=>URL.revokeObjectURL(objectUrl),2000);
+    toast('已导出所选采用版本');
+  },{label:'导出文件'});
 }
 function rememberExportSelection() {
   const omitted=$$('input[name="ids"]',modal).filter(input=>!input.checked).map(input=>input.value);
@@ -652,11 +830,13 @@ document.addEventListener('click', event => {
       customers:async()=>{if(client.state.dirty)await client.saveDraft();panel=null;customerArea=true;history.replaceState(null,'',`${location.pathname}?area=customers`);await customers.enter();},'new-task':chooseClient,'choose-client':chooseClient,'new-client':()=>profileDialog(false),profile:()=>currentClient()?profileDialog(true):profileDialog(false),
       'find-task':()=>findTask(),
       'mode-chat':()=>switchMode('chat'),'mode-zip':()=>switchMode('zip'),platforms:platformDialog,upload,paste,library,
-      sources:()=>{panel=panel==='sources'?null:'sources';render();},review:()=>{panel=panel==='review'?null:'review';render();},settings:()=>{panel=null;render();openSettings();},'close-panel':()=>{panel=null;render();},
+      sources:()=>{panel=panel==='sources'?null:'sources';render();},arrangement:()=>{panel=panel==='arrangement'?null:'arrangement';render();},review:()=>{panel=panel==='review'?null:'review';render();},settings:()=>{panel=null;render();openSettings();},'close-panel':()=>{panel=null;render();},
       compose:()=>{customers.leave();customerArea=false;history.replaceState(null,'',location.pathname+(client.state.conversation?`?conversation=${encodeURIComponent(client.state.conversation.id)}`:''));surface='compose';step=1;render();},articles:()=>{surface='articles';step=4;showDraft('article');render();},live:()=>{surface='live';step=3;showDraft('live');render();},
-      'open-draft':()=>{showDraft(client.activeJob?'live':'article');render();},'close-draft':()=>{draftPanelState().open=false;client.persist();render();$('.reopen-draft')?.focus();},'follow-stream':()=>{const scroll=$('#stream-scroll');if(scroll){scroll.dataset.follow='true';scroll.scrollTop=scroll.scrollHeight;$('.new-content').hidden=true;}},
+      'open-draft':()=>{showDraft(client.activeJob?'live':'article');render();},'close-draft':()=>{draftPanelState().open=false;client.persist();render();$('.reopen-draft')?.focus();},'follow-stream':()=>{const scroll=$('#stream-scroll');if(scroll){scroll.dataset.follow='true';restoreReadingScroll(scroll,scroll.scrollHeight);$('.new-content').hidden=true;}},
       'step-1':()=>setStep(1),'step-2':()=>setStep(2),'step-4':()=>setStep(4),
-      'add-keyword':addKeyword,'detect-aliases':detectAliases,
+      'add-keyword':addKeyword,'detect-aliases':detectAliases,'narrated-from-materials':openMaterialsVideo,
+      'article-records':articleRecords,
+      'generation-context':async()=>{const a=currentArticle();if(!a)return;const context=await client.api(`/api/workbench/video-context?client_id=${encodeURIComponent(client.state.conversation.client_id)}&article_id=${a.id}&version_id=${a.current_version}`);dialog('本版创作配置',generationContextMarkup(context),null);},
       start:()=>client.state.needsConfirmation?confirmPlan():start(),'write-one':()=>client.state.needsConfirmation?confirmPlan(true):start(false,true),stop:async()=>{await client.stop();toast('已请求暂停后续，当前篇继续收尾');},'confirm-plan':()=>confirmPlan(),'new-requirement':newRequirement,
       'clone-task':async()=>{const task=await client.cloneConversation();history.replaceState(null,'',`${location.pathname}?conversation=${encodeURIComponent(task.id)}`);panel=null;toast('已复用当前安排，创建未生成的新任务');},'delete-task':deleteTaskDialog,'archive-task':archiveTask,
       'native-regenerate':()=>nativeActionDialog('regenerate'),'native-audit':()=>nativeActionDialog('audit'),'delete-article':deleteArticleDialog,
@@ -666,13 +846,14 @@ document.addEventListener('click', event => {
       versions:async()=>{panel='versions';render();await loadVersions();},'load-versions':loadVersions,'version-preview':()=>compareDialog(currentArticle().id,Number(actionButton.dataset.version)),
       'version-select':async()=>{const a=currentArticle();if(localEditor(a)?.dirty)throw new Error('请先保存人工编辑，再恢复或采用版本');await client.selectVersion(a.id,Number(actionButton.dataset.version));await loadVersions();toast('已采用所选版本');},
       'run-review':()=>articleOperation('style-review'),rewrite:()=>articleOperation('style-rewrite'),revise:()=>articleOperation('revise'),'open-candidate':()=>compareDialog(currentArticle().id,reviewFor(currentArticle()).candidate),
+      'revise-dialog':reviseDialog,'accept-expression':acceptedExpressionDialog,'article-editorial':articleEditorialDialog,
       export:exportDialog,'reload-config':reloadConfig,'save-settings':saveSettings,'config-admin':configAdmin,'add-platform':()=>editPlatform(null),'add-target':()=>editTarget(null),'add-risk':()=>editRisk(null),
       'provider-models':async()=>{const d=await client.api('/api/workbench/provider-models');client.state.bootstrap.provider_models=d.models||d.provider_models||[];client.emit();toast('模型目录已更新');},
     };
     if(actions[action]){act(actions[action]);const menu=actionButton.closest('.toolbar-menu');if(menu)menu.open=false;}
     return;
   }
-  const task=event.target.closest('[data-task]'); if(task)act(async()=>{if(client.state.dirty)await client.saveDraft();customerArea=false;customers.leave();await client.load(task.dataset.task);history.replaceState(null,'',`${location.pathname}?conversation=${encodeURIComponent(task.dataset.task)}`);modal.close();if(innerWidth<=760)client.setUI({collapsed:true});await openGuideTarget(task.dataset.guideIntent);});
+  const task=event.target.closest('[data-task]'); if(task)act(async()=>{if(client.state.dirty)await client.saveDraft();customerArea=false;customers.leave();if(!await client.load(task.dataset.task))return;history.replaceState(null,'',`${location.pathname}?conversation=${encodeURIComponent(task.dataset.task)}`);modal.close();if(innerWidth<=760)client.setUI({collapsed:true});await openGuideTarget(task.dataset.guideIntent);});
   const doc=event.target.closest('[data-doc]');if(doc)showDocument(doc.dataset.doc);
   const remove=event.target.closest('[data-remove-doc]');if(remove)client.selectDocuments(client.state.documentIds.filter(id=>String(id)!==remove.dataset.removeDoc));
   const answer=event.target.closest('[data-answer]');if(answer){client.setMessageDraft(answer.dataset.answerText);act(()=>interview());}
@@ -703,9 +884,11 @@ document.addEventListener('input',event=>{
   else if(el.id==='rewrite-material'){clearReviewValidation();storeReviewDraft();}
 });
 document.addEventListener('change',event=>{
+  if(event.target.matches('[data-paper-motion-toggle]')){setPaperMotionEnabled(event.target.checked);return;}
   if(event.target.id==='message-target'){draftPanelState().target=event.target.value;client.persist();render();return;}
   const el=event.target;
   if(el.name==='ids'&&modal.contains(el))rememberExportSelection();
+  if (event.target.matches('select[data-font-size]')) { changeFontSize(event.target, client); return; }
   if(el.dataset.taskFormat){const formats=$$('[data-task-format]').filter(x=>x.dataset.taskFormat===el.dataset.taskFormat&&x.checked).map(x=>x.value);if(!formats.length){el.checked=true;toast('每个平台至少保留一种形态');return;}client.setOptions({format_overrides:{...client.state.options.format_overrides,[el.dataset.taskFormat]:formats}});}
   if(el.dataset.target){const models=client.state.options.models.filter(m=>m!==el.dataset.target);if(el.checked)models.push(el.dataset.target);client.setOptions({models});}
   if(el.id==='followup-enabled')client.setUI({followup:el.checked});
@@ -714,14 +897,36 @@ document.addEventListener('change',event=>{
   if(el.dataset.materialChoice){el.value==='conservative'?conservativeSuggestions.add(el.dataset.materialChoice):conservativeSuggestions.delete(el.dataset.materialChoice);clearReviewValidation();storeReviewDraft();}
   if(el.dataset.prefModel)act(async()=>{await client.api('/api/prefs','POST',{model_id:Number(el.dataset.prefModel),platform_id:Number(el.dataset.prefPlatform),level:el.value});const prefs=client.state.config.prefs||client.state.config.preferences||[];const pref=prefs.find(p=>String(p.model_id)===el.dataset.prefModel&&String(p.platform_id)===el.dataset.prefPlatform);if(pref)pref.level=el.value;else prefs.push({model_id:Number(el.dataset.prefModel),platform_id:Number(el.dataset.prefPlatform),level:el.value});toast('抓取偏好已保存');});
 });
-async function switchMode(nextMode) {
-  if(nextMode===mode&&!customerArea)return;
-  await client.saveDraft(nextMode);client.persist();
-  const path=nextMode==='zip'?'/workbench/zip/index.html':'/workbench/index.html';
-  intentionalNavigation=true;
-  location.href=path+(client.state.conversation?`?conversation=${encodeURIComponent(client.state.conversation.id)}`:'');
+function applyMode(nextMode) {
+  modeViews.set(mode,{step,surface,following:captureFollowing($('#root')),
+    scrolls:['#workspace','.chat-pane','#article-scroll'].map(selector=>[selector,$(selector)?.scrollTop||0])});
+  const saved=modeViews.get(nextMode)||{step:client.activeJob?3:client.state.articles.length?4:1,
+    surface:client.activeJob?'live':client.state.articles.length?'articles':'compose'};
+  mode=nextMode;document.body.dataset.mode=mode;
+  document.title=(mode==='zip'?'分步创作':'对话创作')+' · 方立';
+  customerArea=false;customers.leave();panel=null;
+  step=mode==='zip'&&client.activeJob?3:saved.step;surface=client.activeJob?'live':saved.surface;
+  const path=mode==='zip'?'/workbench/zip/index.html':'/workbench/index.html';
+  history.replaceState(history.state,'',path+(client.state.conversation?`?conversation=${encodeURIComponent(client.state.conversation.id)}`:''));
+  render();
+  for(const [selector,top] of saved.scrolls||[])if($(selector))restoreReadingScroll($(selector),top);
+  restoreFollowing($('#root'),saved.following||[]);
 }
-async function setStep(next) { if(client.state.conversation && client.state.dirty)await client.saveDraft();step=next;surface=next===4?'articles':next===3?'live':'compose';render();$('#workspace')?.scrollTo(0,0); }
+async function switchMode(nextMode) {
+  return modeSwitcher.select(nextMode,{force:customerArea});
+}
+async function setStep(next) {
+  if(![1,2,3,4].includes(next))return;
+  if(next===step){
+    if(panel==='arrangement'){panel=null;render();}
+    return;
+  }
+  const request=++stepGeneration,task=client.state.conversation?.id;
+  if(client.state.conversation&&client.state.dirty)await client.saveDraft();
+  if(request!==stepGeneration||task!==client.state.conversation?.id||mode!=='zip')return;
+  if(panel==='arrangement')panel=null;
+  step=next;surface=next===4?'articles':next===3?'live':'compose';render();$('#workspace')?.scrollTo(0,0);
+}
 function bindResize() {
   const resizer=$('#sidebar-resizer');if(!resizer)return;
   const setWidth=width=>{client.state.ui.sidebarWidth=Math.round(Math.max(190,Math.min(380,width)));document.documentElement.style.setProperty('--sidebar',`${client.state.ui.sidebarWidth}px`);resizer.setAttribute('aria-valuenow',client.state.ui.sidebarWidth);};
@@ -769,6 +974,7 @@ document.addEventListener('drop',event=>{if(!event.dataTransfer?.files.length)re
 window.addEventListener('resize',()=>{bindInspectorResize();fitMessageInput();setupLiveUI($('#root'),{persist:()=>client.persist(),ui:client.state.ui});});
 const elapsedTimer=setInterval(()=>{if(!document.hidden)tickElapsed();},1000);
 window.addEventListener('pagehide',()=>clearInterval(elapsedTimer));
+window.addEventListener('pagehide',()=>taskPresentation.dispose());
 window.addEventListener('pagehide',()=>{customers.dispose();clearTimeout(aliasTimer);client.persist();client.dispose();});
 window.matchMedia('(max-width:760px)').addEventListener('change',event=>{if(event.matches)client.setUI({collapsed:true});});
 window.addEventListener('beforeunload',event=>{if(!intentionalNavigation&&(client.state.dirty||Object.values(client.state.editors).some(ed=>ed.dirty))){event.preventDefault();event.returnValue='';}});

@@ -181,8 +181,8 @@ class CustomersAndBatches(unittest.TestCase):
         self.assertEqual(self.http('/api/workbench/batches/' + first['id'])['batch']['status'], 'done')
         self.assertEqual(self.http('/api/workbench/batches/' + second['id'])['batch']['status'], 'done')
         self.assertEqual(self.model.generated, 3)
-        requests = [r for r in self.model.requests if '平台画像' in r['messages'][0]['content']]
-        self.assertNotIn('后来更改公司', requests[1]['messages'][0]['content'])
+        requests = [r for r in self.model.requests if r['messages'][0]['content'] != prompts.AUDIT_RULES]
+        self.assertNotIn('后来更改公司', json.dumps(requests[1]['messages'], ensure_ascii=False))
         self.assertNotEqual(requests[0]['temperature'], requests[2]['temperature'])
         self.assertIn('第二版正文', requests[2]['messages'][1]['content'])
         audits = [r for r in self.model.requests if '事实核查员' in r['messages'][0]['content']]

@@ -488,6 +488,12 @@ class Workspace:
             c.execute('INSERT INTO wb_operations VALUES(?,?,?,?,?,?,?,?,?)', (ident, kind, conv, aid, 'running', '{}', '', t, t))
         return ident
 
+    def update_operation_reply(self, ident, text, complete):
+        result = {'understanding': text[:4000], 'reply_complete': bool(complete), 'partial': True}
+        with self.zip.conn() as c:
+            c.execute("UPDATE wb_operations SET result=?,updated_at=? WHERE id=? AND kind='interview' AND status='running'",
+                      (dumps(result), now(), ident))
+
     def finish_operation(self, ident, result=None, error='', status=None):
         status = status or ('error' if error else 'done')
         if status not in ('done', 'error', 'stopped', 'interrupted'):

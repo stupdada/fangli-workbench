@@ -23,3 +23,11 @@
 @media(prefers-reduced-motion:reduce){:root{scroll-behavior:auto}*,*:before,*:after{animation:none!important;transition:none!important}.reveal{opacity:1!important;transform:none!important}}
 @media(prefers-reduced-transparency:reduce){.site-nav{background:#fff;backdrop-filter:none}}
 @media(max-width:760px){.chapter-bar{padding-block:0}}
+
+#demo-paper-scene { display: block; width: 100%; height: auto; margin: 14px 0 18px; overflow: hidden; stroke: none; }
+#demo-paper-scene[hidden] { display: none; }
+#demo-paper-scene [data-paper-part] { transform-box: fill-box; transform-origin: center; }
+@media (max-width: 760px) {
+  #demo-paper-scene text { font-size: 17px; }
+  #demo-paper-scene [data-paper-part] text { font-size: 14px; }
+}

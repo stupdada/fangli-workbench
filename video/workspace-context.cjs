@@ -19,7 +19,7 @@ function contextFailure(status,value){
 }
 function createWorkspaceContext(base, fetchImpl=fetch) {
   const origin=localBase(base);
-  async function read(clientId, source) {
+  async function read(clientId, source, selection={}) {
     const url=new URL('/api/workbench/video-context',origin);
     if(clientId!==undefined){if(typeof clientId!=='string'||!clientId.trim()||clientId.length>100)throw fault(400,'CLIENT_INVALID');url.searchParams.set('client_id',clientId);}
     if(source){
@@ -27,6 +27,8 @@ function createWorkspaceContext(base, fetchImpl=fetch) {
       if(!Number.isSafeInteger(source.article_id)||source.article_id<1||!Number.isSafeInteger(source.version_id)||source.version_id<1)throw fault(400,'INVALID_INPUT','文章来源必须指定article_id和version_id');
       url.searchParams.set('article_id',source.article_id);url.searchParams.set('version_id',source.version_id);
     }
+    if(!source&&selection.conversation_id)url.searchParams.set('conversation_id',selection.conversation_id);
+    if(!source&&Array.isArray(selection.document_ids))url.searchParams.set('document_ids',selection.document_ids.join(','));
     let response;
     try{response=await fetchImpl(url,{redirect:'error',signal:AbortSignal.timeout(5000)});}catch{throw fault(503,'STORE_UNAVAILABLE','主工作台暂不可用');}
     let text;try{text=await response.text();}catch{throw fault(503,'STORE_UNAVAILABLE','主工作台暂不可用');}

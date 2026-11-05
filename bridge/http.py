@@ -1,10 +1,12 @@
 """Loopback-only same-origin HTTP surface. Native mutation routes are not mounted."""
 import base64
+import copy
 import http.client
 import json
 import mimetypes
 import os
 import re
+import shutil
 import threading
 import time
 import urllib.error
@@ -14,6 +16,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from app import generator, parsers, grouping
 from . import provider, exports, configuration
+from .batch_video import BatchVideoClient
+from .creation_context import fact_findings, key, video_projection, video_style
 from .errors import Problem, Missing, Conflict, Forbidden
 from .native import LocalStore
 from .service import Service, ROOT
@@ -67,15 +71,21 @@ class Server(ThreadingHTTPServer):
             raise Problem('视频现由主服务托管，请移除手填的--video-base')
         self.lease = DatabaseLease(db_path)
         try:
-            self.service = Service(LocalStore(db_path))
+            self.service = Service(LocalStore(db_path), boot_batches=False)
             super().__init__(address, Handler)
             private = Path(db_path).resolve().parent
             self.video = VideoProcess(f'http://127.0.0.1:{self.server_port}', private / 'video', private / 'logs')
+            self.service.batches.videos.client = BatchVideoClient(self.video.endpoint)
         except Exception:
             self.lease.close()
             raise
 
+    def serve_forever(self, poll_interval=.5):
+        self.service.batches.boot()
+        return super().serve_forever(poll_interval)
+
     def server_close(self):
+        self.service.batches.close()
         if hasattr(self, 'video'): self.video.stop()
         finished = self.service.close()
         super().server_close()
@@ -98,10 +108,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, *_): pass
 
-    def _send(self, status, body=b'', ctype='application/json; charset=utf-8', extra=None):
+    def _send(self, status, body=b'', ctype='application/json; charset=utf-8', extra=None, *, stream_size=None):
         self.send_response(status)
         self.send_header('Content-Type', ctype)
-        self.send_header('Content-Length', str(len(body)))
+        self.send_header('Content-Length', str(len(body) if stream_size is None else stream_size))
         self.send_header('Cache-Control', 'no-store')
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('Referrer-Policy', 'no-referrer')
@@ -109,7 +119,11 @@ class Handler(BaseHTTPRequestHandler):
         for key, value in (extra or {}).items(): self.send_header(key, value)
         self.end_headers()
         if self.command != 'HEAD':
-            try: self.wfile.write(body)
+            try:
+                if stream_size is None:
+                    self.wfile.write(body)
+                else:
+                    shutil.copyfileobj(body, self.wfile, 256 * 1024)
             except (BrokenPipeError, ConnectionResetError, OSError): pass
 
     def _json(self, data, status=200):
@@ -198,7 +212,16 @@ class Handler(BaseHTTPRequestHandler):
         if path in ('/api/workbench/bootstrap', '/api/bootstrap'): return self._json(s.bootstrap())
         if path == '/api/workbench/zip-config': return self._json(s.zip_config())
         if path == '/api/workbench/clients': return self._json({'clients': ws.clients()})
+        match = re.fullmatch(r'/api/workbench/clients/([^/]+)/intakes(?:/([^/]+))?', path)
+        if match:
+            cid, ident = match.groups()
+            return self._json({'intake': s.intake.get(cid, ident)} if ident else s.intake.latest(cid))
         if path == '/api/workbench/batches': return self._json({'batches': s.batches.list()})
+        match = re.fullmatch(r'/api/workbench/batches/([^/]+)/video-download', path)
+        if match:
+            stream, length = s.batches.video_download(match[1])
+            with stream:
+                return self._send(200, stream, 'application/zip', {'Content-Disposition': 'attachment; filename="batch-videos.zip"'}, stream_size=length)
         match = re.fullmatch(r'/api/workbench/batches/([^/]+)', path)
         if match: return self._json({'batch': s.batches.get(match[1])})
         match = re.fullmatch(r'/api/workbench/clients/([^/]+)(?:/(generation-plan|history))?', path)
@@ -223,14 +246,17 @@ class Handler(BaseHTTPRequestHandler):
         if match: return self._json(s.view(match[1]))
         match = re.fullmatch(r'/api/workbench/operations/([^/]+)', path)
         if match: return self._json({'operation': ws.operation(match[1])})
+        match = re.fullmatch(r'/api/workbench/operations/([^/]+)/stream', path)
+        if match: return self.interview_sse(match[1])
         match = re.fullmatch(r'/api/jobs/([^/]+)(/stream)?', path)
         if match:
             job = generator.get_job(match[1])
             if not job or not any(c['job_id'] == match[1] for c in ws.conversations()): raise Missing('任务不存在')
             return self.sse(match[1]) if match[2] else self._json({'job': job})
-        match = re.fullmatch(r'/api/workbench/conversations/([^/]+)/articles/(\d+)/(versions|compare)', path)
+        match = re.fullmatch(r'/api/workbench/conversations/([^/]+)/articles/(\d+)/(versions|compare|editorial)', path)
         if match:
             ident, aid, action = match[1], int(match[2]), match[3]
+            if action == 'editorial': return self._json(s.article_editorial(ident, aid, self.query_int(query, 'version_id')))
             with s.guard:
                 _, article = s.article_context(ident, aid)
                 if action == 'versions': return self._json({'current_version': article['current_version'], 'versions': ws.versions(aid), 'review_records': ws.review_records(aid)})
@@ -245,7 +271,9 @@ class Handler(BaseHTTPRequestHandler):
             if 'ids' in query:
                 if not raw or any(not v.strip().isdigit() for v in raw.split(',')): raise Problem('导出稿件ID不正确')
                 ids = [int(v.strip()) for v in raw.split(',')]
-            body, ctype, name = exports.export(s, match[1], (query.get('fmt') or ['docx'])[0], ids)
+            scope = query.get('scope', [None])
+            if len(scope) != 1: raise Problem('请选择一个导出范围')
+            body, ctype, name = exports.export(s, match[1], (query.get('fmt') or ['docx'])[0], ids, scope=scope[0])
             return self._send(200, body, ctype, {'Content-Disposition': "attachment; filename*=UTF-8''" + urllib.parse.quote(name)})
         match = re.fullmatch(r'/api/workbench/conversations/([^/]+)/archive', path)
         if match:
@@ -256,6 +284,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def route_write(self, method, path, body):
         s, ws = self.service, self.service.ws
+        match = re.fullmatch(r'/api/workbench/clients/([^/]+)/intakes/([^/]+)/claims/([a-f0-9]{64})/(search|review)', path)
+        if match and method == 'POST':
+            cid, ident, claim_key, action = match.groups()
+            handler = s.intake.search_claim if action == 'search' else s.intake.review_claim
+            return self._json(handler(cid, ident, claim_key, body))
+        match = re.fullmatch(r'/api/workbench/clients/([^/]+)/intakes(?:/([^/]+)/adopt)?', path)
+        if match and method == 'POST':
+            cid, ident = match.groups()
+            return self._json(s.intake.adopt(cid, ident, body) if ident else s.intake.start(cid, body))
         configured = configuration.write(s, method, path, body)
         if configured is not None: return self._json(configured)
         if path == '/api/workbench/video-service/restart' and method == 'POST':
@@ -284,6 +321,9 @@ class Handler(BaseHTTPRequestHandler):
             if set(body) != {'items'}: raise Problem('预检需包含items')
             return self._json(s.batches.preflight(body['items']))
         if path == '/api/workbench/batches' and method == 'POST': return self._json({'batch': s.batches.submit(body)})
+        match = re.fullmatch(r'/api/workbench/batches/([^/]+)/videos/([^/]+)/retry', path)
+        if match and method == 'POST':
+            return self._json({'batch': s.batches.retry_video(match[1], match[2], body)})
         match = re.fullmatch(r'/api/workbench/batches/([^/]+)/(stop|resume)', path)
         if match and method == 'POST':
             if match[2] == 'stop':
@@ -318,9 +358,11 @@ class Handler(BaseHTTPRequestHandler):
             if action == 'stop' and method == 'POST': return self._json(s.stop(ident))
         match = re.fullmatch(r'/api/workbench/operations/([^/]+)/stop', path)
         if match and method == 'POST': return self._json(s.cancel_operation(match[1]))
-        match = re.fullmatch(r'/api/workbench/conversations/([^/]+)/articles/(\d+)(?:/(select-version|style-review|style-rewrite|revise|review-record|regenerate|audit))?', path)
+        match = re.fullmatch(r'/api/workbench/conversations/([^/]+)/articles/(\d+)(?:/(select-version|style-review|style-rewrite|revise|review-record|regenerate|audit|accepted-expressions))?', path)
         if match:
             ident, aid, action = match[1], int(match[2]), match[3]
+            if action == 'accepted-expressions' and method == 'POST':
+                return self._json({'expression': s.save_accepted_expression(ident, aid, body)})
             with s.guard:
                 s.article_context(ident, aid)
                 if action is None and method == 'PUT':
@@ -349,22 +391,95 @@ class Handler(BaseHTTPRequestHandler):
             if 'article_id' in query or 'version_id' in query: raise Problem('请求稿件版本时需明确client_id')
             return {'clients': ws.clients()}
         client = ws.client(cid)
-        result = {'client': {k: client[k] for k in ('id', 'name', 'profile')},
-            'documents': [{k: d[k] for k in ('id', 'filename', 'kind', 'text', 'digest')} for d in ws.documents(cid)]}
+        result = {}
         aid = self.query_int(query, 'article_id', False)
         vid = self.query_int(query, 'version_id', False)
         if bool(vid) != bool(aid): raise Problem('文章来源需同时指定article_id和version_id')
         if aid:
+            if 'conversation_id' in query or 'document_ids' in query: raise Problem('固定文章版本使用自身冻结资料，请勿覆盖资料选择')
             with s.guard:
                 native = s.store.get_article(aid)
-                if not native or not any(c['plan_id'] == native['plan_id'] for c in ws.conversations(cid, include_deleted=True)): raise Missing('稿件不属于所选客户')
+                owner = next((c for c in ws.conversations(cid, include_deleted=True) if native and c['plan_id'] == native['plan_id']), None)
+                if not owner: raise Missing('稿件不属于所选客户')
                 version = ws.version(aid, vid)
                 if not vid or not ws.was_adopted(aid, vid): raise Conflict('视频来源需为明确采用过的稿件版本')
                 article = version['article']
                 result['article'] = {'article_id': aid, 'version_id': vid,
                     **{k: article.get(k, '') for k in ('title', 'body_md', 'platform_name', 'account_type')},
                     **article_metadata(ws, aid, vid)}
+                source = ws.version_source(aid, vid)
+                context = copy.deepcopy(source.get('creation_context'))
+                if not context:
+                    # Earlier versions have source records but no frozen writing-style record.
+                    brief = source.get('brief', {})
+                    context = {'schema_version': 'creation-context/v1',
+                        'client': {'id': cid, 'name': brief.get('client', client['name']),
+                                   'profile': {k: brief.get(k, '') for k in client['profile']}},
+                        'documents': source.get('documents', []), 'request': {k: brief[k] for k in ('keywords', 'note', 'topic') if k in brief},
+                        'style': {}, 'editorial': {'context_status': 'historical_style_unrecorded'}}
+                context['source_article'] = {k: result['article'][k] for k in ('article_id', 'version_id', 'title', 'body_md')}
+                context['editorial']['article_review'] = copy.deepcopy(version.get('review', {}))
+                context['editorial']['fact_issues'] = fact_findings(version)
+                if (article.get('geo') or {}).get('length'):
+                    context['editorial']['length'] = copy.deepcopy(article['geo']['length'])
+                variant = context['style'].get('variants', {}).get(key(article.get('platform_id'), article.get('account_type'), article.get('fmt')))
+                if variant:
+                    context['style']['applied'] = variant
+                    context['request'].update(platform_id=variant['platform_id'], platform=variant['platform_name'],
+                        account_type=variant['account_type'], fmt=variant['fmt'], length=variant['length'])
+                if not s.batches.managed(owner['id']) and (video := video_style(s.accepted_expressions, cid)):
+                    context['style']['video'] = video
+                result.update(video_projection(context))
+        else:
+            conversation_id = (query.get('conversation_id') or [''])[0]
+            if conversation_id:
+                frozen = s.batches.creation_context(conversation_id)
+                conv = ws.conversation(conversation_id, include_deleted=bool(frozen))
+                if conv['client_id'] != cid: raise Missing('任务不属于所选客户')
+                if frozen:
+                    if 'document_ids' in query:
+                        ids = query['document_ids'][0].split(',')
+                        if sorted(ids) != sorted(d['id'] for d in frozen['documents']):
+                            raise Problem('批次视频使用提交时冻结的资料选择')
+                    return video_projection(frozen)
+                brief = conv['brief']
+            else:
+                conv = {'client_id': cid, 'document_ids': [d['id'] for d in ws.documents(cid) if d.get('status') == 'ready']}
+                brief = {**client['profile'], 'client': client['name']}
+            ids = (query['document_ids'][0].split(',') if query['document_ids'][0] else []) if 'document_ids' in query else None
+            docs = ws.selected_documents(conv, ids)
+            context = s.freeze_creation_context(cid, {'brief': brief, 'documents': docs, 'platforms': s.store.list_platforms()})
+            result.update(video_projection(context))
         return result
+
+    def interview_sse(self, ident):
+        service = self.service
+        if service.ws.operation(ident)['kind'] != 'interview': raise Problem('该操作不属于对话回复')
+        if self.command == 'HEAD': return self._send(200, b'', 'text/event-stream; charset=utf-8')
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/event-stream; charset=utf-8')
+        self.send_header('Cache-Control', 'no-cache')
+        self.send_header('Connection', 'close')
+        self.send_header('X-Accel-Buffering', 'no')
+        self.end_headers()
+        previous = None
+        try:
+            while not service.closed:
+                with service.operation_changes:
+                    operation = service.ws.operation(ident)
+                    value = json.dumps({'operation': operation}, ensure_ascii=False)
+                    if value == previous:
+                        if service.operation_changes.wait(timeout=15): continue
+                        frame = ': heartbeat\n\n'
+                    else:
+                        previous = value
+                        frame = 'data: ' + value + '\n\n'
+                self.wfile.write(frame.encode('utf-8')); self.wfile.flush()
+                if operation['status'] != 'running': break
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            self.close_connection = True
 
     def sse(self, jid):
         """Original ZIP next/chunk/status/end event shape and segment semantics."""

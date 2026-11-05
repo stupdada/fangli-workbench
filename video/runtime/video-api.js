@@ -182,7 +182,7 @@ function createHandler(options = {}) {
     catch { throw fault(400, 'MEDIA_MISSING'); }
     const sha256 = await fileDigest(file, signal);
     if (meta.sha256 && meta.sha256 !== sha256 || expectedDigest && expectedDigest !== sha256) throw fault(409, 'MEDIA_CHANGED');
-    return { file, sha256 };
+    return { id, name: meta.name, type: meta.type, size: meta.size, file, sha256 };
   }
   async function retryReadiness(record) {
     if (record.mode !== 'silent' || record.spec.mode !== 'silent') return { canRetry: false, retryUnavailableReason: ERRORS.MODE_UNSUPPORTED };
@@ -338,6 +338,9 @@ function createHandler(options = {}) {
         try { await store.call('asset.put', { id, clientId, name, type, size: bytes.length, file, sha256 }); } catch (error) { await fsp.unlink(dest).catch(() => {}); throw error; }
         json(res, 201, { id, assetId: id, clientId, name, type, size: bytes.length }); return true;
       }
+      if (req.method === 'GET' && url.pathname === '/api/video/assets') {
+        json(res, 200, { assets: await store.call('asset.list', { clientId }) }); return true;
+      }
       if (req.method === 'GET' && url.pathname === '/api/video/batches') {
         const records = await store.call('batch.list', { clientId }); json(res, 200, { batches: await Promise.all(records.map(view)) }); return true;
       }
@@ -404,6 +407,7 @@ function createHandler(options = {}) {
     }
   }
   handle.ready = initialize;
+  handle.resolveAsset = async (...args) => { await initialize(); return asset(...args); };
   // An event-driven completion boundary for embedding and deterministic offline tests.
   handle.whenIdle = async () => {
     while (pumpPromise) await pumpPromise;
@@ -422,4 +426,4 @@ function createHandler(options = {}) {
   return handle;
 }
 const handle = createHandler();
-module.exports = { createHandler, createStore, handle, MAX_UPLOAD };
+module.exports = { createHandler, createStore, handle, sendFile, MAX_UPLOAD };

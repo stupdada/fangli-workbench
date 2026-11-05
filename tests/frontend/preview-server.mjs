@@ -66,6 +66,7 @@ export async function createPreview({persistPath=null,segmentDelay=350,operation
     if(a)assertVersion(a,body);
     const persistedKind={chat:'interview','style-review':'style_review','style-rewrite':'style_rewrite',revise:'revision'}[kind];
     const op={id:'op_'+randomUUID(),kind:persistedKind,status:'running',conversation_id:c.id,article_id:a?.id||null,created_at:now(),result:null,error:null};state.operations.push(op);if(a)a.locked=true;
+    channels.set(op.id,new EventEmitter());
     later(()=>{
       if(op.status!=='running')return;
       try {
@@ -90,7 +91,7 @@ export async function createPreview({persistPath=null,segmentDelay=350,operation
         }
         op.status='done';
       } catch(error) {op.status='error';op.error=error.message;}
-      if(a)a.locked=false;persist();
+      if(a)a.locked=false;channels.get(op.id).emit('operation',op);persist();
     },operationDelay);
     return op;
   }
@@ -127,6 +128,12 @@ export async function createPreview({persistPath=null,segmentDelay=350,operation
         if(job.partial)send({type:'chunk',text:job.partial,chars:job.partial.length});send({type:'status',message:job.message,done:job.done,planned:job.planned});
         const events=channels.get(job.id);events.on('data',send);req.on('close',()=>events.off('data',send));
       }else send({type:'end',status:job.status,error:job.error,message:job.message,items:job.items,done:job.done,planned:job.planned});return;
+    }
+    if(method==='GET'&&(m=/^\/api\/workbench\/operations\/([^/]+)\/stream$/.exec(p))){
+      const op=state.operations.find(o=>o.id===m[1]);if(!op)throw new HttpError('操作不存在',404);
+      res.writeHead(200,{'Content-Type':'text/event-stream; charset=utf-8','Cache-Control':'no-cache'});
+      const send=value=>{res.write('data: '+JSON.stringify({operation:value})+'\n\n');if(value.status!=='running')res.end();};
+      send(op);if(op.status==='running'){const events=channels.get(op.id);events.on('operation',send);req.on('close',()=>events.off('operation',send));}return;
     }
     if(method==='GET'&&(m=/^\/api\/workbench\/operations\/([^/]+)$/.exec(p))){const op=state.operations.find(o=>o.id===m[1]);if(!op)throw new HttpError('操作不存在',404);return json(res,{operation:op});}
     if(method==='GET'&&(m=/^\/api\/workbench\/clients\/([^/]+)\/documents$/.exec(p)))return json(res,{documents:state.documents.filter(d=>d.client_id===m[1])});
@@ -173,7 +180,7 @@ export async function createPreview({persistPath=null,segmentDelay=350,operation
       if(p==='/api/workbench/clients') {if(!b.name?.trim())throw new HttpError('客户名称不能为空');if(b.id)throw new HttpError('已有客户请使用任务档案接口');const c={id:'client_'+randomUUID(),created_at:now(),name:b.name,profile:Object.fromEntries(PROFILE_FIELDS.filter(([key])=>key!=='name').map(([key])=>[key,b.profile?.[key]??'']))};state.clients.push(c);await persist();return json(res,{client:c});}
       if(p==='/api/workbench/conversations') {const record=state.clients.find(c=>c.id===b.client_id);if(!record)throw new HttpError('客户不存在',404);const options=normalizeOptions({client:record.name,...cp(record.profile)},state.target_models);const c={id:'conversation_'+randomUUID(),client_id:b.client_id,title:'新建内容',plan_id:null,messages:[],brief:cp(options),document_ids:[],job_id:null,status:'draft',mode:'chat',followup:true,needs_confirmation:false,options,created_at:now()};state.conversations.push(c);await persist();return json(res,{conversation:c});}
       if((m=/^\/api\/workbench\/clients\/([^/]+)\/documents$/.exec(p))){if(!state.clients.some(c=>c.id===m[1]))throw new HttpError('客户不存在',404);if(!b.text?.trim())throw new HttpError('资料正文不能为空');const d={...b,id:'doc_'+randomUUID(),client_id:m[1],digest:createHash('sha256').update(b.text).digest('hex')};state.documents.push(d);await persist();return json(res,{document:d});}
-      if((m=/^\/api\/workbench\/operations\/([^/]+)\/stop$/.exec(p))){const op=state.operations.find(o=>o.id===m[1]);if(!op)throw new HttpError('操作不存在',404);op.status='stopped';const a=state.articles.find(a=>a.id===op.article_id);if(a)a.locked=false;await persist();return json(res,{operation:op,message:'仅停止本地离线替身'});}
+      if((m=/^\/api\/workbench\/operations\/([^/]+)\/stop$/.exec(p))){const op=state.operations.find(o=>o.id===m[1]);if(!op)throw new HttpError('操作不存在',404);op.status='stopped';channels.get(op.id)?.emit('operation',op);const a=state.articles.find(a=>a.id===op.article_id);if(a)a.locked=false;await persist();return json(res,{operation:op,message:'仅停止本地离线替身'});}
       if(p==='/api/workbench/settings'){for(const key of ['model','temperature','max_tokens','title_prefix','brand','disable_thinking'])if(key in b)state.settings[key]=b[key];await persist();return json(res,{settings:state.settings});}
       if(p==='/api/parse') {const d=await python("import sys,json,base64\nfrom app.parsers import parse_file\nb=json.load(sys.stdin)\ntry: print(json.dumps(parse_file(b['filename'],base64.b64decode(b['content_b64'])),ensure_ascii=True))\nexcept Exception as e: print(json.dumps({'ok':False,'error':str(e)},ensure_ascii=True))",b);return json(res,d,d.ok?200:400);}
       if(p==='/api/prefs'){let pref=state.prefs.find(x=>x.model_id===b.model_id&&x.platform_id===b.platform_id);if(pref)Object.assign(pref,b);else state.prefs.push(b);await persist();return json(res,{});}

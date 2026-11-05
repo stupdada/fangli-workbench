@@ -55,11 +55,11 @@ python main.py --no-browser --port 0 --data-dir "./data/dev-workbench"
 
 Word、Excel、PPT与文本资料继续使用ZIP解析器。PDF由前端读取成文字后按资料接口保存，不替换原解析器。
 
-生成后风格参考由 `config/style-library.json` 指向仓库内的 `style-library/`，相对路径按仓库根目录解析。首次ZIP写作不读取该库。去味规则与信号只维护在 `config/de-ai-taste.md`、`config/ai-taste-signals.md`，不再次加载平台风格库中的重复信号。客户限定的认可表达需要显式client_bindings，空绑定不会套用旧客户例句。平台篇幅和结构仅作生成后参考。
+普通任务的首次写作沿用 ZIP 生成器，按平台、账号身份和发布形态读取 `style-library/` 的适用写法。展开“本次可选调整”可设本次篇幅；本次明确值优先，其次采用客户常用方案里的篇幅偏好，最后采用平台对应形态的默认篇幅。风格只影响写法，业务依据来自本次客户档案和选定资料。在稿件的资料面板可查看“本版创作配置”。适用规则、认可表达、风格版本及资料修订随本次输入冻结。去味仍为生成后的独立编辑操作，使用 `config/de-ai-taste.md` 和 `config/ai-taste-signals.md`。
 
 ## 视频边界
 
-`GET /api/workbench/video-context` 提供只读客户、资料和明确采用版本。显式版本校验客户与文章归属，已采用的固定版本不会随文章编辑变化。未采用候选不能成为视频来源。
+`GET /api/workbench/video-context` 提供只读创作上下文。可选 `conversation_id` 或 `document_ids` 指定本次资料，或同时给出 `article_id` 与 `version_id` 读取明确采用过的固定文章。固定文章使用该版的冻结客户、资料与写作配置，正文与编辑记录分别提供。归属及采用校验沿用现有边界。
 
 main.py通过本机随机内部端口托管视频服务，原路径流式转发 `/api/video/*`、`/video/*`，保留上传、HEAD/Range和下载头。视频数据位于主数据目录/video；启动会检查Node/Python/Pillow及字体、FFmpeg等依赖，只检查，不编码。启动失败会退出主服务并给出私有日志位置。
 
@@ -73,9 +73,11 @@ $env:PYTHONIOENCODING='utf-8'
 python tools/check_handoff.py
 python tests/core/test_effective_inputs.py
 python tests/core/test_native_operations.py
+python -B -m unittest discover -s tests/core -p test_creation_context.py
+python -B -m unittest discover -s tests/core -p test_first_generation_style.py
 ```
 
-上面三条分别检查交接文件与相对风格库、有效输入事务、原生操作边界，不访问外部模型或目录。完整历史 verify.py 还需要原交接 ZIP 等夹具；SDK 测试需要本机配置（占位配置可用于注入 fetch 的离线测试），相关前置条件见交接说明。历史独立 ZIP 回放、Word 正文 XML、并发锁与停止边界的证据见 docs/evidence/。
+以上检查覆盖交接文件、有效输入、原生操作、首次模型提示词及版本来源，不访问外部模型或目录。历史 `verify.py` 的原 ZIP 请求逐字回放适用于交接基线，普通任务新写法以首次生成和固定来源检查为准；原始哈希与历史证据保留在 `tests/zip-core.sha256.json` 和 `docs/evidence/`。SDK 测试的本机配置前置条件见交接说明。
 
 core-001离线证据的外部调用数为0。core-002另用隔离合成夹具完成了真实WorkBuddy接通和版本边界验收：8次内容调用、1次目录查询，均使用精确模型ID deepseek-v4.1-flash，正常完整结束；原始输入、初稿、核查后稿、候选及只读复核均保留在 [样稿与质量记录](docs/evidence/README.md)。两份样稿仍有流程文字残留、无充分依据的工艺推论与审阅误报，不能据此声称内容质量普遍通过。Codex已实际审阅并保存意见，用户保持未审。视频既有链路已完成 video-005 运行时终验；客户与批次、消息与审阅、连续创作及内部指南已有各自验收记录。需求整理漏回写作说明的提示词约定已修正，6项离线检查通过，实际模型重试尚未验证。工作台视觉动效及后续首页优化由原开发者继续负责。详细状态见开发交接说明。
 

@@ -1,2 +1,3 @@
 # Video rendering uses Pillow; FFmpeg/ffprobe and CJK fonts are system dependencies.
+# Narrated videos use Windows System.Speech (zh-CN Microsoft Huihui Desktop) via PowerShell.
 Pillow>=10

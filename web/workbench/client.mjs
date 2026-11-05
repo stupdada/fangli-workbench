@@ -9,6 +9,7 @@ export class WorkbenchClient {
     eventSource = url => new EventSource(url), delay = ms => new Promise(r => setTimeout(r, ms)), operationLimit = 150 } = {}) {
     this.fetcher = fetcher; this.storage = storage; this.eventSource = eventSource; this.delay = delay; this.operationLimit = operationLimit;
     this.listeners = new Set(); this.watchers = new Map(); this.saveQueue = Promise.resolve(); this.revision = 0;
+    this.interviewStreams = new Map();
     try { this.cache = JSON.parse(storage?.getItem(STORAGE_KEY) || '{}'); } catch { this.cache = {}; }
     this.state = { bootstrap: null, config: null, clients: [], conversations: [], conversation: null, batch: null, articles: [], documents: [], library: [],
       operations: [], job: null, stream: {}, options: normalizeOptions(this.cache.pending?.options), documentIds: this.cache.pending?.documentIds || [],
@@ -134,7 +135,7 @@ export class WorkbenchClient {
     if (this.state.conversation && String(this.state.conversation.id) !== String(id)) {
       this.state.results = {}; this.state.stream = {}; this.state.ui.reply = ''; this.state.needsConfirmation = false;
     }
-    this.closeStream(); const token = this.contextToken = Symbol('conversation');
+    this.closeStream(); this.closeInterviewStreams(); const token = this.contextToken = Symbol('conversation');
     const data = await this.api(`/api/workbench/conversations/${enc(id)}`);
     if(token !== this.contextToken)return null;
     this.hydrate(data);
@@ -248,7 +249,7 @@ export class WorkbenchClient {
     if (this.activeJob) { this.state.needsConfirmation = true; await this.stop(); }
     await this.saveDraft();
     const d = await this.api(this.path('/chat'), 'POST', { text: text.trim(), document_ids: this.state.documentIds, followup, options: this.state.options });
-    return this.watchOperation(d.operation_id);
+    return this.watchInterview(d.operation_id);
   }
   async start({ confirmed = false, one = false } = {}) {
     this.assertBriefEditable();
@@ -297,8 +298,79 @@ export class WorkbenchClient {
     try { await this.stop(); await this.reload(); } catch (e) { this.fail(new Error(`${error.message} ${e.message}`)); }
     // No automatic reconnect, re-start or replay of uncertain model calls.
   }
+  recordOperation(op) {
+    const at=this.state.operations.findIndex(row=>row.id===op.id);
+    if(at<0)this.state.operations.push(op);else this.state.operations[at]=op;
+    this.emit();
+  }
+  async finishOperation(op,cid,id) {
+    if(cid!==this.state.conversation?.id)return null;
+    if(op.status!=='done') {
+      await this.reload();
+      if(cid!==this.state.conversation?.id)return null;
+      const status=op.result?.error_status||(op.kind===OPERATION_KIND.chat&&/^(需求整理|追问格式|追问选项)/.test(op.error||'')?400:0);
+      const error=new ApiError(op.error||(op.status==='interrupted'?'操作中断，保留当前内容，请明确重试':'操作已停止'),status);
+      error.operationKind=op.kind;error.conversationId=cid;throw error;
+    }
+    this.state.results[op.kind]={...(op.result||{}),operation_id:id};
+    await this.reload();
+    if(cid!==this.state.conversation?.id)return null;
+    this.emit();return {...op.result,operation_id:id};
+  }
+  closeInterviewStreams() {
+    for(const stream of this.interviewStreams.values())stream.finish(null);
+    this.interviewStreams.clear();
+  }
+  watchInterview(id) {
+    if(!id)return Promise.reject(new Error('服务未返回操作编号'));
+    if(this.watchers.has(id))return this.watchers.get(id);
+    const cid=this.state.conversation?.id;
+    let source,settled=false,disconnecting=false;
+    const valid=op=>op?.id===id&&op.kind===OPERATION_KIND.chat&&op.conversation_id===cid;
+    const task=new Promise((resolve,reject)=>{
+      const close=()=>{source?.close();this.interviewStreams.delete(id);};
+      const finish=value=>{if(settled)return;settled=true;close();resolve(value);};
+      const fail=error=>{if(settled)return;settled=true;close();if(cid!==this.state.conversation?.id)resolve(null);else reject(error);};
+      const terminal=async op=>{
+        if(settled)return;settled=true;close();
+        try{resolve(await this.finishOperation(op,cid,id));}catch(error){if(cid!==this.state.conversation?.id)resolve(null);else reject(error);}
+      };
+      const lost=async()=>{
+        if(settled||disconnecting)return;
+        disconnecting=true;source?.close();
+        try {
+          const d=await this.api(`/api/workbench/operations/${enc(id)}`);
+          if(settled)return;
+          if(cid!==this.state.conversation?.id){finish(null);return;}
+          if(valid(d.operation)) {
+            this.recordOperation({...d.operation,stream_disconnected:running(d.operation)});
+            if(!running(d.operation)){await terminal(d.operation);return;}
+          }
+        }catch{ /* A disconnected stream never replays the model request. */ }
+        const current=this.state.operations.find(op=>op.id===id);
+        if(current&&cid===this.state.conversation?.id)this.recordOperation({...current,stream_disconnected:true});
+        fail(new ApiError('回复连接中断，输入与已收到的回复已保留；请恢复后台状态或停止回复'));
+      };
+      this.interviewStreams.set(id,{finish});
+      if(!this.state.operations.some(op=>op.id===id))this.recordOperation({id,kind:OPERATION_KIND.chat,conversation_id:cid,status:'running',result:{},created_at:new Date().toISOString()});
+      try {source=this.eventSource(`/api/workbench/operations/${enc(id)}/stream`);}
+      catch(error){fail(error);return;}
+      source.onmessage=event=>{
+        if(settled||disconnecting)return;
+        if(cid!==this.state.conversation?.id){finish(null);return;}
+        let op;
+        try {op=JSON.parse(event.data).operation;if(!valid(op))throw new Error('回复状态不匹配');}
+        catch {lost();return;}
+        this.recordOperation(op);
+        if(!running(op))terminal(op);
+      };
+      source.onerror=lost;
+    }).finally(()=>this.watchers.delete(id));
+    this.watchers.set(id,task);return task;
+  }
   async watchOperation(id) {
     if (!id) throw new Error('服务未返回操作编号');
+    if(this.state.operations.find(op=>op.id===id)?.kind===OPERATION_KIND.chat)return this.watchInterview(id);
     if (this.watchers.has(id)) return this.watchers.get(id);
     const cid = this.state.conversation?.id;
     const task = (async () => {
@@ -306,18 +378,9 @@ export class WorkbenchClient {
         if (cid !== this.state.conversation?.id) return null;
         const d = await this.api(`/api/workbench/operations/${enc(id)}`); const op = d.operation;
         if (cid !== this.state.conversation?.id) return null;
-        const at = this.state.operations.findIndex(x => x.id === id);
-        if (at < 0) this.state.operations.push(op); else this.state.operations[at] = op;
-        this.emit();
+        this.recordOperation(op);
         if (!running(op)) {
-          if (op.status !== 'done') {
-            await this.reload();
-            const status=op.result?.error_status||(op.kind===OPERATION_KIND.chat&&/^(需求整理|追问格式|追问选项)/.test(op.error||'')?400:0);
-            const error=new ApiError(op.error || (op.status === 'interrupted' ? '操作中断，保留当前内容，请明确重试' : '操作已停止'),status);
-            error.operationKind=op.kind;error.conversationId=cid;throw error;
-          }
-          this.state.results[op.kind] = { ...(op.result || {}), operation_id: id };
-          await this.reload(); this.emit(); return { ...op.result, operation_id: id };
+          return this.finishOperation(op,cid,id);
         }
         await this.delay(index < 10 ? 1500 : 4000);
       }
@@ -326,7 +389,7 @@ export class WorkbenchClient {
     })().finally(() => this.watchers.delete(id));
     this.watchers.set(id, task); return task;
   }
-  async stopOperation(id) { await this.api(`/api/workbench/operations/${enc(id)}/stop`, 'POST', {}); await this.reload(); }
+  async stopOperation(id) { await this.api(`/api/workbench/operations/${enc(id)}/stop`, 'POST', {}); await this.reload(); this.resumeBackground(); }
   article(id) { return this.state.articles.find(a => String(a.id) === String(id)); }
   assertEditable(id) { const a = this.article(id); if (!a) throw new Error('稿件不存在'); if (a.locked) throw new Error('这篇稿件正在处理，收尾后才可修改'); return a; }
   async saveArticle(id, body_md, title, expected_version, metadata={}) {
@@ -377,5 +440,5 @@ export class WorkbenchClient {
   async articleOperation(id,kind,payload={}) { return this.watchOperation(await this.beginArticleOperation(id,kind,payload)); }
   async compare(id, candidate) { return this.api(this.articlePath(id, `/compare?candidate_version=${enc(candidate)}`)); }
   async reviewRecord(id, payload) { this.assertEditable(id); return this.api(this.articlePath(id, '/review-record'), 'PUT', payload); }
-  dispose() { clearTimeout(this.saveTimer); this.closeStream(); this.listeners.clear(); }
+  dispose() { clearTimeout(this.saveTimer); this.closeStream(); this.closeInterviewStreams(); this.listeners.clear(); }
 }

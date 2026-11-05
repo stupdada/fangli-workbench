@@ -37,7 +37,7 @@ class FixtureModel(ControlledModel):
             latest = next((m['content'] for m in reversed(request.get('messages', [])) if m['role'] == 'user'), '')
             result['options']['note'] = '\n'.join(value for value in (original, latest) if value)
             result['questions'] = []
-            result['understanding'] = '已整理本次要求：介绍西邦24的用途，保留资料中的工序条件。'
+            result['understanding'] = '可以，我们先围绕资料中的产品用途和工序条件来写。\n\n我会沿用你已选的平台和账号，分别组织内容。你也可以继续补充想强调的产品特点，或者直接告诉我新的话题。\n\n这些有效要求会整理到本次安排里，方便你随时查看和调整。'
         if kind == 'generate' and self.stream_delay:
             result['sections'].append({'heading': '使用前核对资料', 'paragraphs': [
                 '先确认实际使用场景，再逐项核对资料中的适用条件。**保留工序限制**，便于读者判断内容的适用范围。'

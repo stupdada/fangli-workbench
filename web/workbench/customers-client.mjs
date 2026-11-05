@@ -22,9 +22,26 @@ export class CustomerClient {
   addDocument(id, payload) { return this.api(this.path(id, '/documents'), 'POST', payload); }
   async revisions(id, documentId) { return (await this.api(this.path(id, `/documents/${enc(documentId)}/revisions`))).documents; }
   history(id) { return this.api(this.path(id, '/history')); }
+  startIntake(id, payload) { return this.api(this.path(id, '/intakes'), 'POST', payload); }
+  latestIntake(id) { return this.api(this.path(id, '/intakes')); }
+  intake(id, intakeId) { return this.api(this.path(id, `/intakes/${enc(intakeId)}`)); }
+  adoptIntake(id, intakeId, payload) { return this.api(this.path(id, `/intakes/${enc(intakeId)}/adopt`), 'POST', payload); }
+  searchClaim(id, intakeId, claimKey, query) {
+    return this.api(this.path(id, `/intakes/${enc(intakeId)}/claims/${enc(claimKey)}/search`), 'POST', {query});
+  }
+  reviewClaim(id, intakeId, claimKey, payload) {
+    return this.api(this.path(id, `/intakes/${enc(intakeId)}/claims/${enc(claimKey)}/review`), 'POST', payload);
+  }
   async batches() { return (await this.api('/api/workbench/batches')).batches; }
-  async batch(id) { return (await this.api(`/api/workbench/batches/${enc(id)}`)).batch; }
-  async batchAction(id, action, payload = {}) { return (await this.api(`/api/workbench/batches/${enc(id)}/${action}`, 'POST', payload)).batch; }
+  batchPath(id, tail = '') { return `/api/workbench/batches/${enc(id)}${tail}`; }
+  async batch(id) { return (await this.api(this.batchPath(id))).batch; }
+  async batchAction(id, action, payload = {}) { return (await this.api(this.batchPath(id, `/${action}`), 'POST', payload)).batch; }
+  async retryBatchVideo(batchId, videoId, payload = {}) {
+    const {batch} = await this.api(this.batchPath(batchId, `/videos/${enc(videoId)}/retry`), 'POST', payload);
+    if (!batch?.id) throw new Error('未收到批次状态，请刷新后查看');
+    return batch;
+  }
+  batchVideoDownload(batchId) { return this.batchPath(batchId, '/video-download'); }
   preflight(items) { return this.api('/api/workbench/batches/preflight', 'POST', { items: clone(items) }); }
   async submit(items) {
     const snapshot = clone(items);

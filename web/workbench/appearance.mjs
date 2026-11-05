@@ -5,13 +5,14 @@ export function installAppearance(doc = document) {
   const activeAnimations = new Set();
   const presses = new Map();
   const buttonAnimations = new WeakMap();
+  let viewAnimation = null;
   const groups = ['.mode-switch', '.article-tabs'];
-  const scrollers = '.workspace,.conversation-log,.article-scroll,.stream-scroll,.inspector-body,#settings-content';
+  const scrollers = '.workspace,.chat-pane,.conversation-log,.article-scroll,.stream-scroll,.inspector-body,#settings-content';
   let previous = null;
   let disposed = false;
 
   function animate(node, frames, options, done = () => {}) {
-    if (!node || reduce.matches || doc.hidden) { done(); return null; }
+    if (!node || reduce.matches || doc.hidden || doc.documentElement.hasAttribute('data-task-transition')) { done(); return null; }
     const animation = node.animate(frames, options);
     activeAnimations.add(animation);
     const finish = () => { activeAnimations.delete(animation); done(); };
@@ -27,7 +28,7 @@ export function installAppearance(doc = document) {
     if (reduce.matches || doc.hidden) return;
     const from = getComputedStyle(button).scale;
     cancelButton(button);
-    const small = button.matches('.send-button,.icon-button');
+    const small = button.matches('.send-button,.icon-button,.composer-platform');
     const scale = small ? .94 : button.offsetWidth > 220 ? .99 : .97;
     const animation = animate(button, [{scale: from === 'none' ? '1' : from}, {scale}], {duration: 80, fill: 'forwards', easing: 'ease-out'});
     buttonAnimations.set(button, animation);
@@ -36,7 +37,7 @@ export function installAppearance(doc = document) {
     const from = button.isConnected ? getComputedStyle(button).scale : '1';
     cancelButton(button);
     if (!button.isConnected) return;
-    const small = button.matches('.send-button,.icon-button');
+    const small = button.matches('.send-button,.icon-button,.composer-platform');
     const animation = animate(button, [
       {scale: from === 'none' ? '1' : from, offset: 0},
       {scale: small ? 1.035 : 1.015, offset: .45},
@@ -68,7 +69,7 @@ export function installAppearance(doc = document) {
   }
   function syncScroll() {
     for (const el of root.querySelectorAll(scrollers)) el.classList.toggle('is-scrolled', el.scrollTop > 4);
-    root.querySelector('.main')?.classList.toggle('has-content-scroll', !!root.querySelector('.workspace.is-scrolled,.conversation-log.is-scrolled,.article-scroll.is-scrolled,.stream-scroll.is-scrolled'));
+    root.querySelector('.main')?.classList.toggle('has-content-scroll', !!root.querySelector('.workspace.is-scrolled,.chat-pane.is-scrolled,.conversation-log.is-scrolled,.article-scroll.is-scrolled,.stream-scroll.is-scrolled'));
   }
   function panelState(selector) {
     const node = root.querySelector(selector);
@@ -79,20 +80,22 @@ export function installAppearance(doc = document) {
     const group = root.querySelector(selector);
     const selected = group?.querySelector('.active');
     if (!selected) return null;
-    const x = selected.offsetLeft, width = selected.offsetWidth;
+    const label = selector === '.mode-switch' ? selected : selected.querySelector('.mode-label') || selected;
+    const x = selected.offsetLeft + (label === selected ? 0 : label.offsetLeft);
+    const width = label.offsetWidth;
     const key = selected.id || selected.textContent;
     const before = previous?.indicators.get(selector);
     if (!group.style.getPropertyValue('--indicator-width')) {
       group.style.setProperty('--indicator-time', '0ms');
       group.style.setProperty('--indicator-x', `${before && before.key !== key ? before.x : x}px`);
-      group.style.setProperty('--indicator-width', before && before.key !== key ? before.width : width);
+      group.style.setProperty('--indicator-width', `${before && before.key !== key ? before.width : width}px`);
       // Commit the starting position before transitioning a replaced toolbar.
       getComputedStyle(group, '::after').transform;
     }
     group.style.setProperty('--indicator-time', reduce.matches ? '0ms' : '280ms');
     group.style.setProperty('--indicator-x', `${x}px`);
-    group.style.setProperty('--indicator-width', width);
-    return {node: group, key, x, width};
+    group.style.setProperty('--indicator-width', `${width}px`);
+    return {node: group, selected, label, key, x, width};
   }
   function exitPanel(panel) {
     if (!panel || reduce.matches || doc.hidden || panel.rect.width === 0) return;
@@ -111,14 +114,29 @@ export function installAppearance(doc = document) {
     if (disposed) return;
     syncScroll();
     const indicators = new Map(groups.map(selector => [selector, syncIndicator(selector)]).filter(([,value]) => value));
+    const measured = new Set([...indicators.values()].flatMap(group => [group.node, group.selected, group.label]));
+    for (const node of measuredNodes) if (!measured.has(node)) { sizeObserver.unobserve(node); measuredNodes.delete(node); }
+    for (const node of measured) if (!measuredNodes.has(node)) { measuredNodes.add(node); sizeObserver.observe(node); }
     const inspector = panelState('.inspector');
     const draft = panelState('.draft-pane:not([hidden])');
     const activity = root.querySelector('.activity-strip');
     const label = activity?.querySelector('.activity-label')?.textContent;
     const active = activity?.classList.contains('is-active');
-    const task = root.querySelector('.task-row.active')?.dataset.task;
+    const workspace = root.querySelector('#workspace');
+    const task = workspace?.dataset.taskId;
+    const view = workspace?.dataset.workspaceView;
     const article = root.querySelector('.article-tab.active')?.id;
     if (previous) {
+      if (task !== previous.task) stopMotion();
+      if (view && previous.view && view !== previous.view && task === previous.task && view !== 'customers' && previous.view !== 'customers') {
+        const direction = view === 'chat' ? -1 : previous.view === 'chat' ? 1 : Number(view.slice(4)) > Number(previous.view.slice(4)) ? -1 : 1;
+        const distance = Math.min(64, Math.max(28, workspace.clientWidth * .06));
+        viewAnimation?.cancel();
+        viewAnimation = animate(workspace, [
+          {opacity:.45, transform:`translateX(${-direction * distance}px)`},
+          {opacity:1, transform:'translateX(0)'},
+        ], {duration:260, easing:'cubic-bezier(.16,1,.3,1)'});
+      }
       if (inspector && !previous.inspector) {
         animate(inspector.node, [{opacity:0, transform:'translateX(14px)'}, {opacity:1, transform:'translateX(-1px)', offset:.72}, {opacity:1, transform:'none'}], {duration:260, easing:'ease-out'});
       } else if (!inspector && previous.inspector) exitPanel(previous.inspector);
@@ -126,11 +144,11 @@ export function installAppearance(doc = document) {
       if (draft && !previous.draft) animate(draft.node, [{opacity:0, transform:'translateX(12px)'}, {opacity:1, transform:'none'}], {duration:260, easing:'cubic-bezier(.22,.9,.28,1.08)'});
       if (label && label !== previous.label) {
         animate(activity.querySelector('.activity-label'), [{opacity:.35}, {opacity:1}], {duration:160});
-        if (previous.active && !active) animate(activity.querySelector('.activity-symbol'), [{scale:.85}, {scale:1.12,offset:.55}, {scale:1}], {duration:260});
+        if (previous.active && !active && !activity.classList.contains('is-uncertain')) animate(activity.querySelector('.activity-symbol'), [{scale:.85}, {scale:1.12,offset:.55}, {scale:1}], {duration:260});
       }
       if (article && previous.article && article !== previous.article && task === previous.task) animate(root.querySelector('.paper'), [{opacity:.5}, {opacity:1}], {duration:160});
     }
-    previous = {indicators, inspector, draft, label, active, task, article};
+    previous = {indicators, inspector, draft, label, active, task, article, view};
   }
   function stopMotion() {
     presses.clear();
@@ -138,9 +156,14 @@ export function installAppearance(doc = document) {
     activeAnimations.clear();
   }
   function preferenceChanged() { stopMotion(); refresh(); }
-  function visibilityChanged() { if (doc.hidden) stopMotion(); }
+  function visibilityChanged() {
+    doc.documentElement.toggleAttribute('data-motion-hidden', doc.hidden);
+    if (doc.hidden) stopMotion();
+  }
+  const measuredNodes = new Set();
+  const sizeObserver = new ResizeObserver(refresh);
   const observer = new MutationObserver(refresh);
-  observer.observe(root, {subtree:true, childList:true, characterData:true, attributes:true, attributeFilter:['class','hidden','aria-selected','aria-current']});
+  observer.observe(root, {subtree:true, childList:true, characterData:true, attributes:true, attributeFilter:['class','hidden','aria-selected','aria-current','data-workspace-view','data-task-id']});
   doc.addEventListener('pointerdown', pointerDown, {capture:true, passive:true});
   doc.addEventListener('pointerup', pointerUp, {capture:true, passive:true});
   doc.addEventListener('pointercancel', pointerUp, {capture:true, passive:true});
@@ -151,9 +174,10 @@ export function installAppearance(doc = document) {
   window.addEventListener('resize', refresh);
   window.addEventListener('blur', stopMotion);
   reduce.addEventListener('change', preferenceChanged);
+  visibilityChanged();
   refresh();
   function dispose() {
-    disposed = true; observer.disconnect(); stopMotion();
+    disposed = true; observer.disconnect(); sizeObserver.disconnect(); stopMotion();
     doc.removeEventListener('pointerdown', pointerDown, true);
     doc.removeEventListener('pointerup', pointerUp, true);
     doc.removeEventListener('pointercancel', pointerUp, true);

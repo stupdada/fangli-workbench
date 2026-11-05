@@ -59,10 +59,14 @@ def main():
                 problems.append({'path': name, 'reason': 'credential_literal'})
         checks['files_checked'] = len(names)
         manifest = json.loads(read('tests/zip-core.sha256.json'))
+        current = json.loads(read('tests/first-generation-core.sha256.json'))
+        if set(current) != {'generator.py', 'prompts.py'}:
+            problems.append({'path': 'tests/first-generation-core.sha256.json', 'reason': 'unexpected_first_generation_scope'})
         for name, digest in manifest.items():
-            if hashlib.sha256(read('app/' + name)).hexdigest() != digest:
-                problems.append({'path': 'app/' + name, 'reason': 'original_zip_hash_changed'})
-        checks['original_zip_files'] = len(manifest)
+            if hashlib.sha256(read('app/' + name)).hexdigest() != current.get(name, digest):
+                problems.append({'path': 'app/' + name, 'reason': 'first_generation_hash_changed' if name in current else 'original_zip_hash_changed'})
+        checks['original_zip_files'] = len(manifest) - len(current)
+        checks['first_generation_updated_files'] = len(current)
         config = json.loads(read('config/style-library.json'))
         if Path(config['root']).is_absolute():
             problems.append({'path': 'config/style-library.json', 'reason': 'absolute_style_path'})

@@ -63,10 +63,10 @@ export function remainingCount(state,platforms=[]) {
     return sum+Math.max(0,(Number(selection.count)||0)-written);
   },0);
 }
-const labels={interview:'正在整理本次要求',style_review:'正在通读稿件并审阅',style_rewrite:'正在生成候选并复核',revision:'正在修改当前稿',zip_regenerate:'正在重新生成并核查',zip_audit:'正在对照客户资料核查'};
+const labels={interview:'正在回复',style_review:'正在通读稿件并审阅',style_rewrite:'正在生成候选并复核',revision:'正在修改当前稿',zip_regenerate:'正在重新生成并核查',zip_audit:'正在对照客户资料核查'};
 export function activity(state) {
   const op=(state.operations||[]).find(o=>running(o)&&o.kind!=='writing');
-  if(op)return {active:true,key:op.id+':'+op.kind,label:labels[op.kind]||'正在处理本次任务',since:op.created_at};
+  if(op){const label=op.kind==='interview'?(op.stream_disconnected?'回复连接待恢复':op.result?.reply_complete?'正在整理本次安排':labels.interview):labels[op.kind]||'正在处理本次任务';return {active:!op.stream_disconnected,uncertain:!!op.stream_disconnected,key:op.id+':'+label,label,since:op.created_at};}
   const job=state.job||{},stream=state.stream||{};
   if(running(job)){
     const phase=stream.phase||job.phase||'',message=stream.message||job.message||'';

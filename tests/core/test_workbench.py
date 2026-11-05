@@ -53,7 +53,7 @@ class ControlledModel:
         if '需求访谈助手' in system:
             request = json.loads(user)
             questions = [{'text': '这次给谁看？', 'recommended': '采购人员', 'reason': '便于安排重点', 'options': ['采购人员', '技术人员']}] if self.questions else []
-            return 'interview', {'understanding': '助手防御性说明绝不能进入写作', 'options': {'keywords': request['options'].get('keywords') or ['西邦24']}, 'questions': questions, 'ready': not questions}
+            return 'interview', {'understanding': '助手防御性说明绝不能进入写作', 'options': {'keywords': request['options'].get('keywords') or ['西邦24'], 'note': request['options'].get('note', '')}, 'questions': questions, 'ready': not questions}
         if '本次只执行完整通读、逐段扫描' in system:
             return 'style_review', {'assessment': '轻微；个别冗余，具体工序写得清楚',
                 'suggestions': [{'id': '1', 'tier': 1, 'signal': '正确废话', 'quote': '核查后判断', 'problem': '重复结论',

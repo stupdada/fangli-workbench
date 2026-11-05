@@ -1,4 +1,6 @@
 /* finesse · design-language=apple · apple-mode=editorial */
+import {canPlayPaperMotion, createPaperAnimations, observePaperMotion, paperMotionEnabled} from '../assets/paper-motion.mjs';
+
 (() => {
   const $ = selector => document.querySelector(selector);
   const $$ = selector => [...document.querySelectorAll(selector)];
@@ -35,18 +37,46 @@
 
   let writingTimer;
   const output = $('#demo-output'), play = $('#play-writing');
+  const paperScene = $('#demo-paper-scene'), paperAnimations = createPaperAnimations();
+  function playPaperScene() {
+    const arrive = (part, from, delay, duration = 310) => paperAnimations.play(
+      paperScene.querySelector(`[data-paper-part="${part}"]`),
+      [{transform:from, opacity:0}, {transform:'none', opacity:1}],
+      {duration, delay, fill:'backwards', easing:'cubic-bezier(.16,1,.3,1)'},
+    );
+    arrive('source-back', 'translate(-22px, -5px) rotate(-9deg)', 0);
+    arrive('source', 'translate(-18px, 11px) rotate(6deg)', 85);
+    arrive('draft', 'translateX(-105px) scale(.62)', 290, 410);
+    paperAnimations.play(paperScene.querySelector('[data-paper-part="mark"]'), [
+      {strokeDasharray:'72', strokeDashoffset:'72'},
+      {strokeDasharray:'72', strokeDashoffset:'0'},
+    ], {duration:250, delay:630, fill:'backwards', easing:'ease-in-out'});
+    arrive('output-back', 'translate(-125px, 4px) scale(.76)', 845, 420);
+    arrive('output-front', 'translate(-122px, -3px) scale(.83)', 945, 425);
+  }
+  observePaperMotion(() => {
+    if (!canPlayPaperMotion()) paperAnimations.stop();
+    const hidden = !paperMotionEnabled();
+    if (paperScene.hasAttribute('hidden') === hidden) return;
+    paperScene.toggleAttribute('hidden', hidden);
+    window.ScrollTrigger?.refresh();
+  });
   play.addEventListener('click', () => {
     clearTimeout(writingTimer); output.hidden = false;
     $('#play-status').textContent = '本页播放示例，不调用模型';
     $('#output-status').textContent = '示例稿 · 已生成'; play.textContent = '重看演示 ↗';
-    if (window.gsap && !reduced.matches) {
+    paperAnimations.stop();
+    paperScene.toggleAttribute('hidden', !paperMotionEnabled());
+    if (paperMotionEnabled()) {
+      if (canPlayPaperMotion()) playPaperScene();
+    } else if (window.gsap && !reduced.matches) {
       gsap.killTweensOf('#demo-output > *');
-      gsap.fromTo('#demo-output > *', {y: 12, opacity: 0}, {y: 0, opacity: 1, stagger: .12, duration: .55, clearProps: 'transform,opacity'});
+      gsap.fromTo('#demo-output > :not([hidden])', {y: 12, opacity: 0}, {y: 0, opacity: 1, stagger: .12, duration: .55, clearProps: 'transform,opacity'});
     }
     writingTimer = setTimeout(() => { if (window.ScrollTrigger) ScrollTrigger.refresh(); }, 20);
     output.scrollIntoView({behavior: reduced.matches ? 'instant' : 'smooth', block: 'nearest'});
   });
-  $('#close-output').addEventListener('click', () => { clearTimeout(writingTimer); output.hidden = true; $('#play-status').textContent = '看看生成后怎么阅读稿件'; play.focus(); if (window.ScrollTrigger) ScrollTrigger.refresh(); });
+  $('#close-output').addEventListener('click', () => { clearTimeout(writingTimer); paperAnimations.stop(); output.hidden = true; $('#play-status').textContent = '看看生成后怎么阅读稿件'; play.focus(); if (window.ScrollTrigger) ScrollTrigger.refresh(); });
 
   let reviewTimeline;
   function replayReview() {
@@ -100,5 +130,5 @@
     reduced.addEventListener('change', () => { reviewTimeline?.kill(); gsap.set('.review-before,.review-after,.review-explanation', {clearProps:'transform,opacity'}); });
   }
   initMotion();
-  addEventListener('pagehide', () => { clearTimeout(writingTimer); reviewTimeline?.kill(); observer.disconnect(); });
+  addEventListener('pagehide', () => { clearTimeout(writingTimer); paperAnimations.stop(); reviewTimeline?.kill(); observer.disconnect(); });
 })();

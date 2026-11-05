@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {partialObject,streamDocument,remainingCount,activity} from '../../web/workbench/live-model.mjs';
 import {markdown} from '../../web/workbench/model.mjs';
-import {liveMarkup} from '../../web/workbench/live-workspace.mjs';
+import {liveMarkup,activityMarkup} from '../../web/workbench/live-workspace.mjs';
 
 test('结构化JSON所有截断位置均可安全预览，正确解码转义并保留章节顺序',()=>{
   const data={title:'含"引号"的标题',summary:'摘要\n换行与\\路径',sections:[{heading:'条件',paragraphs:['**正文**\n\n- 第一项','中文\u2028字符']}],key_facts:['事实'],faq:[{q:'怎么用？',a:'按资料。'}],tags:['不混入正文']};
@@ -26,7 +26,11 @@ test('Markdown表格、嵌套列表、链接和引用正确排版，HTML与危�
 test('真实活动与终态：核查、取消收尾、访谈、错误不能伪装仍在写作',()=>{
   assert.equal(activity({job:{id:'job',status:'running'},stream:{phase:'audit'}}).label,'正在对照客户资料核查');
   assert.equal(activity({job:{id:'job',status:'running',cancel:true}}).label,'正在收尾，之后暂停');
-  assert.equal(activity({operations:[{id:'op',kind:'interview',status:'running'}]}).label,'正在整理本次要求');
+  assert.equal(activity({operations:[{id:'op',kind:'interview',status:'running'}]}).label,'正在回复');
+  const disconnected={operations:[{id:'op',kind:'interview',status:'running',stream_disconnected:true}]};
+  assert.equal(activity(disconnected).uncertain,true);
+  assert.match(activityMarkup(disconnected),/is-uncertain/);
+  assert.ok(!activityMarkup(disconnected).includes('m5 12 4 4L19 6'),'断线不得显示成功勾');
   for(const status of ['done','error','interrupted','stopped','paused'])assert.equal(activity({job:{id:'job',status}}).active,false);
 });
 test('全部完成隐藏继续/下一篇；部分完成保留剩余入口，未保存流不计完成',()=>{

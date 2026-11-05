@@ -26,15 +26,18 @@ def adopted_plan(service, ident, ids=None):
     return plan
 
 
-def export(service, ident, fmt, ids=None):
+def export(service, ident, fmt, ids=None, *, scope=None):
     if fmt not in ('docx', 'md', 'txt', 'json'): raise Problem('导出格式不正确')
+    if scope is not None and (scope != 'body' or fmt not in ('md', 'txt')):
+        raise Problem('正文导出范围适用于 Markdown 和 TXT')
     with service.guard:
         plan = adopted_plan(service, ident, ids)
         if fmt == 'docx':
             body = render.export_plan_docx(plan, ids)
             ctype = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
         else:
-            function = {'md': render.export_plan_md, 'txt': render.export_plan_txt, 'json': render.export_plan_json}[fmt]
+            function = (render.export_bodies_md if scope == 'body' else
+                        {'md': render.export_plan_md, 'txt': render.export_plan_txt, 'json': render.export_plan_json}[fmt])
             body = function(plan, ids).encode('utf-8')
             ctype = {'md': 'text/markdown', 'txt': 'text/plain', 'json': 'application/json'}[fmt] + '; charset=utf-8'
         name = render.safe_name(plan['title'] or plan['keyword']) + '.' + fmt

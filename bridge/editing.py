@@ -3,6 +3,7 @@ import copy
 from pathlib import Path
 from app import llm, prompts
 from . import provider, style_library
+from .creation_context import key
 from .errors import Problem, Conflict
 from .storage import dumps, integer, text_value
 
@@ -32,6 +33,13 @@ def call_json(system, request, settings, tokens=8000):
 def style_review(service, ident, aid, expected):
     conv, article = checked_article(service, ident, aid, expected)
     source = service.ws.version_source(aid, expected)
+    variants = (source.get('creation_context') or {}).get('style', {}).get('variants', {})
+    references = variants.get(key(article.get('platform_id'), article.get('account_type'), article.get('fmt')))
+    if references:
+        references = {**{field: references.get(field, []) for field in ('profiles', 'expressions')},
+            'use': '仅参考写法。按本次要求与正文信息贡献判断；例句不提供本次事实。'}
+    else:
+        references = style_library.references(article, conv['client_id'])
     def review(op, settings):
         skill = (CONFIG / 'de-ai-taste.md').read_text(encoding='utf-8')
         signals = (CONFIG / 'ai-taste-signals.md').read_text(encoding='utf-8')
@@ -43,7 +51,7 @@ GEO事实段、FAQ与说明文的清晰结构需结合信息贡献判断；正�
 documents是本版本写作时已提供的资料。只有方案需要新增这些资料之外的具体经历、案例、数字时才标记requires_material=true；能直接依据现有资料处理时为false。不要把缺少非核心细节当作必须补故事的理由。'''
         data = call_json(system, {'body': article['body_md'], 'title': article['title'],
             'brief': source.get('brief', conv['brief']), 'documents': source_documents(source),
-            'references': style_library.references(article, conv['client_id'])}, settings)
+            'references': references}, settings)
         if not isinstance(data.get('assessment'), str) or not isinstance(data.get('suggestions'), list) or not isinstance(data.get('observations', []), list):
             raise Problem('去味审阅结构不完整，当前采用稿保留')
         seen = set()

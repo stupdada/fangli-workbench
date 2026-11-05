@@ -92,8 +92,11 @@ ACCOUNT_RULES = {
 }
 
 
+CLAIM_BOUNDARY = """认证、代理关系或资质、排名、量化效果及与大客户合作的具体断言，只有【本次可用的具体说法】同时支持该主体、说法和适用条件时才可写入正文。客户资料、要求或已有稿件中的相关断言也按此规则处理。缺依据时略过该断言，在编辑记录中写清具体说法和原因。普通业务资料支持的产品、规格、服务和流程照常具体写，适用条件自然表达。"""
+
+
 def build_system(platform, risk_items, pref_level, keyword, brand="", brief_company="",
-                 account_type="personal"):
+                 account_type="personal", creation_context=None):
     level_text = {"high": "高优先抓取", "mid": "中等抓取", "low": "低抓取"}.get(pref_level, "中等抓取")
     # 风险清单不是参考资料，是写作时的硬约束：按等级排序、编号，方便模型逐条自查
     order = {"高": 0, "中": 1, "低": 2}
@@ -104,6 +107,32 @@ def build_system(platform, risk_items, pref_level, keyword, brand="", brief_comp
         if (r.get("tip") or "").strip():
             lines.append(f"   怎么改：{r['tip']}")
     risk_text = "\n".join(lines) or "（本平台暂无额外限制）"
+    if creation_context:
+        claim_boundary = CLAIM_BOUNDARY if creation_context.get('supported_claims') is not None else ''
+        identity = ('使用客户确认的机构身份。官网、电话、地址和服务承诺只采用本次明确提供的信息，按主题需要自然带出。'
+                    if account_type == 'official' else '使用个人身份介绍，依照材料解释判断，不代称商家、不编亲历；联系方式留在正文外。')
+        budget = creation_context.get('budget')
+        structure = '按主题安排必要段落，为摘要与各节分配篇幅。'
+        if budget:
+            sections = '、'.join(f'第{i}节约{size}字' for i, size in enumerate(budget['sections'], 1))
+            structure = (f"【结构与字数】正文合计写到约{budget['target']}字。摘要不超过{budget['summary']}字，"
+                         f"sections 恰好{len(budget['sections'])}节，{sections}（含小标题）。"
+                         f"每节写{budget['paragraphs_per_section']}个完整段落，精简小标题，句子保持完整。"
+                         '按本次要求的顺序分配各节，每节解决一个具体问题。篇幅接近上限时删掉外围例子和收尾扩展。')
+        return f"""为{platform['name']}撰写能直接阅读的稿件。面向{platform['audience']}；平台基础语气：{platform['style']}。
+{identity}
+
+{creation_context['instructions']}
+{claim_boundary}
+
+【写作要求】标题自然包含主关键词「{keyword}」。摘要给一句直接答复，详细名录和步骤各放在对应章节，正文不复述摘要。每节只保留与本次问题相关的事实。产品适用方向写清材料搭配和选型条件。服务按预约、操作或交接的实际环节写。建议直接说下一步可以准备、说明或确认什么，不把建议升级为必做条件，也不为动作加未经证实的效果。正文直接叙述业务，不交代资料、核对或制作过程。
+{structure}
+【风险规则】
+{risk_text}
+
+【输出】一个完整 JSON 对象，使用以下字段：
+{{"title":"标题，30字以内","summary":"直接答复，35字以内","sections":[{{"heading":"小标题","paragraphs":["正文"],"bullets":[]}}],"tags":["#主关键词"],"declarations":["含AI生成内容"],"risk_notes":["编辑侧需核对的事项"]}}
+发布稿由 summary 和 sections 组成，标题、标签、声明和编辑记录另计。输出前按各节预算检查合计篇幅。"""
     company = (brief_company or "").strip()
     brand_line = brand.strip() or "（客户未提供品牌名，用「这套方案」「这类产品」指代，不出现具体品牌）"
     if company:
@@ -169,7 +198,7 @@ AUDIT_RULES = """你是这篇文章的事实核查员。你的任务不是润色
 3. 行业公开常识（例如「橡胶硫化需要加热加压」「金属粘接前要除油」）
 
 【怎么判定】
-- 客户资料里写了的：通过，一个字都不用改。
+- 本次核查若提供具体断言的专门约定，优先按该约定核对相关断言；其余有客户资料支撑的内容通过。
 - 资料里没有，但属于行业通用常识、且不含任何具体厂商数据：通过。
 - 资料里找不到的具体信息——数字、参数、温度、时间、比例、认证、标准号、客户名、案例、
   奖项、销量、市占率、成立年份、网点数量——一律判「无依据」：删掉，或改成不带数字的定性描述。
@@ -183,13 +212,24 @@ AUDIT_RULES = """你是这篇文章的事实核查员。你的任务不是润色
 """
 
 
-def build_audit(body, materials_text, note=""):
+def build_audit(body, materials_text, note="", check_claim_strength=False, supported_claims=None):
     """二次核查用的提示词：只判断真假，不重写文章。"""
     mat = materials_text.strip() or "（客户没有提供资料，请把所有具体数字和案例都判为无依据）"
+    claim_strength = """
+核对事实的力度与条件。逐句区分适用方向和确定适用、评估建议和必做要求、可选服务和固定承诺。
+原资料提出一个动作，不能自动据此写出该动作会产生某种效果。行业常识也不能补成此型号或门店的具体结论。
+写作要求本身不提供业务事实。若强度、效果或条件超出资料，逐字摘录正文中的完整问题句作为 quote，在 why 指出具体偏差，给出可直接读的局部修订。保留有依据的业务表达。
+""" if check_claim_strength else ""
+    claim_boundary = (f'\n【本次可用的具体说法】\n{json.dumps(supported_claims, ensure_ascii=False)}\n'
+                      f'本次核查按以下约定判断上述断言，优先于一般的资料已写即通过规则。{CLAIM_BOUNDARY}\n'
+                      '只核查已写出的断言，依据不够则局部删去，在 findings 说明，保留其他业务内容。\n'
+                      if supported_claims is not None else '')
+    material_label = '客户资料' if supported_claims is not None else '客户资料｜唯一事实来源'
     return [
         {"role": "system", "content": AUDIT_RULES},
-        {"role": "user", "content": f"""【客户资料｜唯一事实来源】
+        {"role": "user", "content": f"""【{material_label}】
 {mat}
+{claim_boundary}
 
 【客户的补充说明】
 {note.strip() or "（没有补充说明）"}
@@ -211,8 +251,8 @@ def build_audit(body, materials_text, note=""):
 
 要求：
 - findings 只列真正有问题的，不要把「文笔一般」「不够生动」当成事实问题。
-- 资料里已有的数字必须保留，不能因为「怕出错」就删。
-- revised_body 必须是完整文章，不是片段；只改有问题的地方，其余原样照抄。"""},
+- 已通过核查的数字必须保留，不能因为「怕出错」就删。
+- revised_body 必须是完整文章，不是片段；只改有问题的地方，其余原样照抄。{claim_strength}"""},
     ]
 
 
@@ -270,7 +310,7 @@ def layout_block(layout):
 
 def build_user(brief, platform, angle, fmt, avoid_titles, sub_angle, index, total,
                keyword=None, materials_text="", extra_keywords=None, account_type="personal",
-               layout=None, avoid_faqs=None):
+               layout=None, avoid_faqs=None, creation_context=None):
     keyword = keyword or brief.get("keyword") or ""
     extras = [k for k in (extra_keywords or []) if k and k != keyword]
     others = [k for k in (brief.get("keywords") or []) if k != keyword and k not in extras]
@@ -286,6 +326,29 @@ def build_user(brief, platform, angle, fmt, avoid_titles, sub_angle, index, tota
         legacy = [brief.get("topic"), brief.get("points"), brief.get("extra")]
         note = "；".join(x.strip() for x in legacy if x and str(x).strip())
     rivals = brands_for(brief, keyword)
+
+    if creation_context:
+        fact_keys = ('client', 'brand', 'company', 'products', 'industry')
+        if account_type == 'official': fact_keys += ('website', 'phone', 'address')
+        profile = {k: brief[k] for k in fact_keys if brief.get(k)}
+        form = ('口播按自然短句组织；画面和字幕提示放在编辑字段。' if fmt == '短视频' else '用自然段和必要的小标题。')
+        claims = creation_context.get('supported_claims')
+        claim_basis = f'【本次可用的具体说法】\n{json.dumps(claims, ensure_ascii=False)}\n' if claims is not None else ''
+        return f"""【主题】{brief.get('topic') or keyword}
+【主关键词】{keyword}。相关词：{'、'.join(extras)}
+【本次要求】{note}
+【发布形态】{fmt}。{form}
+【正文篇幅】{creation_context['length']['hint']}
+【客户档案】{json.dumps(profile, ensure_ascii=False)}
+【本次客户资料】
+{materials_text}
+{claim_basis}
+
+【选题参考】{angle['name']}、{sub_angle}；以本次主题及要求决定实际切口。
+【同平台已写标题】{'；'.join(avoid_titles[:8])}
+【同平台已写问题】{'；'.join((avoid_faqs or [])[:20])}
+【正文须避开的同现品牌】{'、'.join(rivals)}
+直接回应主题，保留正文最相关的事实和建议。输出指定 JSON，核对正文合计篇幅。"""
 
     if fmt == "短视频":
         fmt_rule = """发布形态：短视频口播脚本。
@@ -400,7 +463,7 @@ def _pick_relevant(text, focus, limit):
     return "\n\n".join(p for _, p in picked)
 
 
-def build_materials_text(materials, budget=16000, per_file=6000, focus=None):
+def build_materials_text(materials, budget=16000, per_file=6000, focus=None, prefer_complete=False):
     """把资料拼成提示词片段。给了 focus（本篇关键词）就只挑相关段落。"""
     if not materials:
         return ""
@@ -415,7 +478,7 @@ def build_materials_text(materials, budget=16000, per_file=6000, focus=None):
         if used >= budget:
             parts.append(f"### 资料{i}：{m.get('filename')}（因篇幅限制未展开）")
             continue
-        chunk = _pick_relevant(text, focus or [], share)
+        chunk = text if prefer_complete and len(text) <= min(share, budget - used) else _pick_relevant(text, focus or [], share)
         if len(chunk) < len(text):
             chunk += "\n……（已按相关性截取，其余内容未展开）"
         used += len(chunk)

@@ -9,7 +9,7 @@ const conversation=(id='a')=>({id,client_id:'customer',brief:structuredClone(opt
 function hydrate(client,c=conversation()){client.hydrate({conversation:c,batch:null,articles:[],documents:[],operations:[]});}
 function runtime({failCompile=false,failStart=false}={}){
   const cache=storage(),calls=[];let current=conversation(),compileCount=0,startCount=0;
-  const client=new WorkbenchClient({storage:cache,delay:async()=>{},eventSource:()=>({close(){}}),fetcher:async(path,request)=>{
+  const client=new WorkbenchClient({storage:cache,delay:async()=>{},eventSource:url=>{const source={closed:false,close(){this.closed=true;}};queueMicrotask(async()=>{const d=await client.api(url.replace(/\/stream$/,''));if(!source.closed)source.onmessage?.({data:JSON.stringify({operation:{...d.operation,conversation_id:current.id}})});});return source;},fetcher:async(path,request)=>{
     const body=request.body?JSON.parse(request.body):null;calls.push({path,body});
     let value;
     if(path.endsWith('/draft')){current={...current,brief:body.options??current.brief,document_ids:body.document_ids??current.document_ids,followup:body.followup};value={conversation:current};}
@@ -73,7 +73,7 @@ test('冻结任务的新消息入口阻止需求整理与开始请求',async()=>
 
 test('后台需求校验失败保留400语义与消息，错误按任务保存而非连接故障',async()=>{
   const cache=storage(),c=conversation(),op={id:'failed',kind:'interview',status:'error',error:'需求整理没有返回当前有效写作说明',result:{error_status:400}};
-  const client=new WorkbenchClient({storage:cache,fetcher:async(path,request)=>{
+  const client=new WorkbenchClient({storage:cache,eventSource:()=>{const source={close(){}};queueMicrotask(()=>source.onmessage?.({data:JSON.stringify({operation:{...op,conversation_id:c.id}})}));return source;},fetcher:async(path,request)=>{
     const value=path.endsWith('/chat')?{operation_id:op.id}:path.includes('/operations/')?{operation:op}:{conversation:c,batch:null,articles:[],documents:[],operations:[op]};
     return new Response(JSON.stringify({ok:true,...value}));
   }});hydrate(client,c);client.setMessageDraft('待整理消息');

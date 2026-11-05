@@ -120,7 +120,7 @@ def used_faqs(store, plan_id):
 def build_messages(store, brief, platform, angle, sub_angle, fmt,
                    level, avoid_titles, index, total, keyword="", materials_text="",
                    extra_keywords=None, account_type=None, extra_note="",
-                   avoid_faqs=None, layout=None):
+                   avoid_faqs=None, layout=None, creation_context=None):
     """拼系统提示与单篇提示。批量生成和流式单篇共用这一份，避免两边漂移。"""
     risk_items = risks_for(store, platform["id"])
     account_type = account_type or account_type_of(platform, brief)
@@ -128,13 +128,13 @@ def build_messages(store, brief, platform, angle, sub_angle, fmt,
                                   keyword or brief.get("keyword", ""),
                                   (brief.get("brand") or "").strip(),
                                   (brief.get("company") or "").strip(),
-                                  account_type=account_type)
+                                  account_type=account_type, creation_context=creation_context)
     user = prompts.build_user(brief, platform, angle, fmt, avoid_titles, sub_angle,
                               index, total, keyword=keyword, materials_text=materials_text,
                               extra_keywords=extra_keywords or [],
                               account_type=account_type,
                               layout=layout or prompts.layout_for(platform, fmt),
-                              avoid_faqs=avoid_faqs)
+                              avoid_faqs=avoid_faqs, creation_context=creation_context)
     return [{"role": "system", "content": system},
             {"role": "user", "content": user + extra_note}]
 
@@ -504,7 +504,10 @@ def audit_article(store, settings, article_id, brief=None):
 
     materials = store.list_materials(art["plan_id"])
     materials_text = prompts.build_materials_text(materials, budget=20000, per_file=8000)
-    msgs = prompts.build_audit(body, materials_text, brief.get("note") or "")
+    context = getattr(store, 'creation_context', None) or {}
+    supported_claims = context.get('editorial', {}).get('supported_claims')
+    msgs = prompts.build_audit(body, materials_text, brief.get("note") or "",
+                               check_claim_strength=bool(context), supported_claims=supported_claims)
 
     txt = llm.chat_with_retry(msgs, settings, force_json=True, max_tokens=8000)
     data = llm.parse_json(txt)
@@ -513,19 +516,27 @@ def audit_article(store, settings, article_id, brief=None):
 
     findings = [f for f in (data.get("findings") or []) if isinstance(f, dict) and f.get("quote")]
     revised = (data.get("revised_body") or "").strip()
+    unmatched = []
+    if context:
+        unmatched = [f for f in findings if not isinstance(f['quote'], str) or f['quote'] not in body]
+        findings = [f for f in findings if f not in unmatched]
 
     result = {
         "ok": True,
         "findings": findings[:30],
         "count": len(findings),
-        "verdict": data.get("verdict") or ("clean" if not findings else "revised"),
+        "verdict": 'unverified' if unmatched else data.get("verdict") or ("clean" if not findings else "revised"),
         "at": time.strftime("%Y-%m-%d %H:%M"),
         "original_chars": len(body),
         "applied": False,
     }
 
     # 安全阀：模型大幅删减、或返回的根本不是正文，都不替换，只留问题清单
-    if not revised:
+    if unmatched:
+        result.update(unmatched_quotes=len(unmatched), reason="核查摘录与原文不一致，保留当前正文")
+    elif context and not findings and revised and revised != body:
+        result.update(verdict='unverified', reason="核查未提供修改依据，保留当前正文")
+    elif not revised:
         result["reason"] = "模型没给修订版，只保留了问题清单"
     elif len(revised) < len(body) * 0.6:
         result["reason"] = "修订版比原文少了三成以上，先不替换，请你手动看"
@@ -602,7 +613,8 @@ def _write_one_core(store, plan_id, brief, jid, task=None):
            message=f"正在写：{platform['name']} 第 {task['index']} 篇（{task['keyword']}）")
 
     materials = store.list_materials(plan_id)
-    materials_text = prompts.build_materials_text(materials, focus=task["group"])
+    materials_text = prompts.build_materials_text(materials, focus=task["group"],
+                                                  prefer_complete=bool(getattr(store, 'creation_context', None)))
     level = pref_level(store, platform["id"], brief.get("models") or [])
     msgs = build_messages(store, brief, platform, task["angle"], task["sub"], task["fmt"],
                           level, task["avoid"], task["index"], task.get("count") or 0,
@@ -630,9 +642,10 @@ def _write_one_core(store, plan_id, brief, jid, task=None):
     if not isinstance(data, dict) or not data.get("title"):
         raise llm.LLMError("模型没有返回可用的结构化稿件：" + (partial or "")[:160])
 
+    layout = {"sp": False, "facts": False, "faq": False} if getattr(store, 'creation_context', None) else prompts.layout_for(platform, task["fmt"])
     art = _finalize(data, brief, platform, task["angle"], task["fmt"], settings,
                     task["keyword"], task["extras"],
-                    layout=prompts.layout_for(platform, task["fmt"]),
+                    layout=layout,
                     account_type=account_type)
     aid = store.add_article(plan_id, **art)
     saved = [a for a in store.list_articles(plan_id) if a["id"] == aid][0]

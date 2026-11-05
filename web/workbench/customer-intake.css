@@ -1,0 +1,34 @@
+.customer-intake{max-width:1000px;font-size:16px;line-height:1.7;padding-bottom:24px}
+.customer-intake>header{display:flex;align-items:baseline;justify-content:space-between;gap:24px;padding:16px 0 24px;border-bottom:1px solid var(--line)}
+.customer-intake h2{font-size:24px;margin:0 0 8px;font-weight:600}
+.customer-intake h3{font-size:18px;margin:32px 0 16px;font-weight:600}
+.customer-intake header p,.intake-save-state,.intake-status-note{font-size:14px;color:var(--muted);margin:0}
+.intake-save-state{flex-shrink:0}
+.intake-profile-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px 32px}
+.customer-intake .field{margin:0;min-width:0}
+.customer-intake input,.customer-intake textarea{font-size:16px;width:100%;max-width:100%;line-height:1.7;padding:8px 12px;min-height:42px;border:1px solid #d6dae2;border-radius:8px;background:#fff}
+.customer-intake textarea{resize:vertical;min-height:80px}
+.intake-suggestion,.intake-field-conflict{font-size:14px;overflow-wrap:anywhere;margin:8px 0}
+.intake-field-conflict{color:#76501f}
+.intake-suggestion .button{color:var(--blue);font-size:14px}
+.intake-references{font-size:14px;color:var(--muted);margin:8px 0}
+.intake-references summary{cursor:pointer;min-height:32px;padding:4px 0;text-underline-offset:4px}
+.intake-references summary:hover{color:var(--blue)}
+.intake-references blockquote{margin:8px 0 16px;padding:0 0 0 12px;border-left:1px solid var(--line);color:var(--ink);white-space:pre-wrap;overflow-wrap:anywhere}
+.intake-keywords{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.intake-editorial-row{padding:16px 0;border-bottom:1px solid var(--line)}
+.intake-claim-check{font-size:14px;overflow-wrap:anywhere}
+.intake-claim-check p{margin:8px 0}
+.intake-claim-check time{color:var(--muted);margin-inline-start:8px}
+.intake-claim-check dl{margin:12px 0;display:grid;grid-template-columns:max-content minmax(0,1fr);gap:6px 16px}
+.intake-claim-check dt{color:var(--muted)}
+.intake-claim-check dd,.intake-claim-check blockquote{margin:0;white-space:pre-wrap}
+.intake-claim-check a,.claim-candidates a{color:var(--blue);overflow-wrap:anywhere}
+.claim-candidates{padding-inline-start:22px}
+.claim-candidates li{margin-block-end:12px}
+.claim-candidates p{margin:4px 0}
+.intake-footer{position:sticky;bottom:0;background:#fff;display:flex;align-items:center;justify-content:space-between;gap:24px;padding:12px 0;margin-top:24px;border-top:1px solid var(--line);font-size:14px;color:var(--muted)}
+.customer-intake .button{min-height:40px;font-size:14px}
+.intake-document-choice{display:flex;align-items:center;gap:10px;margin-right:8px;min-width:0}
+.intake-document-choice input{width:18px;height:18px;flex:none}
+@media(max-width:650px){.intake-profile-grid,.intake-keywords{grid-template-columns:minmax(0,1fr)}.customer-intake>header,.intake-footer{align-items:flex-start;flex-direction:column;gap:12px}.intake-save-state{flex-shrink:1}.customer-intake h2{font-size:22px}}

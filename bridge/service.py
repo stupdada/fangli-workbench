@@ -8,12 +8,13 @@ import time
 from pathlib import Path
 from app import generator, llm, prompts
 from . import provider
+from .accepted_expressions import AcceptedExpressions
 from .errors import Problem, Conflict, Missing
 from .storage import Workspace, PROFILE_FIELDS, dumps, integer, text_value, uid
 
 ROOT = Path(__file__).resolve().parent.parent
 OPTION_FIELDS = set(PROFILE_FIELDS) | {'client', 'keywords', 'selections', 'models', 'rivals', 'aliases',
-    'note', 'format_overrides', 'platform_types', 'keyword_brands', 'topic', 'points', 'extra'}
+    'note', 'length_hint', 'format_overrides', 'platform_types', 'keyword_brands', 'topic', 'points', 'extra'}
 SETTING_FIELDS = {'model', 'temperature', 'max_tokens', 'title_prefix', 'disable_thinking', 'brand'}
 
 
@@ -23,6 +24,7 @@ class FrozenStore:
         self.service, self.raw, self.pid, self.sid = service, service.store, pid, sid
         self.jid, self.active = None, None
         source = snapshot or {}
+        self.creation_context = copy.deepcopy(source.get('creation_context', {}))
         self.settings = copy.deepcopy(source.get('settings', self.raw.get_settings()))
         self.platforms = copy.deepcopy(source.get('platforms', self.raw.list_platforms()))
         for platform in self.platforms:
@@ -74,7 +76,10 @@ class FrozenStore:
     def update_article(self, aid, **values):
         if 'geo' in values:
             from .checks import article_checks
-            values['geo'] = article_checks({**self.articles[aid], **values}, values['geo'])
+            from .creation_context import key
+            article = {**self.articles[aid], **values}
+            variant = self.creation_context.get('style', {}).get('variants', {}).get(key(article['platform_id'], article['account_type'], article['fmt']))
+            values['geo'] = article_checks(article, values['geo'], variant)
         self.raw.update_article(aid, **values)
         self.articles[aid] = self.raw.get_article(aid)
 
@@ -88,7 +93,9 @@ class FrozenStore:
                     if messages and messages[0].get('content') == prompts.AUDIT_RULES and exchange.get('response', {}).get('text'):
                         self.service.ws.save_generation_evidence(aid, raw_audit=exchange['response']['text'])
                     audit = (generator.get_job(self.jid) or {}).get('audit', {})
-                    review = None if audit.get('ok') else {'status': 'unverified', 'summary': 'ZIP 原生核查未确认完成', 'native': audit}
+                    review = None
+                    if not audit.get('ok') or audit.get('verdict') == 'unverified':
+                        review = {'status': 'unverified', 'summary': audit.get('reason') or 'ZIP 原生核查未确认完成', 'native': audit}
                     self.service.ws.capture_zip(aid, review=review)
                 finally:
                     self.service.ws.unlock_article(aid, self.jid)
@@ -131,6 +138,11 @@ def install_context():
             values = signature.bind(*args, **kwargs)
             values.apply_defaults()
             store = values.arguments['store']
+            context = getattr(store, 'creation_context', None)
+            if context:
+                from .creation_context import for_article
+                values.arguments['creation_context'] = for_article(context, values.arguments['platform'],
+                    values.arguments['account_type'] or generator.account_type_of(values.arguments['platform'], values.arguments['brief']), values.arguments['fmt'])
             if isinstance(store, FrozenStore) and (store.reference_articles or store.topic_offset):
                 platform = values.arguments['platform']['id']
                 history = [a for a in store.reference_articles if a.get('platform_id') == platform]
@@ -155,9 +167,11 @@ def install_context():
 
 
 class Service:
-    def __init__(self, store):
+    def __init__(self, store, *, boot_batches=True):
         self.store, self.ws = store, Workspace(store)
+        self.accepted_expressions = AcceptedExpressions(store)
         self.guard = threading.RLock()
+        self.operation_changes = threading.Condition(self.guard)
         self.catalog, self.threads, self.cancellations = None, {}, {}
         self.closed = False
         self.ws.recover()
@@ -169,9 +183,12 @@ class Service:
         install_context()
         from .customers import Customers
         from .batches import Batches
+        from .client_intake import ClientIntake
         self.customers = Customers(self)
+        self.intake = ClientIntake(self)
         self.batches = Batches(self)
-        self.batches.boot()
+        if boot_batches:
+            self.batches.boot()
 
     def public_settings(self):
         settings = self.store.get_settings()
@@ -269,7 +286,7 @@ class Service:
             raise Problem('写作选项包含未知字段')
         value = {**copy.deepcopy(base or {}), **copy.deepcopy(patch)}
         value.pop('document_ids', None)
-        for key in set(PROFILE_FIELDS) | {'note', 'client', 'topic', 'points', 'extra'}:
+        for key in set(PROFILE_FIELDS) | {'note', 'length_hint', 'client', 'topic', 'points', 'extra'}:
             if key in value: text_value(value[key], key, 20000 if key == 'note' else 4000)
         if 'client' in value: text_value(value['client'], '客户名称', 100, empty=False)
         for key in ('keywords', 'rivals', 'models'):
@@ -345,6 +362,16 @@ class Service:
             (folder / f'{counter[0]:03d}-{kind}.json').write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding='utf-8')
         return save
 
+    def publish_reply(self, ident, text, complete):
+        with self.operation_changes:
+            current = self.ws.operation(ident)
+            if current['status'] != 'running' or self.cancellations[ident].is_set():
+                raise provider.failure('cancelled')
+            previous = current['result']
+            if previous.get('understanding') == text and previous.get('reply_complete') == complete: return
+            self.ws.update_operation_reply(ident, text, complete)
+            self.operation_changes.notify_all()
+
     def background(self, kind, ident, fn, aid=None, expected=None):
         with self.guard:
             if self.closed: raise Conflict('服务正在退出')
@@ -369,7 +396,7 @@ class Service:
                     self.ensure_model(settings)
                     result = fn(op, settings) or {}
                     result['usage'] = provider.local.usage
-                    if cancel.is_set(): status = 'stopped'
+                    if cancel.is_set() and kind != 'interview': status = 'stopped'
                 except Exception as exc:
                     error = provider.public_error(exc)
                     if isinstance(exc, Problem):
@@ -377,8 +404,12 @@ class Service:
                     status = 'stopped' if cancel.is_set() else 'interrupted' if getattr(exc, 'kind', '') == 'uncertain' else 'error'
                 finally:
                     with self.guard:
+                        if kind == 'interview' and status != 'done':
+                            partial = self.ws.operation(op)['result']
+                            if partial.get('partial'): result = {**partial, **result}
                         if aid: self.ws.unlock_article(aid, op)
                         self.ws.finish_operation(op, result, error, status)
+                        self.operation_changes.notify_all()
                         self.cancellations.pop(op, None)
                         self.threads.pop(op, None)
                     provider.local.__dict__.clear()
@@ -441,6 +472,39 @@ class Service:
             for r in risks if r['platform_id'] is None or r['platform_id'] == p['id']]} for p in platforms],
             'levels': {'high': '高优先抓取', 'mid': '中等抓取', 'low': '低抓取'}, 'created_at': time.strftime('%Y-%m-%d %H:%M:%S')}
 
+    def adopted_intake_editorial(self, cid, documents):
+        if not documents:
+            return {}
+        selected = {(doc['id'], doc['revision'], doc['digest']) for doc in documents}
+        with self.store.conn() as conn:
+            rows = conn.execute('''
+                SELECT a.id, a.intake_id, a.editorial, i.frozen
+                FROM wb_client_intake_adoptions a
+                JOIN wb_client_intakes i ON i.id=a.intake_id AND i.client_id=a.client_id
+                WHERE a.client_id=? AND i.status='ready'
+                  AND json_array_length(i.frozen, '$.documents')=?
+                ORDER BY a.rowid DESC
+            ''', (cid, len(documents)))
+            for row in rows:
+                docs = json.loads(row['frozen'])['documents']
+                if selected == {(doc['id'], doc['revision'], doc['digest']) for doc in docs}:
+                    adopted = self.intake.enrich_editorial(cid, json.loads(row['editorial']))
+                    return {**{key: adopted[key] for key in ('overview', 'keywords', 'important_claims', 'conflicts')},
+                            'intake_id': row['intake_id'], 'adoption_id': row['id']}
+        return {}
+
+    def freeze_creation_context(self, cid, source):
+        from .creation_context import build, digest, supported_claims
+        brief = {**source['brief'], 'format_overrides': source.get('format_overrides', source['brief'].get('format_overrides', {}))}
+        client = {'id': cid, 'name': brief.get('client', ''), 'profile': {k: brief.get(k, '') for k in PROFILE_FIELDS}}
+        context = build(client, source['documents'], brief, source['platforms'],
+                        self.customers.plan(cid)['plan']['options'], self.accepted_expressions)
+        editorial = self.adopted_intake_editorial(cid, context['documents'])
+        context['editorial'].update(editorial)
+        context['editorial']['supported_claims'] = supported_claims(context['documents'], editorial.get('important_claims', []))
+        context['digest'] = digest(context)
+        return context
+
     def start(self, ident, options=None, one=False, _frozen=None, _batch=False):
         with self.guard:
             if self.closed: raise Conflict('服务正在退出')
@@ -453,19 +517,21 @@ class Service:
             conv = conv if _frozen else self.save_draft(ident, options)
             brief = copy.deepcopy(_frozen['brief']) if _frozen else self.build_brief(conv)
             docs = copy.deepcopy(_frozen['documents']) if _frozen else self.ws.selected_documents(conv)
-            # Synchronous validation performs no generation; failure leaves a saved draft.
-            self.ensure_model(_frozen['settings'] if _frozen else None)
-            pid = conv['plan_id']
             brief['snapshot'] = copy.deepcopy(_frozen.get('zip_snapshot', {})) if _frozen else self.zip_snapshot(brief)
-            if not pid:
-                pid = self.store.create_plan(brief['keyword'], brief['client'] + ' · ' + brief['keyword'], brief)
-            self.store.update_plan(pid, brief=brief, keyword=brief['keyword'], title=brief['client'] + ' · ' + brief['keyword'], status='generating')
-            self.store.replace_materials(pid, [{'filename': d['filename'], 'kind': d['kind'], 'text': d['text']} for d in docs])
             source = copy.deepcopy(_frozen) if _frozen else {'brief': brief, 'documents': docs, 'settings': self.public_settings(),
                 'platforms': self.store.list_platforms(), 'models': self.store.list_models(), 'prefs': self.store.get_prefs(),
                 'risks': self.store.list_risks(), 'format_overrides': conv['brief'].get('format_overrides', {}),
                 'reference_articles': self.customers.reference_articles(conv['client_id'], ident)}
             source.update(brief=brief, documents=docs)
+            if not _frozen:
+                source['creation_context'] = self.freeze_creation_context(conv['client_id'], source)
+            # Synchronous validation performs no generation; failure leaves a saved draft.
+            self.ensure_model(source['settings'])
+            pid = conv['plan_id']
+            if not pid:
+                pid = self.store.create_plan(brief['keyword'], brief['client'] + ' · ' + brief['keyword'], brief)
+            self.store.update_plan(pid, brief=brief, keyword=brief['keyword'], title=brief['client'] + ' · ' + brief['keyword'], status='generating')
+            self.store.replace_materials(pid, [{'filename': d['filename'], 'kind': d['kind'], 'text': d['text']} for d in docs])
             sid = self.ws.save_snapshot(ident, source)
             view = FrozenStore(self, pid, source, sid, snapshot=source)
             # Format overrides live alongside the executable brief in the snapshot.
@@ -539,6 +605,30 @@ class Service:
         if not native or native['plan_id'] != conv['plan_id'] or self.ws.is_deleted_article(aid): raise Missing('稿件不属于当前内容任务')
         return conv, self.ws.current(aid)
 
+    def save_accepted_expression(self, ident, aid, body):
+        if set(body) - {'expected_version', 'selection', 'excerpt', 'purpose', 'medium'}:
+            raise Problem('认可表达含未知字段')
+        expected = integer(body.get('expected_version'), 'expected_version')
+        with self.guard:
+            conv, article = self.article_context(ident, aid)
+            if article['locked'] or article['current_version'] != expected or not self.ws.was_adopted(aid, expected):
+                raise Conflict('请在当前已采用的正文版本上保存认可表达')
+            return self.accepted_expressions.save(conv['client_id'], article, body.get('selection'),
+                                                  body.get('excerpt'), body.get('purpose'), body.get('medium'))
+
+    def article_editorial(self, ident, aid, vid):
+        from .creation_context import fact_findings
+        with self.guard:
+            self.article_context(ident, aid)
+            version = self.ws.version(aid, vid)
+            source = self.ws.version_source(aid, vid)
+            context = source.get('creation_context') or {}
+            editorial = context.get('editorial') or {}
+            return {'version_id': vid, 'documents': context.get('documents', source.get('documents', [])),
+                    'important_claims': editorial.get('important_claims', []), 'conflicts': editorial.get('conflicts', []),
+                    'fact_issues': fact_findings(version), 'risk_tips': version['article'].get('risk_tips') or [],
+                    'risk_tips_inherited': version['origin'] in ('manual', 'style', 'revision')}
+
     def require_stopped(self, ident):
         conv = self.ws.conversation(ident)
         if self.batches.managed(ident) in ('queued', 'running'):
@@ -585,6 +675,7 @@ class Service:
     def close(self):
         with self.guard:
             self.closed = True
+            self.operation_changes.notify_all()
             self.batches.close()
             for conv in self.ws.conversations():
                 if conv.get('job_id'): generator.cancel_job(conv['job_id'])

@@ -73,6 +73,10 @@ class WorkspaceStore(native.VideoStore):
             raise native.StoreError('CONTENT_VERSION_CONFLICT', 409)
 
     def _execute(self, op, data):
+        if op == 'asset.list':
+            client = self.client(data.get('clientId'))
+            rows = self.db.execute('SELECT id,name,type,size FROM assets WHERE client=? ORDER BY created DESC,id', (client,))
+            return [dict(row) for row in rows]
         if op == 'content.sources':
             context = self.context(data['clientId'])
             documents = context['documents']

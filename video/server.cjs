@@ -4,6 +4,7 @@ const path=require('node:path');
 const fs=require('node:fs/promises');
 const {createHandler}=require('./runtime/video-api.js');
 const {createWorkspaceContext,localBase}=require('./workspace-context.cjs');
+const {createNarrated}=require('./narrated/api.cjs');
 const content=require('./public/content.js');
 const {fault}=require('./runtime/video-contract.js');
 function args(argv){
@@ -25,6 +26,8 @@ async function start(options){
   const workspace=createWorkspaceContext(options.workspaceBase,options.fetchImpl);
   const handle=createHandler({dataDir:options.dataDir,env:{...process.env,FANGLI_WORKSPACE_BASE:options.workspaceBase},
     resolveSource:workspace.source,...(options.renderBatch!==undefined?{renderBatch:options.renderBatch}:{})});
+  const narrated=createNarrated({dataDir:options.dataDir,workspace,workspaceBase:options.workspaceBase,fetchImpl:options.fetchImpl,
+    resolveAsset:handle.resolveAsset,...options.narrated});
   const server=http.createServer(async(req,res)=>{
     try{
       const url=new URL(req.url,'http://localhost');
@@ -37,7 +40,7 @@ async function start(options){
       if(req.method==='GET'&&url.pathname==='/api/video/context'){
         const aid=url.searchParams.get('article_id'),vid=url.searchParams.get('version_id');
         if(Boolean(aid)!==Boolean(vid))return json(res,400,{errorCode:'INVALID_INPUT',error:'文章来源必须同时指定文章和版本'});
-        return json(res,200,await workspace.read(url.searchParams.get('clientId')||undefined,aid?{article_id:Number(aid),version_id:Number(vid)}:undefined));
+        return json(res,200,await workspace.read(url.searchParams.get('clientId')||undefined,aid?{article_id:Number(aid),version_id:Number(vid)}:undefined,{conversation_id:url.searchParams.get('conversation_id')||undefined}));
       }
       if(req.method==='POST'&&url.pathname==='/api/video/content-imports'){
         const input=await inputJson(req);if(typeof input.clientId!=='string'||!input.clientId.trim())throw fault(400,'CLIENT_INVALID');
@@ -49,8 +52,9 @@ async function start(options){
         const source=input.source?await workspace.source(input.clientId,input.source):null;
         json(res,200,{clientId:input.clientId,title:article?.title||input.title||'独立视频',body:editorial.displayBody,source,editorial:{...editorial,origin:source?'zip-article':'manual',provenance:source?.provenance||null},notes:content.relations(editorial.displayBody,context),context});return;
       }
-      if(await handle(req,res))return;
-      const staticFiles={'/video/':['index.html','text/html; charset=utf-8'],'/video/index.html':['index.html','text/html; charset=utf-8'],'/video/video-ui.js':['video-ui.js','text/javascript; charset=utf-8'],'/video/content.js':['content.js','text/javascript; charset=utf-8'],'/video/authoring-view.js':['authoring-view.js','text/javascript; charset=utf-8'],'/video/video-ui.css':['video-ui.css','text/css; charset=utf-8']};
+      if(await narrated.handle(req,res,url,{json,inputJson})||await handle(req,res))return;
+      const staticFiles={'/video/':['index.html','text/html; charset=utf-8'],'/video/index.html':['index.html','text/html; charset=utf-8'],'/video/video-ui.js':['video-ui.js','text/javascript; charset=utf-8'],'/video/content.js':['content.js','text/javascript; charset=utf-8'],'/video/authoring-view.js':['authoring-view.js','text/javascript; charset=utf-8'],'/video/video-ui.css':['video-ui.css','text/css; charset=utf-8'],
+        '/video/narrated/':['narrated.html','text/html; charset=utf-8'],'/video/narrated.js':['narrated.js','text/javascript; charset=utf-8'],'/video/narrated.css':['narrated.css','text/css; charset=utf-8']};
       if(['GET','HEAD'].includes(req.method)&&staticFiles[url.pathname]){
         const [file,type]=staticFiles[url.pathname],bytes=await fs.readFile(path.join(__dirname,'public',file));
         res.writeHead(200,{'Content-Type':type,'Content-Length':bytes.length,'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});return res.end(req.method==='HEAD'?undefined:bytes);
@@ -61,9 +65,13 @@ async function start(options){
       json(res,404,{errorCode:'NOT_FOUND',error:'入口不存在'});
     }catch(e){if(!res.headersSent)json(res,e.status||503,{errorCode:e.code||'STORE_UNAVAILABLE',error:e.status?e.message:'视频服务暂不可用'});else res.end();}
   });
-  try{await handle.ready();await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(options.port,'127.0.0.1',resolve);});}
-  catch(e){await handle.close();throw e;}
-  const close=async()=>{const closing=new Promise(resolve=>server.close(resolve));server.closeIdleConnections();await handle.close();await closing;};
+  try{await handle.ready();await narrated.ready();await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(options.port,'127.0.0.1',resolve);});}
+  catch(e){await Promise.all([handle.close(),narrated.close()]);throw e;}
+  const close=async()=>{
+    const closing=new Promise(resolve=>server.close(resolve));server.closeIdleConnections();
+    // Keep the data-directory lease while an admitted narrated operation shuts down.
+    try{await narrated.close();}finally{await handle.close();await closing;}
+  };
   return {server,handle,close,port:server.address().port};
 }
 if(require.main===module){
