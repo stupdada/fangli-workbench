@@ -3,6 +3,10 @@
 
 检查：页面元素与脚本引用是否对得上、新组件样式是否补齐、上传控件接受的格式是否覆盖四类核心文件。
 
+本脚本只校验合并前的单文件界面（web/index.html、web/app.js、web/styles.css）。合并后的
+现行界面在 web/workbench/，由 tests/frontend/*.test.mjs 覆盖。缺少旧界面文件时明确跳过，
+不把「文件已不存在」记成通过，也不记成失败。
+
 用法：python tools/test_ui_static.py
 """
 
@@ -11,6 +15,15 @@ import sys
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
+# web/index.html 已被现行站点取代，只有这两个文件同时存在才能确认是合并前快照。
+LEGACY = [BASE / "web" / "app.js", BASE / "web" / "styles.css"]
+MISSING = [path.relative_to(BASE).as_posix() for path in LEGACY if not path.is_file()]
+if MISSING:
+    print("\n[跳过] 本脚本只适用于合并前的单文件界面，当前 checkout 缺少标记文件：" + "、".join(MISSING))
+    print("       现行界面为 web/workbench/，覆盖检查见 tests/frontend/*.test.mjs。")
+    print("       如需复验旧界面，请在合并前快照上运行本脚本。")
+    raise SystemExit(0)
+
 HTML = (BASE / "web" / "index.html").read_text(encoding="utf-8")
 JS = (BASE / "web" / "app.js").read_text(encoding="utf-8")
 CSS = (BASE / "web" / "styles.css").read_text(encoding="utf-8")
