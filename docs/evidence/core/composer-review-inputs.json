@@ -1,0 +1,79 @@
+{
+  "ok": true,
+  "method": "collected focused results in this chat; local HTTP/SQLite with deterministic supplier",
+  "checks": [
+    {
+      "test": "test_effective_inputs.EffectiveInputTest.test_pending_message_compiles_once_then_enters_frozen_generation",
+      "status": "passed"
+    },
+    {
+      "test": "test_review_choices.ReviewChoices.test_material_missing_is_preflight_and_conservative_is_explicit",
+      "status": "passed"
+    },
+    {
+      "test": "test_review_choices.ReviewChoices.test_provided_material_and_observation_use_frozen_documents",
+      "status": "passed"
+    },
+    {
+      "test": "test_workbench.WorkbenchTest.test_failed_fact_check_retains_candidate_and_native_delivery",
+      "status": "passed"
+    },
+    {
+      "test": "test_workbench.WorkbenchTest.test_style_candidate_readonly_check_notes_export_and_video_pin",
+      "status": "passed"
+    }
+  ],
+  "source_sha256": {
+    "bridge/editing.py": "93ca76e005aa298cf980d0b6d53b0eb704e5fc9f511b96b1aa97dfc659eac65d",
+    "bridge/service.py": "dc52431ef6d42a8201133a627963aa5180851a56e9339a505a37e516d9f35615",
+    "bridge/http.py": "355397fa13b2ba64cc09d668fee6c4231bc5dd3c52851c6eae264f7a73cd056b",
+    "tests/core/test_review_choices.py": "8aa9691ba577a64e218da0d5c755958f410942ff43b9abaecd162c3bc89d77c8",
+    "tests/core/test_effective_inputs.py": "73e45afd0583cd86c996b79156e3fc06b8903d0c6cf602e252413bd426d295ee"
+  },
+  "external_model_calls": 0,
+  "external_catalog_calls": 0,
+  "media_encodes": 0,
+  "production_diagnostics": "read existing review flags only; material requests 3 and 6, no generation/review replay",
+  "runtime": {
+    "url": "http://127.0.0.1:8770/workbench",
+    "main_pid": 83432,
+    "video_pid": 66448,
+    "video_status": "ready",
+    "page_http_status": 200,
+    "customer_count": 3,
+    "conversation_count": 3,
+    "reload": "graceful; no active text operations, batch items or video jobs before shutdown",
+    "owned_command": "python -B main.py --no-browser --port 8770"
+  },
+  "handoff": {
+    "command": "python -B tools/check_handoff.py --runtime",
+    "ok": true,
+    "original_zip_files_unchanged": 11,
+    "files_checked": 408,
+    "runtime_dependencies": "all present",
+    "external_model_calls": 0,
+    "media_encodes": 0
+  },
+  "diff_check": {
+    "command": "git diff --check -- bridge tests/core tests/frontend web docs PRODUCT.md DESIGN.md tools/serve_acceptance_fixture.py",
+    "ok": true,
+    "notes": "line-ending normalization warnings only"
+  },
+  "frontend": {
+    "report": "tests/frontend/composer-settings-acceptance.md",
+    "effective_focused_checks_passed": 8,
+    "desktop": true,
+    "narrow_width": 390,
+    "evidence_reused": true,
+    "screenshots_reviewed": [
+      "composer-initial-final.png",
+      "article-toolbar-final.png"
+    ],
+    "real_supplier_quality": "not exercised"
+  },
+  "acceptance_fixture": {
+    "port": 58776,
+    "pid": 86144,
+    "state": "closed normally after frontend completion"
+  }
+}

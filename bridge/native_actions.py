@@ -36,6 +36,9 @@ class RevisionStore:
     def get_plan(self, _): return {'brief': copy.deepcopy(self.source['brief']), 'articles': self.list_articles(None)}
     def update_article(self, aid, **values):
         if aid != self.article['id']: raise ValueError('wrong native action article')
+        if 'geo' in values:
+            from .checks import article_checks
+            values['geo'] = article_checks({**self.article, **values}, values['geo'])
         self.article.update(copy.deepcopy(values))
 
 

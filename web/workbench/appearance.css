@@ -1,0 +1,111 @@
+/* 方立工作台：平面层次、交互蓝与轻回弹。 */
+:root {
+  --selection-wash: #315dc012;
+  --hover-surface: #f1f2f5;
+  --ease-elastic: cubic-bezier(.22, .9, .28, 1.14);
+}
+
+/* 锚定首次创作区的位置；输入扩展向下增加，短窗口仍可完整滚动。 */
+.chat-pane:has(> .chat-workbench.is-first) {
+  padding-top: clamp(32px, 13dvh, 112px);
+  overflow: auto;
+}
+.chat-pane > .chat-workbench.is-first {
+  flex: none;
+  margin: 0 auto;
+  padding: 0;
+}
+.chat-workbench h1 { font-size: clamp(30px, 2.5vw, 36px); font-weight: 600; letter-spacing: -.025em; text-wrap: balance; }
+.chat-workbench.is-first .chat-context { margin-bottom: 24px; }
+.chat-workbench .composer { background: #f4f5f7; transition: background 160ms, border-color 160ms, border-radius 220ms var(--ease); }
+.chat-workbench .composer:hover { background: #f1f2f5; }
+.chat-workbench .composer:focus-within,
+.article-workspace .revision-box:focus-within { border-color: var(--blue); box-shadow: none; }
+.chat-workbench .composer-foot { min-height: 42px; }
+.composer-foot .inline-actions { min-height: 40px; }
+.composer-followup .check-label { min-height: 36px; align-items: center; }
+.chat-context .context-chip { transition: background 150ms, color 150ms; }
+.context-chip:hover:not(:disabled), .chat-suggestions button:hover:not(:disabled) { background: var(--hover-surface); color: var(--ink); }
+.chat-suggestions button { border-radius: 5px; text-underline-offset: 4px; }
+.chat-compose-area.has-draft > .chat-suggestions { display: flex; visibility: hidden; }
+.conversation-log .message.user { background: var(--ink); }
+
+.brand-link { font-weight: 600; }
+.icon { stroke-width: 1.65; }
+.save-status { min-height: 20px; font-variant-numeric: tabular-nums; }
+.button.primary, .send-button { background: var(--ink); color: #fff; }
+.button.primary:hover:not(:disabled), .send-button:hover:not(:disabled) { background: #3b3e46; }
+.task-row.active, .nav-button.active, .settings-layout > nav button[aria-current] { background: var(--selection-wash); color: var(--ink); }
+.task-row:hover:not(.active), .nav-button:hover:not(.active), .settings-layout > nav button:hover:not([aria-current]) { background: #eceef2; }
+.settings-layout > nav button[aria-current] { box-shadow: inset 2px 0 var(--blue); }
+.text-button, .reopen-draft { color: var(--blue); }
+.task-row, .nav-button { transition: background 150ms, color 150ms; }
+::selection { background: #dce6fb; color: var(--ink); }
+
+/* 同一条标记在选项之间移动，文字和点击区域保持原位。 */
+.mode-switch, .article-tabs { position: relative; }
+.mode-switch button.active::after, .article-tab.active::after { display: none; }
+.mode-switch::after, .article-tabs::after {
+  content: '';
+  position: absolute;
+  pointer-events: none;
+  left: 0;
+  bottom: 0;
+  width: 1px;
+  height: 2px;
+  background: var(--blue);
+  border-radius: 1px;
+  transform-origin: left;
+  transform: translateX(var(--indicator-x, 0px)) scaleX(var(--indicator-width, 0));
+  transition: transform var(--indicator-time, 0ms) var(--ease-elastic);
+}
+.mode-switch::after { bottom: 2px; }
+.article-tab.active { color: var(--ink); font-weight: 600; }
+
+.topbar, .draft-head, .inspector-head { border-bottom-color: transparent; transition: border-color 160ms; }
+.main.has-content-scroll > .topbar,
+.draft-pane:has(.article-scroll.is-scrolled, .stream-scroll.is-scrolled) > .draft-head,
+.inspector:has(.inspector-body.is-scrolled) > .inspector-head { border-bottom-color: var(--line); }
+.inspector { animation: none; background: #fafbfc; }
+.content-wrap:has(.chat-split) > .inspector, .article-workspace .revision-box { box-shadow: none; }
+.article-workspace .revision-box { background: #f4f5f7; }
+.paper h1, .rendered-copy h1 { text-wrap: balance; overflow-wrap: anywhere; letter-spacing: -.025em; }
+.paper :is(p, ul, ol), .rendered-copy :is(p, ul, ol) { line-height: 1.95; }
+.paper li + li, .rendered-copy li + li { margin-top: .4em; }
+.paper blockquote, .rendered-copy blockquote { border-left: 1px solid #bfc5cf; padding-left: 18px; color: var(--muted); }
+.paper table, .rendered-copy table { scrollbar-gutter: stable; }
+.paper th, .rendered-copy th { background: #f5f6f8; font-weight: 500; }
+.paper td, .rendered-copy td { vertical-align: top; }
+.paper a, .rendered-copy a { text-decoration-thickness: 1px; text-underline-offset: 4px; }
+.paper a:hover, .rendered-copy a:hover { text-decoration-thickness: 2px; }
+.generation-list > button { border-radius: 6px; padding-inline: 10px; transition: background 150ms; }
+.generation-list > button:hover { background: var(--hover-surface); color: var(--ink); }
+.activity-strip time, .activity-count { font-variant-numeric: tabular-nums; }
+.writing-placeholder { min-height: 190px; }
+
+#modal, #modal.settings-dialog { border: 1px solid var(--line); box-shadow: none; }
+#modal[open] { animation: appearance-dialog-in 280ms both; }
+#modal[open]::backdrop { animation: appearance-backdrop-in 160ms both; }
+.menu-items { animation: appearance-menu-in 200ms var(--ease-elastic) both; transform-origin: top right; }
+#toast:not([hidden]) { animation: appearance-toast-in 220ms var(--ease) both; }
+.appearance-exit { pointer-events: none !important; }
+@keyframes appearance-dialog-in {
+  0% { opacity: 0; transform: translateY(10px) scale(.98); }
+  65% { opacity: 1; transform: translateY(-1px) scale(1.004); }
+  100% { opacity: 1; transform: none; }
+}
+@keyframes appearance-backdrop-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes appearance-menu-in { from { opacity: 0; transform: translateY(-4px) scale(.97); } to { opacity: 1; transform: none; } }
+@keyframes appearance-toast-in { from { opacity: 0; translate: 0 7px; } to { opacity: 1; translate: 0 0; } }
+
+@media (max-width: 760px) {
+  .chat-pane:has(> .chat-workbench.is-first) { padding-top: clamp(28px, 11dvh, 88px); }
+  .chat-workbench h1 { font-size: 29px; }
+  .chat-workbench.is-first .chat-context { margin-bottom: 18px; }
+  .chat-workbench .composer-foot { min-height: 42px; }
+  .generation-list > button { padding-inline: 5px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mode-switch::after, .article-tabs::after { transition: none; }
+  #modal[open], #modal[open]::backdrop, .menu-items, #toast:not([hidden]) { animation: none; }
+}

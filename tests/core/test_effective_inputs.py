@@ -48,6 +48,49 @@ class EffectiveInputTest(unittest.TestCase):
         p = self.s.store.list_platforms()[0]
         return self.draft({'keywords': ['产品说明'], 'selections': [{'platform_id': p['id'], 'account_type': 'official', 'count': 1}], **(patch or {})})
 
+    def test_confirmation_empty_patch_preserves_current_brief(self):
+        base = '保留工序条件；已经撤销价格要求；两平台使用官方身份。'
+        before = self.executable({'note': base})['brief']
+        self.s.ws.update_conversation(self.conv['id'], messages=[{'role': 'assistant', 'content': {
+            'understanding': '确认身份', 'questions': [{'text': '账号身份？', 'options': ['官方', '个人']}], 'options': before}}])
+        calls = []
+        def events(payload):
+            calls.append(payload)
+            yield {'type': 'delta', 'text': json.dumps({'understanding': '确认摘要不能替代有效要求', 'options': {}, 'questions': [], 'ready': True}, ensure_ascii=False)}
+            yield {'type': 'done', 'finish_reason': 'stop'}
+        with patch.object(provider, 'events', events):
+            result = self.http(self.path + '/chat', 'POST', {'text': '官方'})
+            worker = self.s.threads.get(result['operation_id'])
+            if worker: worker.join(3)
+        op = self.s.ws.operation(result['operation_id'])
+        self.assertEqual(op['status'], 'done')
+        current = self.http(self.path)['conversation']
+        self.assertEqual(current['brief'], before)
+        self.assertEqual(current['messages'][-1]['content']['options']['note'], base)
+        self.assertEqual(len(calls), 1)
+
+    def test_missing_note_on_new_instruction_is_validation_and_keeps_input(self):
+        base = '保留工序条件；当前有效说明。'
+        self.executable({'note': base})
+        self.s.ws.update_conversation(self.conv['id'], messages=[{'role': 'assistant', 'content': {
+            'questions': [{'text': '账号身份？', 'options': ['官方', '个人']}]}}])
+        calls = []
+        def events(payload):
+            calls.append(payload)
+            yield {'type': 'delta', 'text': json.dumps({'understanding': '新要求摘要', 'options': {}, 'questions': [], 'ready': True})}
+            yield {'type': 'done', 'finish_reason': 'stop'}
+        with patch.object(provider, 'events', events):
+            result = self.http(self.path + '/chat', 'POST', {'text': '改为工程师读者，并删除价格说明'})
+            worker = self.s.threads.get(result['operation_id'])
+            if worker: worker.join(3)
+        op = self.s.ws.operation(result['operation_id'])
+        self.assertEqual(op['status'], 'error')
+        self.assertEqual(op['result']['error_status'], 400)
+        current = self.http(self.path)['conversation']
+        self.assertEqual(current['brief']['note'], base)
+        self.assertEqual(current['messages'][-1]['content'], '改为工程师读者，并删除价格说明')
+        self.assertEqual(len(calls), 1)
+
     def test_visible_note_replaces_history_and_interview_compiles_current_values(self):
         self.assertEqual(self.conv['brief']['selections'], [])
         self.assertEqual(self.conv['brief']['models'], [m['name'] for m in self.s.store.list_models() if m['enabled']])
@@ -93,7 +136,7 @@ class EffectiveInputTest(unittest.TestCase):
         self.s.ws.update_conversation(self.conv['id'], plan_id=pid, job_id=job, status='running')
         profile = {k: '' for k in self.client['profile']}
         profile.update(brand='新品牌', company='新公司', products='新产品')
-        result = self.http(self.path + '/profile', 'PUT', {'name': '仅验收·新名称', 'profile': profile})
+        result = self.http(self.path + '/profile', 'PUT', {'name': '仅验收·新名称', 'profile': profile, 'save_as_default': True})
         self.assertEqual(result['client']['profile'], profile)
         self.assertEqual(result['conversation']['brief']['brand'], '新品牌')
         self.assertEqual(result['conversation']['brief']['client'], result['client']['name'])
@@ -104,12 +147,12 @@ class EffectiveInputTest(unittest.TestCase):
         with self.s.store.conn() as conn:
             conn.execute("CREATE TRIGGER reject_profile_fixture BEFORE UPDATE OF brief ON wb_conversations BEGIN SELECT RAISE(ABORT,'protocol-fixture'); END")
         rejected = {**profile, 'brand': '不应单独写入的品牌'}
-        self.http(self.path + '/profile', 'PUT', {'name': '不应单独写入的名称', 'profile': rejected}, status=500)
+        self.http(self.path + '/profile', 'PUT', {'name': '不应单独写入的名称', 'profile': rejected, 'save_as_default': True}, status=500)
         self.assertEqual(self.s.ws.client(self.client['id'])['profile'], profile)
         self.assertEqual(self.s.ws.conversation(self.conv['id'])['brief']['brand'], '新品牌')
         with self.s.store.conn() as conn: conn.execute('DROP TRIGGER reject_profile_fixture')
         profile.update(brand='', company='', products='')
-        cleared = self.http(self.path + '/profile', 'PUT', {'name': '仅验收·新名称', 'profile': profile})
+        cleared = self.http(self.path + '/profile', 'PUT', {'name': '仅验收·新名称', 'profile': profile, 'save_as_default': True})
         self.assertEqual(cleared['client']['profile']['brand'], '')
         self.assertEqual(cleared['conversation']['brief']['brand'], '')
         generator._patch(job, status='paused')
@@ -122,6 +165,47 @@ class EffectiveInputTest(unittest.TestCase):
             'forced_sqlite_failure_rolled_both_back': True, 'explicit_empty_preserved': True,
             'running_following_paused': True, 'frozen_snapshot_and_completed_article_unchanged': True,
             'new_task_empty_platforms': True, 'new_task_uses_archive_defaults': True}
+
+    def test_pending_message_compiles_once_then_enters_frozen_generation(self):
+        from test_workbench import ControlledModel
+        model = ControlledModel()
+        base = '面向工艺人员介绍；保留储存条件。'
+        message = '这次重点解释金属表面准备，写得简短一些。'
+        compiled = '面向工艺人员介绍；保留储存条件；本次重点解释金属表面准备，表达简短。'
+        self.executable({'note': base})
+        interviews = []
+        def events(payload):
+            if payload.get('messages') and '需求访谈助手' in payload['messages'][0]['content']:
+                request = json.loads(payload['messages'][1]['content'])
+                interviews.append(request)
+                value = {'understanding': '安排已整理', 'options': {'note': compiled},
+                         'questions': [], 'ready': True}
+                yield {'type': 'delta', 'text': json.dumps(value, ensure_ascii=False)}
+                yield {'type': 'done', 'finish_reason': 'stop'}
+            else:
+                yield from model.events(payload)
+        with patch.object(provider, 'events', events):
+            result = self.http(self.path + '/chat', 'POST', {'text': message, 'followup': False})
+            worker = self.s.threads.get(result['operation_id'])
+            if worker: worker.join(3)
+            self.assertEqual(self.s.ws.operation(result['operation_id'])['status'], 'done')
+            self.assertEqual(len(interviews), 1)
+            self.assertEqual(interviews[0]['options']['note'], base)
+            self.assertEqual(interviews[0]['messages'][-1]['content'], message)
+            self.assertFalse(interviews[0]['followup'])
+            self.assertEqual(model.generated, 0)
+            result = self.http(self.path + '/start', 'POST', {})
+            worker = self.s.threads.get(result['job_id'])
+            if worker: worker.join(5)
+        self.assertEqual(self.s.ws.operation(result['operation_id'])['status'], 'done')
+        article = self.http(self.path)['articles'][0]
+        self.assertEqual(self.s.ws.article_source(article['id'])['brief']['note'], compiled)
+        self.assertIn(compiled, model.requests[0]['messages'][1]['content'])
+        self.assertEqual(self.s.ws.client(self.client['id'])['profile']['brand'], '档案品牌')
+        self.assertEqual(len(interviews), 1)
+        EVIDENCE['message_before_start'] = {'compiler_calls': 1, 'pending_message_delivered': True,
+            'long_term_condition_preserved': True, 'frozen_note_equals_compiled': True,
+            'client_archive_unchanged': True, 'external_model_calls': 0}
 
     def test_confirmed_aliases_flow_through_draft_brief_pending(self):
         words = ['西邦24', '西邦12E', '西邦80ET', '橡胶金属胶', 'Cilbond24', 'Cilbond12E', 'Cilbond80ET', '单涂体系']

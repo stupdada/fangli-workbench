@@ -2,13 +2,15 @@
 
 本文件记录用户已确认的实现边界及执行线程共用接口。当前交付为本机可用网站，不含公网注册、多租户部署、自动发布或公开网效果检测。
 
+2026-11-04 客户长期资产与批量生成增量见 [客户与批次合同](customer-batch-contract.md)。该合同优先描述独立客户更新、原件持有/哈希去重/不可变资料修订、客户常用方案及不限日期的多批队列。任务档案默认仅本次，save_as_default:true才同步客户；新任务可沿用客户方案。以下原 ZIP 底座与版本保护继续适用。
+
 ## 产品行为
 
-- 原始 ZIP 为首次文章生成的唯一底座：取材、关键词分组、平台配置、模型消息、原生核查、正文处理和导出保持原行为。`app/` 原始文件保持字节一致；必要接线在外层完成，并验证实际输入及模型结果回放。不得沿用 `geo-content-workbench` 试做副本的混合提示词、全量取材或候选审核改造。
+- 原始 ZIP 为首次文章生成的底座，`app/` 文件保持字节一致。工作台外层明确补齐冻结客户档案到原生核查依据，跨任务历史标题/FAQ与选题轮换作为生成参考；检查层修正平台信息小节名称，撤去统一500字门槛，并准确命名长度/预置风险词检查。正文生成、关键词分组、资料相关性截取和导出仍使用原生路径，不使用试做副本的混合生成器。历史保真证据只覆盖当时输入，新增参考和核查依据由本轮 focused 测试覆盖。
 - 业务模型为 WorkBuddy，默认 `deepseek-v4.1-flash`，运行时核对可用性，不静默切换。连接设置不得出现在静态资源或错误详情中。
 - 两种可切换创作方式：对话创作与 ZIP 分步创作。共享同一任务、参数、客户资料、稿件、版本和运行状态。切换先保存草稿，不新建任务、不发模型请求、不清空选择。
-- 默认展示精简输入；完整原生字段、目标 AI、偏好和风险配置放在展开区域，保留可用性。客户资料按档案复用。品牌、公司、产品不能混成一个字段；官网/电话/地址可折叠。目标 AI 与写作模型分开。
-- 平台保留 ZIP 全部已启用平台，官方号与个人号分别计数。新任务不预选平台；用户选择平台后可显示默认一篇，仍需保存明确配额。发布形态来自该平台的formats配置，支持新增形态字符串。短视频文案不等于视频合成。
+- 对话创作以单一消息输入框与消息流为主；消息草稿独立于当前有效options.note。客户、资料数量和发布安排只显示摘要，关键词与有效说明按需打开。分步1负责资料/关键词/本次要求，分步2集中维护平台/身份/形态/篇数。全局模型、平台规则、风险与实验配置进入居中设置弹窗；客户永久信息仍在客户页管理。
+- 平台保留 ZIP 全部已启用平台，官方号与个人号分别计数。新任务带出客户常用方案，无方案时平台空选；选择平台可默认一篇。发布形态来自平台formats配置。短视频文案不等于视频合成。
 - 对话可连续追问，不设固定轮数；每问简短、给建议，已知不重问，可手动关闭或直接开始。关掉后使用可见默认配置；只拦无法执行的关键缺项，业务事实不靠默认值补造。
 - 批量生成仅锁当前正在处理的稿件；已完成稿可编辑。编辑产生工作版本，ZIP 后续读取冻结的生成参考，不受人工修改影响。后端也要拒绝处理中稿件的修改/版本切换/重复处理。
 - 生成途中出现新的生成要求，暂停后续任务，保留已有结果；用户确认新安排后继续。不确定的超时/断线停止后续，由用户明确重试，不重复可能已执行的调用。
@@ -30,12 +32,12 @@
 |---|---|
 | GET `/api/workbench/bootstrap` | clients, conversations, platforms, target_models, settings, provider_models |
 | GET `/api/workbench/clients` | clients |
-| POST `/api/workbench/clients` | `{name,profile}` → 新client；已有客户不接受id更新，使用当前任务/profile |
+| POST `/api/workbench/clients` | `{name,profile}` → 新client；独立更新使用PUT `/clients/{id}` |
 | GET `/api/workbench/clients/{id}/documents` | documents |
 | POST `/api/workbench/clients/{id}/documents` | `{filename,kind,text}` → document |
 | POST `/api/parse` | 沿用ZIP `{filename,content_b64}` → 原生解析结果；原支持格式继续原解析器，PDF单独接 |
 | POST `/api/workbench/conversations` | `{client_id}` → conversation |
-| PUT `/api/workbench/conversations/{id}/profile` | `{name,profile}` → `{client,conversation}`；profile必须带全industry/brand/company/products/website/phone/address，明确空值传空字符串 |
+| PUT `/api/workbench/conversations/{id}/profile` | `{name,profile,save_as_default?:true}` → `{client,conversation}`；默认只更新本任务，显式save_as_default才同步客户；profile七字段齐全，清空传空字符串 |
 | GET `/api/workbench/conversations/{id}` | conversation, articles, documents, job, operations |
 | POST `/api/workbench/conversations/{id}/clone` | `{}` → 新conversation；同客户、复制当前可见brief和所选资料，原任务ID记parent_conversation_id，不复制稿件/历史对话/计划/完成状态 |
 | DELETE `/api/workbench/conversations/{id}` | `{}` → deleted_id；仅逻辑删除，运行任务409，旧视频固定来源继续可读 |
@@ -53,7 +55,7 @@
 | POST `…/articles/{aid}/audit` | `{expected_version}` → operation_id；对当前采用正文运行一次原生核查，可按原规则修改正文，成功后采用可恢复的新版本 |
 | POST `…/articles/{aid}/select-version` | `{expected_version,version_id}` → article；候选须与原稿匹配 |
 | POST `…/articles/{aid}/style-review` | `{expected_version}` → operation_id；结果suggestions/observations/assessment/base_version |
-| POST `…/articles/{aid}/style-rewrite` | `{expected_version,review_id,selected,mode:'full'|'standard'|'light',material?}` → operation_id；结果candidate_version/changes/fact_check |
+| POST `…/articles/{aid}/style-rewrite` | `{expected_version,review_id,selected,mode:'full'|'standard'|'light',material?,conservative?:string[]}` → operation_id；结果candidate_version/changes/fact_check。conservative明确指定已选且需要素材的建议只做删减/收紧；其余需要素材的项仍校验material |
 | POST `…/articles/{aid}/revise` | `{expected_version,instruction}` → operation_id；针对当前正文的修改候选，不能误用原ZIP整篇重写冒充局部修改 |
 | PUT `…/articles/{aid}/review-record` | `{candidate_version,codex_review,user_review}`，分别保存真正的双方意见 |
 | GET `…/articles/{aid}/compare?candidate_version=…` | base, candidate, diff, review, review_records；可支持fmt=json/md下载 |
@@ -85,9 +87,9 @@
 }
 ```
 
-conversation.brief是八项客户字段和本次安排的唯一有效来源：client/industry/brand/company/products/website/phone/address均从该对象显示与编辑；空字符串保持为空，不回填档案。资料弹窗用/profile一次事务同时更新本任务字段和客户档案（供以后新任务默认使用），前端不得再先改档案、后改draft。其他历史任务保持自己的值，运行快照不变。
+conversation.brief是八项客户字段和本次安排的唯一有效来源；空字符串保持为空。任务/profile默认只更新本任务，显式save_as_default:true时一次事务同步客户档案。客户管理用独立PUT /clients/{id}，不回写旧任务。批次提交后安排不可编辑，客户/方案/资料修改只影响后续新任务，现有批次按冻结快照执行。
 
-`brief.note`只等于当前可见有效options.note，不在start时拼接历次用户原话。访谈在既有一次整理调用里编译当前完整说明：未撤回条件继续保留，明确替换或撤回的旧条件从note移除；历史messages保留作对话记录。助手understanding/questions不进入ZIP。完整选项、访谈和分步入口共用这个字段。新任务selections=[]，models默认启用目标AI全选；目标AI列表与settings.model写作模型分开。确认后的aliases原样进入brief和原生分组/待写队列，不另做关键词匹配规则。
+`brief.note`是本任务当前有效说明，可在安排中查看；它不等于尚未发送的消息草稿。用户直接开始且存在未发送文字时，先经一次chat整理进入有效说明，再start；整理失败保留消息草稿，不启动生成。不在start时拼接历次用户原话。访谈在既有一次整理调用里编译当前完整说明：未撤回条件继续保留，明确替换或撤回的旧条件从note移除；历史messages保留作对话记录。助手understanding/questions不进入ZIP。完整选项、访谈和分步入口共用这个字段。新任务优先沿用客户方案，无方案时selections=[]、models默认启用目标AI全选；目标AI不是写作模型。确认后的aliases原样进入brief和原生分组/待写队列，不另做关键词匹配规则。
 
 document返回 `id,client_id,filename,kind,text,digest`。conversation至少有 `id,client_id,title,plan_id,messages,brief,document_ids,job_id,status`。article至少有ZIP原字段和 `current_version,version_label,origin,review,locked`。version有 `id,article_id,parent_id,origin,label,article,review,created_at`。
 
@@ -110,6 +112,7 @@ GET `/api/workbench/runtime` → `{main:{pid,port},video:{status,pid,port,start_
 - `/start` 校验关键词、可用平台及篇数，不额外强制填写note或具体企业事实。仅当前有效note进入ZIP；助手的understanding/questions和历史已撤回原话不追加到写作提示。
 - bootstrap与zip-config均含 `target_models`，同时保留原生 `models`别名；provider-models返回 `provider_models`。bootstrap不查询外部目录；首次明确开始/模型操作按精确ID校验并缓存，显式打开目录可刷新。不自动换模型或重复不确定调用。
 - style-review结果含 `recommended`（第1、2档ID）、`default_mode:'full'`、`observations_default_selected:false`。suggestions ID为字符串，观察项以O开头。审阅主体标记为WorkBuddy模型，Codex评语初始为空；review-record只保存实际提交的双方文字，不生成“Codex已审阅”结论。
+- 需求整理的普通写作指令（含首条和重复发送）必须返回完整 `options.note`，输出示例与此约定一致；与当前条件接近不等于用户选择了上一轮选项。漏回时保留原话和现有有效说明，明确提示模型输出缺项，不使用理解摘要替代，也不自动重试。
 - style-rewrite先保存候选，再尝试一次只读事实复核；复核失败时候选保留，fact_check为 `unverified`，不影响ZIP成稿的查看、编辑和导出。compare的json/md包含基稿、候选、差异、修改清单、复核和双方评语。
 - 视频可请求当前采用版本，或明确指定一个曾采用过的版本；未采用候选返回409、跨客户/跨稿件版本返回404。之后切换文章版本仍可读取已固定的视频来源版本。
 - 主服务托管视频子服务，原路径转发/api/video/*、/video/*。前端不得通过原生plans/articles/materials写接口绕过工作版本；这些写接口返回403。
@@ -129,3 +132,14 @@ regenerate/audit、逻辑删除与历史复用要求本任务所有模型操作�
 成功时在一次事务里保存可恢复工作版本、来源证据、采用记录和显式原生参考更新。重写初稿origin=zip_regenerate_draft（核查前未自动采用），重写核查后origin=zip_regenerate，再核查origin=zip_audit；异步kind为zip_regenerate/zip_audit，result含article_id/base_version/adopted_version/audit，重写额外含draft_version。旧版本和旧来源不改。失败或不完整结束不提交新采用稿，保留旧参考和旧版本；同一操作一旦发生传输失败，禁止原生后备循环再次外发。人工及style/revision候选继续独立于生成参考，人工保存任一正文/标题/标签/声明变更均清除继承核查和评分。
 
 本地归档是当前任务的内容ZIP下载，客户端可保存到选定目录；无远程upload动作或upload_url/token设置。旧网页API base/key/直连测试由本机WorkBuddy配置与精确模型目录校验替代。以上是明确产品合同变化，不能用旧接口旁路恢复凭据或外发。
+
+## 审阅交互与素材处理增量
+
+观察项O编号默认不选，用户可明确勾选，与正式建议共同传selected。requires_material=true的选中项必须有补充素材，或由用户逐项明确选择conservative删减/收紧；不能静默绕过、自动补经历或丢弃已选项。保守处理会替换执行方案并记录metadata.conservative，原审阅保持原样。审阅和候选请求使用基稿版本冻结的资料，候选仍默认不采用，随后仅一次只读复核。素材缺失400是提交前校验，页面就地提示编号，不作为后台故障显示恢复按钮。
+
+审阅面板左边缘可调整宽度；操作状态刷新不重建正在阅读的面板，不丢勾选、滚动位置或素材。文章修改指令栏位于正文工作区底部的固定区域，全文留出空间，不覆盖末段。
+
+
+### 访谈确认与校验错误（2026-11-05）
+
+用户原样选择上一条助手给出的选项、当前有效note非空且无需修改时，允许模型返回 options={}、questions=[]、ready=true，完整保留当前brief。新增、替换或撤回要求仍须返回完整note；不能用understanding代替，也不重新从客户方案补回旧条件。后台Problem校验错误在result.error_status保留HTTP语义；需求校验失败由前端原位显示并保留消息，不作为连接故障、不自动重发模型。

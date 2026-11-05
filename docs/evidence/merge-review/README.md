@@ -10,3 +10,5 @@
 
 两次截图都只启动本机离线 HTTP 替身，模型调用 0、目录查询 0、媒体编码 0。
 稿件正文与客户信息均为合成的示例内容，不是真实客户数据。
+
+注意：`after-selfcheck.png` 记录的是合并交接版本之前的自检视图（带总分）。`feature/customer-batch-storage` 合并后，界面改为不带总分的逐项清单（数据源仍是 `article.geo.checks`），本目录未重新截图；以 `docs/merge-review.md` 第七节为准。

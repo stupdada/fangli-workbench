@@ -1,0 +1,130 @@
+{
+  "ok": true,
+  "tests": 21,
+  "outcomes": [
+    {
+      "test": "test_customers_batches.CustomersAndBatches.test_batch_preflight_idempotency_multiple_runs_and_frozen_input",
+      "status": "passed"
+    },
+    {
+      "test": "test_customers_batches.CustomersAndBatches.test_binary_same_text_pending_and_customer_isolation",
+      "status": "passed"
+    },
+    {
+      "test": "test_customers_batches.CustomersAndBatches.test_checks_follow_platform_headings_and_do_not_claim_quality",
+      "status": "passed"
+    },
+    {
+      "test": "test_customers_batches.CustomersAndBatches.test_concurrent_resubmission_and_atomic_preflight",
+      "status": "passed"
+    },
+    {
+      "test": "test_customers_batches.CustomersAndBatches.test_failed_storage_cleans_copies_and_pending_pdf_can_be_fixed",
+      "status": "passed"
+    },
+    {
+      "test": "test_customers_batches.CustomersAndBatches.test_hash_alias_update_and_old_task_preserved",
+      "status": "passed"
+    },
+    {
+      "test": "test_customers_batches.CustomersAndBatches.test_interrupted_requires_explicit_resume_and_completed_not_repeated",
+      "status": "passed"
+    },
+    {
+      "test": "test_customers_batches.CustomersAndBatches.test_legacy_text_database_migrates_without_inventing_originals",
+      "status": "passed"
+    },
+    {
+      "test": "test_customers_batches.CustomersAndBatches.test_restart_marks_inflight_uncertain_without_model_replay",
+      "status": "passed"
+    },
+    {
+      "test": "test_customers_batches.CustomersAndBatches.test_stopped_queue_preserves_completed_article",
+      "status": "passed"
+    },
+    {
+      "test": "test_customers_batches.CustomersAndBatches.test_task_override_is_not_customer_update_and_persistence",
+      "status": "passed"
+    },
+    {
+      "test": "test_effective_inputs.EffectiveInputTest.test_confirmed_aliases_flow_through_draft_brief_pending",
+      "status": "passed"
+    },
+    {
+      "test": "test_effective_inputs.EffectiveInputTest.test_profile_transaction_and_frozen_inputs",
+      "status": "passed"
+    },
+    {
+      "test": "test_effective_inputs.EffectiveInputTest.test_visible_note_replaces_history_and_interview_compiles_current_values",
+      "status": "passed"
+    },
+    {
+      "test": "test_native_operations.NativeOperations.test_configuration_crud_formats_and_frozen_inputs",
+      "status": "passed"
+    },
+    {
+      "test": "test_native_operations.NativeOperations.test_empty_generation_failure_does_not_enter_native_fallback_transport",
+      "status": "passed"
+    },
+    {
+      "test": "test_native_operations.NativeOperations.test_history_clone_delete_local_archive",
+      "status": "passed"
+    },
+    {
+      "test": "test_native_operations.NativeOperations.test_native_failure_and_active_structural_guards",
+      "status": "passed"
+    },
+    {
+      "test": "test_native_operations.NativeOperations.test_native_regenerate_audit_and_version_provenance",
+      "status": "passed"
+    },
+    {
+      "test": "test_native_operations.NativeOperations.test_tags_declarations_cas_and_ownership",
+      "status": "passed"
+    },
+    {
+      "test": "test_native_operations.NativeOperations.test_write_one_quota_delete_and_video_history",
+      "status": "passed"
+    }
+  ],
+  "external_model_calls": 0,
+  "external_catalog_calls": 0,
+  "media_encodes": 0,
+  "method": "real local HTTP/SQLite/files; deterministic supplier boundary",
+  "followup_checks": [
+    {
+      "test": "test_concurrent_resubmission_and_atomic_preflight",
+      "status": "passed",
+      "reason": "增加关闭期/畸形ID边界，受影响focused重验"
+    },
+    {
+      "test": "test_failed_storage_cleans_copies_and_pending_pdf_can_be_fixed",
+      "status": "passed",
+      "reason": "增加旧pending修订CAS，受影响focused重验"
+    },
+    {
+      "test": "test_concurrent_resubmission_and_atomic_preflight",
+      "status": "passed",
+      "reason": "任务读取新增批次冻结来源字段，focused HTTP重验"
+    }
+  ],
+  "scope": "2026-11-04 customer assets, immutable file revisions and multi-customer queue; frontend acceptance recorded separately",
+  "source_modules": [
+    "bridge/documents.py",
+    "bridge/customers.py",
+    "bridge/batches.py",
+    "bridge/checks.py",
+    "bridge/service.py",
+    "bridge/storage.py",
+    "bridge/http.py",
+    "bridge/native_actions.py"
+  ],
+  "frontend_acceptance": "tests/frontend/customer-batch-acceptance.md",
+  "frontend_checks": 20,
+  "final_handoff": {
+    "ok": true,
+    "files_checked": 404,
+    "original_zip_files": 11
+  },
+  "fixture_service": "normal shutdown after acceptance; production data untouched"
+}

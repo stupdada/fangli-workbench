@@ -198,6 +198,21 @@ class Handler(BaseHTTPRequestHandler):
         if path in ('/api/workbench/bootstrap', '/api/bootstrap'): return self._json(s.bootstrap())
         if path == '/api/workbench/zip-config': return self._json(s.zip_config())
         if path == '/api/workbench/clients': return self._json({'clients': ws.clients()})
+        if path == '/api/workbench/batches': return self._json({'batches': s.batches.list()})
+        match = re.fullmatch(r'/api/workbench/batches/([^/]+)', path)
+        if match: return self._json({'batch': s.batches.get(match[1])})
+        match = re.fullmatch(r'/api/workbench/clients/([^/]+)(?:/(generation-plan|history))?', path)
+        if match:
+            cid, action = match.groups()
+            if action == 'generation-plan': return self._json(s.customers.plan(cid))
+            if action == 'history': return self._json(s.customers.history(cid))
+            return self._json({'client': ws.client(cid), **s.customers.plan(cid)})
+        match = re.fullmatch(r'/api/workbench/clients/([^/]+)/documents/([^/]+)/(original|text|revisions)', path)
+        if match:
+            cid, did, action = match.groups()
+            if action == 'revisions': return self._json({'documents': ws.files.revisions(cid, did)})
+            body, ctype, name = ws.files.download(cid, did, action == 'original')
+            return self._send(200, body, ctype, {'Content-Disposition': "attachment; filename*=UTF-8''" + urllib.parse.quote(name)})
         if path == '/api/workbench/provider-models': return self._json({'provider_models': s.refresh_models()})
         if path in ('/api/models', '/api/platforms', '/api/risks', '/api/prefs'):
             key = path.rsplit('/', 1)[-1]
@@ -251,17 +266,39 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path in ('/api/workbench/settings', '/api/settings') and method == 'POST': return self._json({'settings': s.save_settings(body)})
         if path == '/api/workbench/clients' and method == 'POST':
-            if body.get('id') is not None: raise Problem('已有客户请通过当前任务/profile一次保存档案与有效字段')
+            if body.get('id') is not None: raise Problem('已有客户请使用客户独立更新接口')
             return self._json({'client': ws.save_client(body.get('name'), body.get('profile'))})
+        match = re.fullmatch(r'/api/workbench/clients/([^/]+)(?:/(generation-plan))?', path)
+        if match and method == 'PUT':
+            cid, action = match.groups()
+            return self._json(s.customers.save_plan(cid, body) if action else {'client': s.customers.update(cid, body)})
+        match = re.fullmatch(r'/api/workbench/clients/([^/]+)/documents/check', path)
+        if match and method == 'POST':
+            if set(body) - {'filename', 'sha256', 'text_digest'}: raise Problem('资料检查含未知字段')
+            return self._json(ws.files.check(match[1], body.get('filename'), body.get('sha256', ''), body.get('text_digest', '')))
         match = re.fullmatch(r'/api/workbench/clients/([^/]+)/documents', path)
-        if match and method == 'POST': return self._json({'document': ws.put_document(match[1], body.get('filename'), body.get('kind'), body.get('text'))})
+        if match and method == 'POST':
+            with s.guard:
+                return self._json(ws.files.import_document(match[1], body))
+        if path == '/api/workbench/batches/preflight' and method == 'POST':
+            if set(body) != {'items'}: raise Problem('预检需包含items')
+            return self._json(s.batches.preflight(body['items']))
+        if path == '/api/workbench/batches' and method == 'POST': return self._json({'batch': s.batches.submit(body)})
+        match = re.fullmatch(r'/api/workbench/batches/([^/]+)/(stop|resume)', path)
+        if match and method == 'POST':
+            if match[2] == 'stop':
+                if body: raise Problem('停止批次无需额外字段')
+                return self._json({'batch': s.batches.stop(match[1])})
+            return self._json({'batch': s.batches.resume(match[1], body)})
         if path == '/api/workbench/conversations' and method == 'POST': return self._json({'conversation': s.create_conversation(body.get('client_id'))})
         match = re.fullmatch(r'/api/workbench/conversations/([^/]+)(/clone)?', path)
         if match:
             if match[2] and method == 'POST': return self._json({'conversation': s.clone_conversation(match[1])})
             if not match[2] and method == 'DELETE': return self._json(s.delete_conversation(match[1]))
         match = re.fullmatch(r'/api/workbench/conversations/([^/]+)/profile', path)
-        if match and method == 'PUT': return self._json(s.save_task_profile(match[1], body.get('name'), body.get('profile')))
+        if match and method == 'PUT':
+            if set(body) - {'name', 'profile', 'save_as_default'}: raise Problem('客户字段保存含未知选项')
+            return self._json(s.save_task_profile(match[1], body.get('name'), body.get('profile'), body.get('save_as_default', False)))
         if path == '/api/parse' and method == 'POST':
             name = body.get('filename')
             if not isinstance(name, str) or not name.strip() or len(name) > 255: raise Problem('缺少有效资料文件名')
@@ -297,7 +334,7 @@ class Handler(BaseHTTPRequestHandler):
                     ws.select_version(aid, body.get('version_id'), body.get('expected_version'))
                     return self._json({'article': ws.current(aid)})
                 if action == 'style-review' and method == 'POST': return self._json({'operation_id': s.style_review(ident, aid, body.get('expected_version'))})
-                if action == 'style-rewrite' and method == 'POST': return self._json({'operation_id': s.rewrite(ident, aid, body.get('expected_version'), body.get('review_id'), body.get('selected'), body.get('mode', 'full'), body.get('material', ''))})
+                if action == 'style-rewrite' and method == 'POST': return self._json({'operation_id': s.rewrite(ident, aid, body.get('expected_version'), body.get('review_id'), body.get('selected'), body.get('mode', 'full'), body.get('material', ''), body.get('conservative'))})
                 if action == 'revise' and method == 'POST': return self._json({'operation_id': s.revise(ident, aid, body.get('expected_version'), body.get('instruction'))})
                 if action == 'review-record' and method == 'PUT':
                     ws.save_review_notes(aid, body.get('candidate_version'), body.get('codex_review'), body.get('user_review'))

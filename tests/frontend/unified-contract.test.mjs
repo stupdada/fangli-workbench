@@ -29,7 +29,16 @@ test('当前 brief 是唯一有效输入：隐藏 options 和全局档案不能�
   assert.equal(client.state.conversation.messages.length,baseline.conversation.messages.length);client.dispose();
 });
 
-test('档案编辑单次 PUT 完整七字段；响应同时更新任务有效字段和客户默认值',async()=>{
+test('较早读取晚到不能复活旧说明/档案/资料或模式，仍可更新运行状态',()=>{
+  const {client}=setup(()=>{throw Error('unexpected request');});
+  const current=cp(baseline);current.conversation.draft_revision=Number(current.conversation.draft_revision||0)+1;
+  Object.assign(current.conversation.brief,{brand:'',company:'当前公司',note:'当前工程师要求'});current.conversation.mode='zip';current.conversation.followup=false;
+  current.conversation.document_ids=['current-revision'];current.documents=[{id:'current-revision',text:'当前资料'}];client.hydrate(current);
+  const stale=cp(baseline);stale.job={id:'finished-job',status:'done'};client.hydrate(stale);
+  assert.equal(client.state.options.brand,'');assert.equal(client.state.options.company,'当前公司');assert.equal(client.state.options.note,'当前工程师要求');assert.deepEqual(client.state.documentIds,['current-revision']);assert.equal(client.state.documents[0].id,'current-revision');assert.equal(client.state.conversation.mode,'zip');assert.equal(client.state.ui.followup,false);assert.equal(client.state.job.status,'done');client.dispose();
+});
+
+test('任务档案单次 PUT 完整七字段；只更新任务，不改永久客户档案',async()=>{
   const profile=Object.fromEntries(profileKeys.map(key=>[key,key==='brand'?'新品牌':'']));
   const {client,requests}=setup(request=>{
     assert.ok(request.url.endsWith('/profile'));assert.equal(request.method,'PUT');assert.deepEqual(Object.keys(request.body.profile).sort(),[...profileKeys].sort());
@@ -38,7 +47,7 @@ test('档案编辑单次 PUT 完整七字段；响应同时更新任务有效字
   });
   await client.updateProfile('新任务客户',profile);
   assert.equal(requests.length,1);assert.equal(client.state.options.client,'新任务客户');assert.equal(client.state.options.brand,'新品牌');assert.equal(client.state.options.company,'');assert.equal(client.state.dirty,false);
-  assert.equal(client.state.clients.find(c=>c.id===client.state.conversation.client_id).profile.brand,'新品牌');client.dispose();
+  assert.notEqual(client.state.clients.find(c=>c.id===client.state.conversation.client_id).profile.brand,'新品牌');client.dispose();
 });
 
 test('档案保存失败不乐观改写任何有效字段；新任务保留服务器档案默认和空平台',async()=>{
@@ -109,4 +118,20 @@ test('任意已配置形态有效；删除/停用/移除形态均提示待调整
   const platforms=[{id:100,name:'仅验收平台',formats:['技术问答'],enabled:true}],targets=[{name:'仅验收AI',enabled:true}];
   const options={keywords:['产品'],selections:[{platform_id:100,account_type:'official',count:4}],models:['仅验收AI'],format_overrides:{100:['技术问答']}};
   assert.deepEqual(validateStart(options,platforms,targets),[]);assert.ok(optionIssues(options,[{...platforms[0],formats:['图文']}],targets).some(s=>s.includes('发布形态')));assert.ok(optionIssues(options,[],targets).some(s=>s.includes('平台')));assert.ok(optionIssues(options,platforms,[]).some(s=>s.includes('目标 AI')));
+});
+
+test('复用冻结任务时，本地未保存调整只写入新普通任务',async()=>{
+  const copy={...cp(baseline.conversation),id:'ordinary-copy',status:'draft',messages:[],job_id:null};
+  const {client,requests}=setup(request=>{
+    if(request.url.endsWith('/clone'))return ok({conversation:copy});
+    if(request.method==='PUT'&&request.url.endsWith('/draft'))return ok({conversation:{...copy,brief:request.body.options,document_ids:request.body.document_ids}});
+    if(request.url.endsWith('/documents'))return ok({documents:[]});
+    if(request.url.includes(copy.id))return ok({conversation:copy,articles:[],documents:[],operations:[],job:null});
+    throw Error(`不应写入原任务 ${request.url}`);
+  });
+  client.state.job=null;client.state.operations=[];client.state.dirty=true;client.state.options.note='仅用于复用的新任务';
+  await client.cloneConversation();
+  const writes=requests.filter(r=>r.method==='PUT');
+  assert.equal(writes.length,1);assert.ok(writes[0].url.includes(copy.id));
+  assert.equal(writes[0].body.options.note,'仅用于复用的新任务');assert.equal(client.state.options.note,'仅用于复用的新任务');client.dispose();
 });

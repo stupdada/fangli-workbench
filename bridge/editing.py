@@ -9,6 +9,11 @@ from .storage import dumps, integer, text_value
 CONFIG = Path(__file__).resolve().parent.parent / 'config'
 
 
+def source_documents(source):
+    return [{'filename': d['filename'], 'kind': d.get('kind', '文本'), 'text': d['text']}
+            for d in source.get('documents', [])]
+
+
 def checked_article(service, ident, aid, expected):
     integer(expected, 'expected_version')
     conv, article = service.article_context(ident, aid)
@@ -26,6 +31,7 @@ def call_json(system, request, settings, tokens=8000):
 
 def style_review(service, ident, aid, expected):
     conv, article = checked_article(service, ident, aid, expected)
+    source = service.ws.version_source(aid, expected)
     def review(op, settings):
         skill = (CONFIG / 'de-ai-taste.md').read_text(encoding='utf-8')
         signals = (CONFIG / 'ai-taste-signals.md').read_text(encoding='utf-8')
@@ -33,8 +39,10 @@ def style_review(service, ident, aid, expected):
 本次只执行完整通读、逐段扫描、语境排除、全文分流和正式建议分档，不改写。
 GEO事实段、FAQ与说明文的清晰结构需结合信息贡献判断；正常AI内容声明是ZIP交付要求，不作为需要删除的助手残留。可以一般性概括，不把非核心缺项变成全篇防御性提醒。
 只输出JSON：{"assessment":"程度、系统性问题和具体优点","suggestions":[{"id":"1","tier":1,"signal":"信号类型","quote":"原句或代表段","problem":"问题","proposal":"可独立执行方案","scope":"词/句/段/全文","requires_material":false}],"observations":[{"id":"O1","position":"段号或全文","quote":"原文片段","signal":"信号","reason":"未达门槛原因","proposal":"方向"}]}。
-正式建议按1、2、3档分组，组内按文中顺序，id为跨档连续编号。观察项用O编号、默认不处理。需要真实素材而暂无时给出删除或收紧泛论的备选；不得编造经历。对原文没有的内容不凭可疑感报出。'''
-        data = call_json(system, {'body': article['body_md'], 'title': article['title'], 'brief': conv['brief'],
+正式建议按1、2、3档分组，组内按文中顺序，id为跨档连续编号。观察项用O编号、默认不处理。需要真实素材而暂无时给出删除或收紧泛论的备选；不得编造经历。对原文没有的内容不凭可疑感报出。
+documents是本版本写作时已提供的资料。只有方案需要新增这些资料之外的具体经历、案例、数字时才标记requires_material=true；能直接依据现有资料处理时为false。不要把缺少非核心细节当作必须补故事的理由。'''
+        data = call_json(system, {'body': article['body_md'], 'title': article['title'],
+            'brief': source.get('brief', conv['brief']), 'documents': source_documents(source),
             'references': style_library.references(article, conv['client_id'])}, settings)
         if not isinstance(data.get('assessment'), str) or not isinstance(data.get('suggestions'), list) or not isinstance(data.get('observations', []), list):
             raise Problem('去味审阅结构不完整，当前采用稿保留')
@@ -58,7 +66,7 @@ GEO事实段、FAQ与说明文的清晰结构需结合信息贡献判断；正�
 
 
 def readonly_fact_check(body, source, settings):
-    documents = [{'filename': d['filename'], 'kind': d['kind'], 'text': d['text']} for d in source.get('documents', [])]
+    documents = source_documents(source)
     system = prompts.AUDIT_RULES + '''
 本次只读事实复核：核对当前候选正文的数字、型号、条件、客户真实关系及是否新增具体经历或承诺。
 允许概括性、一般性介绍，不因缺少非核心细节要求把全篇写成核验说明；不要润色，不提供修订正文，不重复审AI味。
@@ -85,7 +93,7 @@ def candidate_article(article, data):
     return result
 
 
-def style_rewrite(service, ident, aid, expected, review_id, selected, mode='full', material=''):
+def style_rewrite(service, ident, aid, expected, review_id, selected, mode='full', material='', conservative=None):
     conv, article = checked_article(service, ident, aid, expected)
     review = service.ws.operation(review_id)
     if review['kind'] != 'style_review' or review['status'] != 'done' or review['article_id'] != aid or review['conversation_id'] != ident or review['result'].get('base_version') != expected:
@@ -95,21 +103,37 @@ def style_rewrite(service, ident, aid, expected, review_id, selected, mode='full
     all_items = review['result']['suggestions'] + review['result'].get('observations', [])
     chosen = [item for item in all_items if item['id'] in selected]
     if len(chosen) != len(selected): raise Problem('包含不存在的建议编号')
+    conservative = [] if conservative is None else conservative
+    if (not isinstance(conservative, list) or any(not isinstance(s, str) for s in conservative)
+            or len(set(conservative)) != len(conservative)
+            or any(s not in selected for s in conservative)):
+        raise Problem('删减处理需为已选建议的唯一编号列表')
+    if any(not item.get('requires_material') for item in chosen if item['id'] in conservative):
+        raise Problem('删减处理仅适用于已标记需要素材的建议')
     if mode not in ('light', 'standard', 'full'): raise Problem('改写幅度不正确')
     text_value(material, '真实补充素材', 20000)
-    if any(item.get('requires_material') for item in chosen) and not material.strip():
-        raise Problem('选中方案需要真实素材，请补充或改选删除/收紧方案')
+    missing = [item['id'] for item in chosen if item.get('requires_material') and item['id'] not in conservative]
+    if missing and not material.strip():
+        raise Problem('建议' + '、'.join(missing) + '需要补充素材，请填写素材或明确选择仅删减/收紧')
+    executable = copy.deepcopy(chosen)
+    for item in executable:
+        if item['id'] in conservative:
+            item['proposal'] = '仅删除或收紧本条指出的冗余、泛论与无依据具体表述，保留有效事实和上下文；不补写任何新经历、案例、数字或承诺。若无法在此范围内改善，保留原文并列入skipped说明原因。'
+            item['requires_material'] = False
+            item['handling'] = 'conservative'
     source = service.ws.version_source(aid, expected)
     def write(op, settings):
         system = (CONFIG / 'de-ai-taste.md').read_text(encoding='utf-8') + '''
 现在执行用户明确选中的建议。全文已经读过，再完整阅读正文以保持语气，仅处理selected；未选位置保持原文。full允许为选定问题跨句重组和全文节奏调整，standard改写问题句，light只最小替换；幅度不足时跳过并说明。
 先删无信息贡献的文字，再收紧过满判断，再以平白的话重述；无更好表达就保留。不通过新口头禅、反问、自嘲或虚构经验制造人味。保留有效事实、逻辑、型号、数值条件、客户关系及ZIP必要AI声明；不凭资料外推商家具体承诺。素材只作为本次明确补充。
-若全文调整会改变未选条目的位置，跳过冲突并说明，不自行扩大范围。只输出JSON：{"title":"标题","body_md":"完整Markdown正文","changes":["实际修改清单"],"skipped":["跳过项及原因"]}。'''
-        data = call_json(system, {'original': article['body_md'], 'title': article['title'], 'selected': chosen,
-            'mode': mode, 'material': material, 'brief': source.get('brief', conv['brief'])}, settings)
+若全文调整会改变未选条目的位置，跳过冲突并说明，不自行扩大范围。handling=conservative表示用户只授权按该条proposal删减或收紧。观察项只有本次明确选中才执行；资料不足且未获相应素材时跳过，不自行补事实。只输出JSON：{"title":"标题","body_md":"完整Markdown正文","changes":["实际修改清单"],"skipped":["跳过项及原因"]}。'''
+        data = call_json(system, {'original': article['body_md'], 'title': article['title'], 'selected': executable,
+            'mode': mode, 'material': material, 'brief': source.get('brief', conv['brief']),
+            'documents': source_documents(source)}, settings)
         candidate = candidate_article(article, data)
         if service.cancellations[op].is_set(): raise provider.failure('cancelled')
         metadata = {'review_id': review_id, 'selected': selected, 'mode': mode, 'material': material,
+                    'conservative': conservative,
                     'changes': data.get('changes', []), 'skipped': data.get('skipped', [])}
         initial_check = {'status': 'unverified', 'summary': '候选已保留，正在进行一次只读事实复核', 'readonly': True, 'attempts': 0}
         vid = service.ws.save_candidate(aid, expected, candidate, initial_check, op, metadata=metadata)

@@ -87,6 +87,8 @@ class Workspace:
                 for key, source in (('native_audit', 'audit'), ('body_original', 'body_original')):
                     if article.get(source): payload[key] = article[source]
                 c.execute('INSERT INTO wb_version_evidence VALUES(?,?)', (row['id'], dumps(payload)))
+        from .documents import Documents
+        self.files = Documents(self)
 
     def recover(self):
         with self.zip.conn() as c:
@@ -129,19 +131,11 @@ class Workspace:
         return self.client(cid)
 
     def documents(self, cid):
-        self.client(cid)
-        with self.zip.conn() as c:
-            return [dict(r) for r in c.execute('SELECT * FROM wb_documents WHERE client_id=? ORDER BY created_at,rowid', (cid,))]
+        return self.files.list(cid)
 
     def put_document(self, cid, name, kind, text):
-        self.client(cid)
-        name = text_value(name, '资料名称', 255, empty=False).strip()
-        text = text_value(text, '资料正文', 200000, empty=False).strip()
-        kind = text_value(kind or '文本', '资料类型', 50)
-        digest = hashlib.sha256(text.encode('utf-8')).hexdigest()
-        with self.zip.conn() as c:
-            c.execute('INSERT OR IGNORE INTO wb_documents VALUES(?,?,?,?,?,?,?)', (uid(), cid, name, kind, text, digest, now()))
-            return dict(c.execute('SELECT * FROM wb_documents WHERE client_id=? AND digest=? AND filename=?', (cid, digest, name)).fetchone())
+        result = self.files.import_document(cid, {'filename': name, 'kind': kind, 'text': text, 'as_new': True})
+        return result['document']
 
     def create_conversation(self, cid, defaults=None):
         client = self.client(cid)
@@ -216,9 +210,12 @@ class Workspace:
         ids = conv['document_ids'] if ids is None else ids
         if not isinstance(ids, list) or len(ids) > 100 or any(not isinstance(i, str) for i in ids) or len(set(ids)) != len(ids):
             raise Problem('资料选择不正确')
-        library = {d['id']: d for d in self.documents(conv['client_id'])}
-        if any(i not in library for i in ids):
-            raise Problem('选定资料不属于当前客户')
+        try:
+            library = {ident: self.files.public(self.files.row(conv['client_id'], ident)) for ident in ids}
+        except Missing:
+            raise Problem('选定资料不属于当前客户') from None
+        if any(library[i]['status'] != 'ready' for i in ids):
+            raise Problem('选定资料尚未解析成功，请更新资料选择')
         return [library[i] for i in ids]
 
     def save_snapshot(self, conv, payload):
@@ -267,14 +264,15 @@ class Workspace:
             payload = {**(loads(old[0], {}) if old else {}), **values}
             c.execute('INSERT INTO wb_zip_evidence VALUES(?,?) ON CONFLICT(article_id) DO UPDATE SET payload=excluded.payload', (aid, dumps(payload)))
 
-    def save_task_profile(self, ident, brief, needs_confirmation=False):
+    def save_task_profile(self, ident, brief, needs_confirmation=False, save_as_default=False):
         """One transaction: reusable client defaults and the visible current task values."""
         profile = {k: brief[k] for k in PROFILE_FIELDS}
         with self.zip.conn() as c:
             c.execute('BEGIN IMMEDIATE')
             row = c.execute('SELECT client_id FROM wb_conversations WHERE id=?', (ident,)).fetchone()
             if not row: raise Missing('内容任务不存在')
-            c.execute('UPDATE wb_clients SET name=?,profile=? WHERE id=?', (brief['client'], dumps(profile), row['client_id']))
+            if save_as_default:
+                c.execute('UPDATE wb_clients SET name=?,profile=? WHERE id=?', (brief['client'], dumps(profile), row['client_id']))
             c.execute('UPDATE wb_conversations SET brief=?,draft_revision=draft_revision+1,needs_confirmation=MAX(needs_confirmation,?),updated_at=? WHERE id=?',
                       (dumps(brief), int(needs_confirmation), now(), ident))
         conv = self.conversation(ident)

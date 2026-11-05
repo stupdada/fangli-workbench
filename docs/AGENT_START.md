@@ -6,10 +6,11 @@
 你要接手并继续开发“方立内容工作台”。请实际完成本次任务的分析、实现、验证和 Git 交付，不要停在计划。
 
 仓库：https://github.com/stupdada/fangli-workbench
-开发基线：main
-本次任务：见本提示词末尾；如果末尾尚无具体任务，先核对交接待办和最新代码，选出下一项可执行工作并说明依据，再继续可独立完成的准备工作。
+交接分支：feature/customer-batch-storage
+交接基线：交接者提供的固定提交 SHA；同事无需等待 main 合并即可接手。
+本次任务：见本提示词末尾；尚未指定具体需求时，先完成本地修改保护、交接版本整合和必要启动检查，报告可接手状态。工作台视觉动效与首页后续优化由原开发者继续负责。
 
-请优先使用中文交流，文本与代码默认 UTF-8。先读仓库适用的 AGENTS.md，再读 docs/HANDOFF.md。它是 2026-11-04 的交接快照；开始工作时需要结合最新提交和当前源码确认状态，不能凭快照重复实现已完成能力。
+请优先使用中文交流，文本与代码默认 UTF-8。先读仓库适用的 AGENTS.md，再读 docs/HANDOFF.md。它已更新到 2026-11-05；开始工作时结合交接提交、当前源码和验收证据确认状态。
 
 一、先确定本机目录与 Git 状态
 
@@ -31,16 +32,23 @@ git status --short --branch
 git branch --show-current
 ```
 
-确认 origin 指向本项目后运行 git fetch origin。私有仓库需使用同事自己的 GitHub 权限；凭据通过本机安全配置维护，不能写进仓库、文档或命令记录。如果 origin 不符，先说明实际差异，再决定使用正确目录，不能静默改掉他人的 remote。
+确认 origin 指向本项目后再 fetch。私有仓库使用你自己的 GitHub 权限；身份凭据留在本机，不能写入仓库、文档或命令记录。origin 不符时先说明实际差异，再决定正确目录。
 
-工作区干净时，从 origin/main 创建明确命名的功能分支，例如：
+已有项目必须先保护现场：
+
+1. 若 config/workbuddy.json 已存在，在仓库外保存本机副本，保留原文件；不要用示例文件覆盖。确认它未被 Git 跟踪。日志和命令输出不展示其中的实际值。
+2. 查看本机源码差异与本地提交，特别是 bridge/workbuddy.cjs、bridge/provider.py、vendor/workbuddy-sdk.js 的 WorkBuddy 适配。未提交的源码修改在自己的功能分支检查敏感内容后明确暂存并提交；已有提交直接保留。不要把账号配置或客户数据纳入提交。
+3. 已有源码适配时，在自己的功能分支合并指定交接提交，逐项处理冲突，保留仍适用于当前接口的本机连接行为。可以用 git merge --no-ff --no-commit <交接提交SHA>，在检查合并差异和必要验证后提交；不要把全部冲突简单选成远程版本。
+4. 如果本机配置已被跟踪，或源码内含凭据，先将私有配置与共享源码分离，再继续提交和推送；不把私密内容打印或上传。
+
+干净新克隆可直接从交接分支创建自己的功能分支：
 
 ```powershell
 git fetch origin
-git switch -c feature/editorial-quality origin/main
+git switch -c feature/colleague-task origin/feature/customer-batch-storage
 ```
 
-已有本次任务的功能分支时可继续使用。若存在他人未提交修改，保留并识别归属，只操作本次范围；能隔离时继续，实际冲突影响结果时才提出具体问题。不得 force push、reset 或覆盖用户改动，不自动 push main。
+核对该分支包含交接者给出的固定 SHA；如果分支后来移动，使用给定 SHA 作为本次基线。新目录没有旧的忽略文件，需安全迁移你自己的 WorkBuddy 配置。不要使用 force push、reset --hard、强制 checkout、清理忽略文件或覆盖式拷贝处理本机修改。原开发者后续视觉工作使用独立分支；本次只推进末尾指定任务，若必要修改涉及共享文件，保留已有功能并说明合并影响。
 
 二、建立完整项目认识
 
@@ -52,7 +60,7 @@ git switch -c feature/editorial-quality origin/main
 
 项目包含 app/ 原 ZIP 核心、bridge/ 后台整合、web/ 双模式前端，以及 video/ 无声视频。主链路是客户和资料 → 有效安排 → 可选访谈 → 冻结输入 → 原 ZIP 生成及原生核查 → 工作版本与候选 → 明确采用 → 导出或手动制作固定版本视频。请先按输入、处理流程、状态变化、输出和上下游影响检查本次任务。
 
-后续重点是文案优化，但开发范围应覆盖实现目标所需的完整业务链。按本次具体需求确定必要修改范围。首次 ZIP 保真是当前验收基线；明确的新需求可以评估必要改动，同时更新合同、证据和相应验证。
+按本次指定需求确定必要修改范围，覆盖实现目标所需的完整业务链。首次 ZIP 保真是当前验收基线；明确的新需求可以评估必要改动，同时更新合同、证据和相应验证。
 
 三、正确识别文案与视频路径
 
@@ -64,13 +72,13 @@ git switch -c feature/editorial-quality origin/main
 
 风格库只供生成后审阅使用；client_bindings 决定客户专属表达是否适用。认可表达不提供本次客户事实。真实样稿已有删除重复和内部过程说明的收益，也有无依据工艺推论和审核漏报、误报。请用资料、原稿、候选、差异和实际审阅意见评估修改，不能只根据接口成功判断文案质量。
 
-主站前端交接时仍在完成增量布局和异步状态的收尾检查；视频子服务受控重载及实时 409／草稿保持终验已通过。先查看最新提交和证据。正式项目之外的 fangli-readability-preview 待用户评审。四方向视频文案模块与八稿实测已收录于 docs/reference/video-authoring/，待评审接入生产，八稿有失败及样例复用问题。写作策略参考见 docs/reference/editorial/。依据当前源码、模块文档和验收证据确认接入待办。
+客户与批次、消息与审阅、连续创作及内部指南均有各自验收记录，见 tests/frontend/*-acceptance.md。需求整理漏回写作说明的提示词约定已修正，6项离线检查通过，真实模型重试尚未验证。当前视觉代码随交接提交保留，后续动效与首页优化由原开发者继续负责。视频子服务受控重载及实时 409／草稿保持终验已通过。按报告范围复用证据。正式项目之外的 fangli-readability-preview 待用户评审。四方向视频文案模块与八稿实测已收录于 docs/reference/video-authoring/，待评审接入生产，八稿有失败及样例复用问题。写作策略参考见 docs/reference/editorial/。依据当前源码、模块文档和验收证据确认接入待办。
 
 四、配置和运行
 
 推荐 Python 3.11、Node.js 20+。app/bridge 业务代码是 Python 标准库，SDK 已捆绑，无 npm 安装步骤。完整主站会托管视频，因此还需 requirements-video.txt 中的 Pillow、FFmpeg、ffprobe 和受支持中文字体。按 README 与 HANDOFF 核对依赖，确认 config/workbuddy.example.json、style-library/ 便携配置和相对路径实际存在。
 
-将连接示例复制为本机 config/workbuddy.json，再通过安全渠道填入自己的连接设置；真实文件不进 Git。模型目录校验只在明确模型操作时发生，缺少所选模型应停止，不能自动换模型。
+保留已有 config/workbuddy.json；仅在该文件不存在时复制连接示例，再通过安全渠道填入你自己的连接设置。真实文件不进 Git，更新源码不应改变你的账号配置。检查本机 SDK/桥接适配与交接接口兼容；离线检查通过不能证明账号真实可用。模型目录校验只在明确模型操作时发生，缺少所选模型应停止，不能自动换模型。
 
 在根目录使用 PowerShell 7，设置 UTF-8：
 
@@ -87,7 +95,7 @@ python tools/check_handoff.py --runtime
 python main.py --no-browser --port 0 --data-dir ./data/dev-workbench
 ```
 
-按终端实际 URL 访问 /、/workbench、/workbench/zip、/video/。每个数据目录只允许一个主进程。先确认已有服务和活动任务；源码变化需要重载时协调使用者，使用项目正常生命周期接口管理本次拥有的子服务。不得扫描并终止无关工作台。
+按终端实际 URL 访问 /、/guide/index.html、/workbench、/workbench/zip、/video/。每个数据目录只允许一个主进程。先确认已有服务和活动任务；源码变化需要重载时协调使用者，使用项目正常生命周期接口管理本次拥有的子服务。不得扫描并终止无关工作台。
 
 五、执行与验证
 

@@ -40,6 +40,8 @@ build/
 *.zip
 
 # ---- 本地临时 ----
+/.codex/tasks/
+/.finesse/
 *.log
 *_local.py
 
