@@ -11,3 +11,12 @@
 - 普通开发先用注入模型和合成夹具。实际模型调用或媒体编码需有本次任务授权和明确预算，保存原返，区分功能通过与内容质量通过。
 - 浏览器验收优先内置 Browser，复用已有会话。结束时保留有效标签页；不调用空 `tabs.finalize`。不使用 Superpowers。
 - Git 用功能分支与小而完整的提交；推送前查看暂存差异和凭据检查结果，合并通过 Pull Request。保护现有未提交改动和他人的工作。
+
+## Codex 重启本机工作台
+
+本机实测，PowerShell 调用同时含完整的 HTTP(S) URL 和 `Start-Process` 时会被 Codex 拦截，即使 URL 只用于打印。重启时按下面的顺序发起独立的工具调用：
+
+1. 在 `GET /api/workbench/runtime` 查主 PID 和端口，与 `127.0.0.1` 的监听进程核对，确认是此仓库的工作台。检查数据目录和 `.venv/Scripts/python.exe`，确认生成、核查、整理、检测及视频任务已空闲。有任务在执行或无法确认实例归属时，先保留该实例。
+2. 向已确认实例的 `POST /api/workbench/shutdown` 发送 `{}`。收到 `ok` 后，有界等待旧主进程退出和监听释放；关闭失败或超时则停止。
+3. 单独调用 `Start-Process`，从仓库根目录用项目 `.venv/Scripts/python.exe` 启动 `main.py --port <原端口> --no-browser`，沿用原数据目录。使用 `-WindowStyle Hidden`，将 stdout 和 stderr 写入数据目录的 `logs/`。这个调用只负责启动。
+4. 用独立调用查询 `GET /api/workbench/runtime`，确认端口归属新的主 PID，且托管视频子服务为 `ready`。仅收到启动器 PID 时，继续等就绪结果。

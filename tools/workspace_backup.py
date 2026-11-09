@@ -16,6 +16,7 @@ from bridge.errors import Problem
 from bridge.http import DatabaseLease
 
 DATABASES = ('workbench.db', 'video/video.sqlite3')
+OPTIONAL_DATABASES = ('writing-lab.sqlite3',)
 MANIFEST = 'manifest.json'
 VIDEO_RUNTIME = {'service.lock', 'video.sqlite3', 'video.sqlite3-wal',
                  'video.sqlite3-shm', 'video.sqlite3-journal'}
@@ -32,7 +33,7 @@ def stored_path(name):
             or any(part == '..' or any(c in part for c in '<>:"\\|?*') or PureWindowsPath(part).is_reserved()
                    or part.endswith((' ', '.')) for part in path.parts)):
         return False
-    if name in DATABASES:
+    if name in (*DATABASES, *OPTIONAL_DATABASES):
         return True
     return len(path.parts) > 1 and path.parts[0] in ('clients', 'video') and not video_runtime(path)
 
@@ -97,10 +98,17 @@ def backup(source, destination):
         staging = Path(temporary)
         for name, lock in zip(DATABASES, (None, 'service.lock')):
             leases.callback(DatabaseLease(source / name, lock_name=lock).close)
+        databases = list(DATABASES)
+        for name in OPTIONAL_DATABASES:
+            path = source / name
+            if path.exists() or path.is_symlink():
+                if not path.is_file() or path.resolve() != path:
+                    raise ValueError(f'无法读取本地数据库：{name}')
+                databases.append(name)
         manifest = {'format': 1, 'databases': {}, 'files': {}}
         package = staging / 'workspace.zip'
         with ZipFile(package, 'x') as archive:
-            for name in DATABASES:
+            for name in databases:
                 snapshot = staging / Path(name).name
                 with open_database(source / name) as db, closing(sqlite3.connect(snapshot)) as copy:
                     db.backup(copy)
@@ -126,8 +134,9 @@ def restore(source, destination):
         manifest = json.loads(archive.read(MANIFEST))
         files = manifest['files']
         names = archive.namelist()
-        if (manifest['format'] != 1 or set(manifest['databases']) != set(DATABASES)
-                or not set(DATABASES) <= files.keys()
+        databases = set(manifest['databases'])
+        if (manifest['format'] != 1 or not set(DATABASES) <= databases <= {*DATABASES, *OPTIONAL_DATABASES}
+                or databases != files.keys() & {*DATABASES, *OPTIONAL_DATABASES}
                 or len(names) != len(files) + 1 or set(names) != {MANIFEST, *files}
                 or not all(stored_path(name) for name in files)):
             raise ValueError('备份清单与实际文件不符')

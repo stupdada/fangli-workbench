@@ -11,24 +11,30 @@ export class WorkbenchClient {
     this.listeners = new Set(); this.watchers = new Map(); this.saveQueue = Promise.resolve(); this.revision = 0;
     this.interviewStreams = new Map();
     try { this.cache = JSON.parse(storage?.getItem(STORAGE_KEY) || '{}'); } catch { this.cache = {}; }
+    this.pendingDrafts = { ...this.cache.pendingDrafts };
+    if (this.cache.pending) this.pendingDrafts[this.cache.pending.id || '_new'] = this.cache.pending;
+    const pending = this.pendingDrafts._new;
     this.state = { bootstrap: null, config: null, clients: [], conversations: [], conversation: null, batch: null, articles: [], documents: [], library: [],
-      operations: [], job: null, stream: {}, options: normalizeOptions(this.cache.pending?.options), documentIds: this.cache.pending?.documentIds || [], availableKeywords: [],
+      operations: [], job: null, stream: {}, options: normalizeOptions(pending?.options), documentIds: pending?.documentIds || [], availableKeywords: [],
       ui: { followup: true, sidebarWidth: 244, collapsed: false, ...this.cache.ui }, editors: this.cache.editors || {}, messageDrafts:this.cache.messageDrafts || {},
-      dirty: !!this.cache.pending, saved: false, error: '', needsConfirmation: this.cache.needsConfirmation || false, results: {}, busy: new Set(), loaded: false };
+      dirty: !!pending, saved: false, error: '', needsConfirmation: this.cache.needsConfirmation || false, results: {}, busy: new Set(), loaded: false };
   }
   subscribe(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
   emit() { this.persist(); for (const fn of this.listeners) fn(this.state); }
   persist() {
     const s = this.state;
+    const id = s.conversation?.id;
+    const key = id || '_new';
+    if (s.dirty) this.pendingDrafts[key] = { options: s.options, documentIds: s.documentIds, followup: s.ui.followup };
+    else delete this.pendingDrafts[key];
     const record = { activeId: s.conversation?.id || this.cache.activeId, ui: s.ui, editors: s.editors, messageDrafts:s.messageDrafts,
-      needsConfirmation: s.needsConfirmation,
-      pending: s.dirty ? { id: s.conversation?.id || null, options: s.options, documentIds: s.documentIds,followup:s.ui.followup } : null };
+      needsConfirmation: s.needsConfirmation, pendingDrafts: this.pendingDrafts };
     this.cache = record;
     try { this.storage?.setItem(STORAGE_KEY, JSON.stringify(record)); } catch { /* Server remains authoritative; surface save errors separately. */ }
   }
-  async api(path, method = 'GET', body) {
+  async api(path, method = 'GET', body, {timeoutMs = 45000} = {}) {
     let response;
-    const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 45000);
+    const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       response = await this.fetcher(path, { method, headers: { 'Content-Type': 'application/json' },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: controller.signal });
@@ -63,13 +69,26 @@ export class WorkbenchClient {
   }
   messageDraft(id = this.state.conversation?.id || '_new') { return this.state.messageDrafts[id]?.text || ''; }
   setMessageDraft(text, id = this.state.conversation?.id || '_new') { this.state.messageDrafts[id]={...this.state.messageDrafts[id],text,error:''};this.persist(); }
+  writingTopicScope({options, documentIds} = this.state) {
+    return JSON.stringify([options?.note?.trim() || '', documentIds || []]);
+  }
+  writingTopic(id = this.state.conversation?.id, context = this.state) {
+    const topic = this.state.messageDrafts[id]?.topic;
+    return topic?.scope === this.writingTopicScope(context) ? topic.text : '';
+  }
+  setWritingTopic(topic) {
+    const id = this.state.conversation.id;
+    this.state.messageDrafts[id] = {...this.state.messageDrafts[id],
+      topic: topic ? {text:topic,scope:this.writingTopicScope()} : null};
+    this.emit();
+  }
   messageError(id = this.state.conversation?.id || '_new') { return this.state.messageDrafts[id]?.error || ''; }
   setMessageError(error, id = this.state.conversation?.id || '_new') { this.state.messageDrafts[id]={...this.state.messageDrafts[id],error};this.persist(); }
   articleDraftKey(articleId,{review_id='',base_version=''}={}) { return `${this.state.conversation?.id}:${articleId}:${base_version}:${review_id}`; }
   articleDraft(articleId,scope={}) { return this.state.ui.articleDrafts?.[this.articleDraftKey(articleId,scope)]||{}; }
   setArticleDraft(articleId,patch,scope={}) { const key=this.articleDraftKey(articleId,scope);this.state.ui.articleDrafts={...this.state.ui.articleDrafts,[key]:{...this.articleDraft(articleId,scope),...clone(patch)}};this.persist(); }
   messageContext() { const {document_ids,...options}=this.state.options;return JSON.stringify({options,documentIds:this.state.documentIds}); }
-  async submitMessage({start=false,confirmed=false,one=false}={}) {
+  async submitMessage({start=false,confirmed=false,one=false,chooseTopic}={}) {
     this.assertBriefEditable();
     const id=this.state.conversation?.id;if(!id)throw new Error('请先选择客户并创建任务');
     const text=this.messageDraft(id), followup=this.state.ui.followup;
@@ -94,14 +113,18 @@ export class WorkbenchClient {
       this.state.messageDrafts[id]={...this.state.messageDrafts[id],prepared:{text,context:this.messageContext()}};this.persist();
     }
     if(this.state.conversation?.id!==id)return null;
-    if(start)await this.start({confirmed,one});
+    if(start && await this.start({confirmed,one,chooseTopic}) === null)return null;
     if(this.state.conversation?.id!==id)return null;
-    if(this.messageDraft(id)===text)delete this.state.messageDrafts[id];
+    if(this.messageDraft(id)===text){
+      const topic=this.writingTopic(id);
+      if(topic)this.state.messageDrafts[id]={topic:this.state.messageDrafts[id].topic};
+      else delete this.state.messageDrafts[id];
+    }
     this.emit();return true;
   }
   setUI(patch) { const followupChanged='followup' in patch&&patch.followup!==this.state.ui.followup;Object.assign(this.state.ui, patch);if(followupChanged)this.markDirty({affectsGeneration:false});else this.emit(); }
 
-  async boot(id) {
+  async boot(id, { resumeCached = true } = {}) {
     try {
       const results = await Promise.allSettled([this.api('/api/workbench/bootstrap'), this.api('/api/workbench/zip-config')]);
       if (results[0].status === 'rejected') throw results[0].reason;
@@ -109,8 +132,8 @@ export class WorkbenchClient {
       this.state.config = results[1].status === 'fulfilled' ? results[1].value : null;
       this.state.configError = results[1].status === 'rejected' ? results[1].reason.message : '';
       this.state.model = b.settings?.model || DEFAULT_MODEL;
-      if (!this.cache.pending) this.state.options = normalizeOptions({}, this.targets);
-      const target = id || this.cache.activeId;
+      if (!this.state.dirty) this.state.options = normalizeOptions({}, this.targets);
+      const target = id || (resumeCached ? this.cache.activeId : null);
       if (target) await this.load(target);
       this.state.loaded = true; this.emit();
     } catch (error) { this.state.error = error.message; this.state.loaded = true; this.emit(); throw error; }
@@ -122,7 +145,7 @@ export class WorkbenchClient {
     s.batch = data.batch || null;
     s.availableKeywords = data.available_keywords || [];
     if (s.conversation?.client_id !== c.client_id) s.library = [];
-    if(s.batch?.frozen){clearTimeout(this.saveTimer);s.dirty=false;this.cache.pending=null;}
+    if(s.batch?.frozen){clearTimeout(this.saveTimer);s.dirty=false;delete this.pendingDrafts[c.id];}
     const staleDraft=same&&Number(c.draft_revision??0)<Number(s.conversation.draft_revision??0);
     if(staleDraft)c={...c,...Object.fromEntries(['brief','document_ids','mode','followup','needs_confirmation','draft_revision'].map(key=>[key,s.conversation[key]]))};
     s.conversation = c; s.articles = data.articles || c.articles || []; if(!staleDraft)s.documents = data.documents || c.documents || [];
@@ -133,8 +156,8 @@ export class WorkbenchClient {
       s.documentIds = clone(c.document_ids || c.draft?.document_ids || source.document_ids || []);
       if(typeof c.followup==='boolean')s.ui.followup=c.followup;
     }
-    const pending = this.cache.pending;
-    if (pending && String(pending.id) === String(c.id)) {
+    const pending = this.pendingDrafts[c.id];
+    if (pending) {
       s.options = normalizeOptions(pending.options, this.targets); s.documentIds = pending.documentIds || []; s.dirty = true;
       if(typeof pending.followup==='boolean')s.ui.followup=pending.followup;
     } else if (!same) { s.dirty = false; }
@@ -184,19 +207,21 @@ export class WorkbenchClient {
       if(this.state.conversation?.id===cid&&this.contextToken===token){
         this.state.conversation=d.conversation;this.state.options=normalizeOptions(d.conversation.brief,this.targets);
         this.state.documentIds=clone(d.conversation.document_ids);this.state.needsConfirmation=Boolean(d.conversation.needs_confirmation);
-        this.state.saved=true;this.state.dirty=false;this.cache.pending=null;
+        this.state.saved=true;this.state.dirty=false;
       }
       this.emit();return d.conversation;
     };
     this.saveQueue=this.saveQueue.catch(()=>{}).then(task);return this.saveQueue;
   }
-  async createConversation(clientId, options = {}) {
+  async createConversation(clientId, options = {}, { inheritUnassigned = true } = {}) {
     if (this.state.conversation && this.state.dirty) await this.saveDraft();
     const d = await this.api('/api/workbench/conversations', 'POST', { ...options, client_id: clientId });
-    const pendingNote = !this.state.conversation && this.state.dirty ? this.state.options.note : '';
-    const pendingMessage = !this.state.conversation ? this.messageDraft('_new') : '';
-    this.state.dirty = false; this.cache.pending = null; this.state.results = {}; this.state.stream = {}; this.state.needsConfirmation = false;
+    const inherit = inheritUnassigned && !this.state.conversation;
+    const pendingNote = inherit && this.state.dirty ? this.state.options.note : '';
+    const pendingMessage = inherit ? this.messageDraft('_new') : '';
+    this.state.dirty = false; this.state.results = {}; this.state.stream = {}; this.state.needsConfirmation = false;
     await this.load(d.conversation.id);
+    if (inherit) { delete this.pendingDrafts._new; this.persist(); }
     if(pendingMessage){this.setMessageDraft(pendingMessage,d.conversation.id);delete this.state.messageDrafts._new;this.persist();}
     if(pendingNote){this.setOptions({note:[this.state.options.note,pendingNote].filter(Boolean).join('\n')});await this.saveDraft();}
     return d.conversation;
@@ -224,9 +249,11 @@ export class WorkbenchClient {
       if (this.pausePromise) await this.pausePromise;
       const d = await this.api(path, 'PUT', payload);
       if (cid === this.state.conversation?.id && revision === this.revision) {
-        this.state.dirty = false; this.state.saved = true; this.cache.pending = null;
+        this.state.dirty = false; this.state.saved = true;
         this.state.conversation=d.conversation;this.state.options=normalizeOptions(d.conversation.brief,this.targets);
         this.state.documentIds=clone(d.conversation.document_ids);this.state.needsConfirmation=Boolean(d.conversation.needs_confirmation)||this.state.needsConfirmation;
+        const listed = this.state.conversations.findIndex(task => task.id === cid);
+        if (listed >= 0) this.state.conversations[listed] = d.conversation;
         this.emit();
       }
       return d;
@@ -271,15 +298,37 @@ export class WorkbenchClient {
     const d = await this.api(this.path('/chat'), 'POST', { text: text.trim(), document_ids: this.state.documentIds, followup, options: this.state.options });
     return this.watchInterview(d.operation_id);
   }
-  async start({ confirmed = false, one = false } = {}) {
+  async pickWritingTopic(chooseTopic) {
+    this.assertBriefEditable();
+    this.assertSettled();
+    const id = this.state.conversation?.id, path = this.path('/topics');
+    await this.saveDraft();
+    if (this.state.conversation?.id !== id) return null;
+    const context = this.messageContext();
+    const topic = await chooseTopic(async (seen,count)=>(await this.api(path,'POST',{seen,count})).topics);
+    if (!topic || this.state.conversation?.id !== id) return null;
+    if (context !== this.messageContext()) throw new Error('本次资料或安排已变化，请重新选题');
+    return topic;
+  }
+  async start({ confirmed = false, one = false, chooseTopic } = {}) {
     this.assertBriefEditable();
     if (this.activeJob) throw new Error('后台仍在处理当前篇，请等待收尾');
     if (this.state.needsConfirmation && !confirmed) throw new Error('请先确认更新后的安排，再继续写作');
     const errors = validateStart(this.state.options, this.platforms, this.targets); if (errors.length) throw new ApiError(errors.join('；'),400);
-    await this.saveDraft();
+    const id = this.state.conversation?.id;
+    const path = this.path();
+    const picked = this.writingTopic(id);
+    let topic = picked;
+    if (!topic && chooseTopic) {
+      topic = await this.pickWritingTopic(chooseTopic);
+      if (!topic) return null;
+    } else await this.saveDraft();
+    if (this.state.conversation?.id !== id) return null;
+    const options = topic ? {...this.state.options,topic} : this.state.options;
     let d;
-    try { d = await this.api(this.path(one?'/write-one':'/start'), 'POST', { options: this.state.options }); }
+    try { d = await this.api(path + (one?'/write-one':'/start'), 'POST', { options }); }
     catch(error) {
+      if(this.state.conversation?.id!==id)throw error;
       if(error instanceof ApiError && error.status===0) {
         this.state.needsConfirmation=true;this.emit();let stopUnconfirmed=false;
         try { await this.stop();await this.reload(); } catch { stopUnconfirmed=true; }
@@ -287,6 +336,13 @@ export class WorkbenchClient {
         throw new ApiError('开始请求结果未确认，已请求暂停后续；请先恢复后台状态，再明确继续。'+(stopUnconfirmed?' 暂停请求也尚未确认。':''));
       }
       throw error;
+    }
+    if (this.state.conversation?.id !== id) return null;
+    if (picked && this.writingTopic(id) === picked) delete this.state.messageDrafts[id].topic;
+    if (d.title) {
+      const task = this.state.conversation = {...this.state.conversation, title:d.title, status:'running'};
+      const listed = this.state.conversations.findIndex(row => row.id === id);
+      if (listed >= 0) this.state.conversations[listed] = task;
     }
     this.state.needsConfirmation = false; this.pausePromise = null;
     this.state.job = { id: d.job_id, status: 'running', planned: d.planned, total: d.total, done: 0, message: '准备写作' };
@@ -442,7 +498,8 @@ export class WorkbenchClient {
     const pending=current&&this.state.dirty?{options:clone(this.state.options),documentIds:clone(this.state.documentIds),followup:this.state.ui.followup}:null;
     const d=await this.api(`/api/workbench/conversations/${enc(id)}/clone`,'POST',{});
     // A batch task is frozen. Explicit reuse applies any local changes to the new ordinary task only.
-    this.state.dirty=false;this.cache.pending=null;await this.load(d.conversation.id);
+    this.state.dirty=false;await this.load(d.conversation.id);
+    if (pending) { delete this.pendingDrafts[id]; this.persist(); }
     if(pending){this.state.options=pending.options;this.state.documentIds=pending.documentIds;this.state.ui.followup=pending.followup;this.markDirty();await this.saveDraft();}
     return d.conversation;
   }
@@ -454,7 +511,7 @@ export class WorkbenchClient {
     this.state.conversation=null;this.state.batch=null;this.state.articles=[];this.state.documents=[];this.state.library=[];this.state.operations=[];this.state.job=null;this.state.results={};
     this.state.options=normalizeOptions({},this.targets);this.state.documentIds=[];this.state.needsConfirmation=false;this.state.dirty=false;this.state.saved=false;
     for(const key of Object.keys(this.state.editors))if(key.startsWith(cid+':'))delete this.state.editors[key];
-    this.cache.activeId=null;this.cache.pending=null;this.emit();
+    this.cache.activeId=null;delete this.pendingDrafts[cid];this.emit();
   }
   async selectVersion(id, version_id) {
     const a = this.assertEditable(id);

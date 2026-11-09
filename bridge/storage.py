@@ -222,13 +222,13 @@ class Workspace:
         result = self.files.import_document(cid, {'filename': name, 'kind': kind, 'text': text, 'as_new': True})
         return result['document']
 
-    def create_conversation(self, cid, defaults=None, *, document_ids=(), creation_id=None):
+    def create_conversation(self, cid, defaults=None, *, document_ids=(), creation_id=None, mode='chat'):
         client = self.client(cid)
         defaults = {**(defaults or {}), **client['profile'], 'client': client['name']}
         ident, t = creation_id or uid(), now()
         with self.zip.conn() as c:
-            c.execute('INSERT INTO wb_conversations(id,client_id,title,messages,brief,document_ids,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)',
-                      (ident, cid, '新建内容', '[]', dumps(defaults), dumps(list(document_ids)), 'draft', t, t))
+            c.execute('INSERT INTO wb_conversations(id,client_id,title,messages,brief,document_ids,status,created_at,updated_at,mode) VALUES(?,?,?,?,?,?,?,?,?,?)',
+                      (ident, cid, '新建内容', '[]', dumps(defaults), dumps(list(document_ids)), 'draft', t, t, mode))
         return self.conversation(ident)
 
     def conversation(self, ident, include_deleted=False):

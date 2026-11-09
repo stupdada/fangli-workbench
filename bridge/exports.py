@@ -2,13 +2,14 @@
 import difflib
 import io
 import json
+import re
 import zipfile
 from app import render
 from .errors import Problem, Conflict
 from .zip_evidence import article_metadata, redacted, SECRET_KEYS
 
 
-def adopted_plan(service, ident, ids=None):
+def adopted_plan(service, ident, ids=None, *, delivery=False):
     conv = service.ws.conversation(ident)
     plan = service.store.get_plan(conv['plan_id']) if conv['plan_id'] else None
     if not plan: raise Problem('尚无稿件可导出')
@@ -22,23 +23,85 @@ def adopted_plan(service, ident, ids=None):
         raise Conflict('选中的稿件仍在处理，请待当前篇收尾后导出')
     # Keep the native export JSON fields exact for the ZIP default projection.
     plan['articles'] = [{k: v for k, v in a.items() if k not in ('current_version', 'version_label', 'origin', 'review', 'locked')} for a in current]
-    plan = render.ensure_plan_prefix(plan) if service.store.get_settings().get('title_prefix', True) else render.strip_plan_prefix(plan)
-    return plan
+    if delivery or not service.store.get_settings().get('title_prefix', True):
+        return render.strip_plan_prefix(plan)
+    return render.ensure_plan_prefix(plan)
+
+
+def plain_inline(text):
+    def prose(value):
+        value = re.sub(r'!?\[([^\]\n]*)\]\(([^()\s]*(?:\([^()]*\)[^()\s]*)*)(?:\s+"[^"]*")?\)',
+                       lambda m: f'{m[1]}（{m[2]}）' if m[1] and m[1] != m[2] else m[2], value)
+        value = re.sub(r'(\*\*\*|\*\*|__|~~)(?=\S)(.+?)(?<=\S)\1', r'\2', value)
+        value = re.sub(r'(?<!\*)\*(?=\S)([^*]+?)(?<=\S)\*(?!\*)|(?<!\w)_(?=\S)([^_]+?)(?<=\S)_(?!\w)',
+                       lambda m: m[1] or m[2], value)
+        return re.sub(r'\\([\\`*_{}\[\]()#+\-.!|>])', r'\1', value)
+
+    # Inline code is already literal; only its enclosing backticks are formatting.
+    output, end = [], 0
+    for code in re.finditer(r'(`+)([^`\n]+?)\1(?!`)', text):
+        output.extend((prose(text[end:code.start()]), code[2]))
+        end = code.end()
+    return ''.join([*output, prose(text[end:])])
+
+
+def plain_body(markdown):
+    lines = markdown.splitlines()
+    output, fence, table = [], None, False
+    table_rule = re.compile(r'^\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?$')
+    for index, raw in enumerate(lines):
+        line = raw.strip()
+        if fence:
+            if re.fullmatch(re.escape(fence[0]) + '{' + str(len(fence)) + ',}', line):
+                fence = None
+            else:
+                output.append(raw)
+            continue
+        if opening := re.match(r'^(`{3,}|~{3,})', line):
+            fence = opening[1]
+            continue
+        if table_rule.fullmatch(line):
+            continue
+        if '|' in line and (table or index + 1 < len(lines) and table_rule.fullmatch(lines[index + 1].strip())):
+            table = True
+            cells = re.split(r'(?<!\\)\|', line.removeprefix('|').removesuffix('|'))
+            output.append('  ·  '.join(plain_inline(cell.strip()) for cell in cells))
+            continue
+        table = False
+        if re.fullmatch(r'(?:-\s*){3,}|(?:\*\s*){3,}|(?:_\s*){3,}|=+', line):
+            continue
+        line = re.sub(r'^#{1,6}\s+(.*?)(?:\s+#+)?$', r'\1', line)
+        line = re.sub(r'^(?:>\s*)+', '', line)
+        line = re.sub(r'^[-*+]\s+', '• ', line)
+        output.append(plain_inline(line))
+    return '\n'.join(output).strip()
+
+
+def delivery_text(plan, ids, fmt):
+    articles = render.pick_articles(plan, ids)
+    bodies = [(article.get('body_md') or '').strip() for article in articles]
+    if fmt == 'md':
+        return '\n\n---\n\n'.join(filter(None, bodies))
+    return '\n\n\n'.join(filter(None, map(plain_body, bodies)))
 
 
 def export(service, ident, fmt, ids=None, *, scope=None):
     if fmt not in ('docx', 'md', 'txt', 'json'): raise Problem('导出格式不正确')
-    if scope is not None and (scope != 'body' or fmt not in ('md', 'txt')):
-        raise Problem('正文导出范围适用于 Markdown 和 TXT')
+    if scope is not None and fmt not in {'body': ('md', 'txt'), 'delivery': ('docx', 'md', 'txt')}.get(scope, ()):
+        raise Problem('所选格式不支持此导出范围')
     with service.guard:
-        plan = adopted_plan(service, ident, ids)
+        plan = adopted_plan(service, ident, ids, delivery=scope == 'delivery')
         if fmt == 'docx':
             body = render.export_plan_docx(plan, ids)
             ctype = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
         else:
-            function = (render.export_bodies_md if scope == 'body' else
-                        {'md': render.export_plan_md, 'txt': render.export_plan_txt, 'json': render.export_plan_json}[fmt])
-            body = function(plan, ids).encode('utf-8')
+            if scope == 'delivery':
+                result = delivery_text(plan, ids, fmt)
+            else:
+                function = (render.export_bodies_md if scope == 'body' else
+                            {'md': render.export_plan_md, 'txt': render.export_plan_txt, 'json': render.export_plan_json}[fmt])
+                result = function(plan, ids)
+            body = result.encode('utf-8')
             ctype = {'md': 'text/markdown', 'txt': 'text/plain', 'json': 'application/json'}[fmt] + '; charset=utf-8'
         name = render.safe_name(plan['title'] or plan['keyword']) + '.' + fmt
     return body, ctype, name

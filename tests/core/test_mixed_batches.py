@@ -164,6 +164,91 @@ class MixedBatches(unittest.TestCase):
     def selection(self, count):
         return {'keywords': ['试用'], 'selections': [{'platform_id': self.platform['id'], 'account_type': 'official', 'count': count}]}
 
+    def test_recommended_mixed_batch_completes_video_while_article_is_waiting(self):
+        item = {'client_id': self.cid, 'document_ids': [self.doc['id']], 'options': self.selection(1),
+                'videos': [{'source': 'documents'}]}
+        result = self.http(BATCHES + '/preflight', 'POST', {'items': [item]})
+        self.assertTrue(result['ready'], result['issues'])
+        plan = result['items'][0]['preview']
+        topics = {'article:1': ['文章选题一', '文章选题二', '文章选题三'],
+                  'video:1': ['视频选题一', '视频选题二', '视频选题三']}
+        body = {'item': item, 'revision': plan['revision'], 'rows': list(topics), 'seen': [], 'count': 3}
+        with patch.object(provider, 'chat', return_value=json.dumps({'topics': topics})) as model:
+            self.assertEqual(self.http(BATCHES + '/topics', 'POST', body)['topics'], topics)
+            payload = json.loads(model.call_args.args[0][1]['content'])
+            self.assertEqual(payload['documents'][0]['excerpt'], '首版资料。')
+            self.assertIn('重复', self.http(BATCHES + '/topics', 'POST',
+                {**body, 'seen': ['视频选题一？']}, status=400)['error'])
+        alternates = {'video:1': ['视频选题四', '视频选题五']}
+        with patch.object(provider, 'chat', return_value=json.dumps({'topics': alternates})):
+            self.assertEqual(self.http(BATCHES + '/topics', 'POST',
+                {**body, 'rows': ['video:1'], 'count': 2, 'seen': topics['video:1']})['topics'], alternates)
+        self.assertEqual(self.http(BATCHES)['batches'], [])
+        self.http(BATCHES, 'POST', {'request_key': 'unset-video', 'items': [item]}, status=400)
+        confirmed = {**item, 'preview': {'revision': plan['revision'],
+                     'rows': [{'id': 'article:1', 'topic': topics['article:1'][0]},
+                              {'id': 'video:1', 'topic': alternates['video:1'][0]}]}}
+        video_done = threading.Event()
+        process = self.s.batches.videos.process
+
+        def record_video(item, row):
+            process(item, row)
+            video_done.set()
+
+        self.model.gate_kind = 'generate'
+        with patch.object(self.s.batches.videos, 'process', side_effect=record_video):
+            started = self.http(BATCHES, 'POST', {'request_key': 'recommended', 'items': [confirmed]})['batch']
+            try:
+                self.assertTrue(self.model.entered.wait(4))
+                self.assertTrue(video_done.wait(4))
+                batch = self.s.batches.get(started['id'])
+                self.assertEqual((batch['completed'], batch['video_completed'], batch['status']), (0, 1, 'running'))
+                self.assertEqual(batch['items'][0]['videos'][0]['topic'], '视频选题四')
+            finally:
+                self.model.release.set()
+            final = self.batch(BATCHES + '/' + started['id'])
+        self.assertEqual((final['completed'], final['video_completed'], final['status']), (1, 1, 'done'))
+        self.assertTrue(any('【主题】文章选题一' in msg['content']
+                            for request in self.model.requests for msg in request.get('messages', [])))
+
+    def test_single_creation_recommendations_use_task_and_video_sources(self):
+        conversation = self.s.create_conversation(self.cid, document_ids=[self.doc['id']])
+        self.s.save_draft(conversation['id'], self.selection(1), mode='zip')
+        topics = {'1': '建议选题一'}
+        with patch.object(provider, 'chat', return_value=json.dumps({'topics': topics})) as model:
+            article_path = f"/api/workbench/conversations/{conversation['id']}/topics"
+            self.assertEqual(self.http(article_path, 'POST', {'seen': []})['topics'], topics)
+            article_input = json.loads(model.call_args.args[0][1]['content'])
+            self.assertEqual(article_input['slots'][0]['kind'], 'article')
+            self.assertEqual(article_input['slots'][0]['platforms'], [self.platform['name']])
+            source = {'client_id': self.cid, 'document_ids': self.doc['id']}
+            self.assertEqual(self.http('/api/workbench/video-topics', 'POST',
+                {'source': source, 'template': 'qa', 'seen': []})['topics'], topics)
+            video_input = json.loads(model.call_args.args[0][1]['content'])
+            self.assertEqual(video_input['slots'][0]['template'], 'qa')
+            self.assertEqual(video_input['documents'][0]['excerpt'], '首版资料。')
+
+    def test_conversation_topics_work_before_keywords_and_platform_arrangement(self):
+        conversation = self.s.create_conversation(self.cid, document_ids=[self.doc['id']])
+        cid = conversation['id']
+        scope = '写作背景与表达要求。' * 60 + '\n仅面向研究生申请者，排除本科课程。'
+        self.s.save_draft(cid, {'note': scope, 'topic': '旧批次主题'})
+        self.s.ws.update_conversation(cid, messages=[{'role': 'user', 'content': '旧对话原文'}])
+        topic_path = f"/api/workbench/conversations/{cid}/topics"
+        topics = {'1': ['建议选题一', '建议选题二', '建议选题三']}
+        with patch.object(provider, 'chat', return_value=json.dumps({'topics': topics})) as model:
+            result = self.http(topic_path, 'POST', {'seen': [], 'count': 3, 'direction': '未整理的输入框草稿'})
+            self.assertEqual(result['topics'], topics)
+            system, user = model.call_args.args[0]
+            payload = json.loads(user['content'])
+            self.assertIn('每条候选都必须同时满足所有明确限定', system['content'])
+            self.assertEqual(payload['request'], {'note': scope, 'keywords': []})
+            self.assertNotIn('documents', payload)
+            self.assertNotIn('旧对话原文', user['content'])
+            self.assertNotIn('未整理的输入框草稿', user['content'])
+            self.assertEqual(payload['client']['name'], conversation['brief']['client'])
+        self.assertEqual(self.s.ws.conversation(cid)['brief']['note'], scope)
+
     def test_three_videos_resume_per_stage_and_download_only_owned_assets(self):
         self.video.lose_reply.add('资料直出，提交已接收')
         self.video.fail_render.add('文章版，成片失败')

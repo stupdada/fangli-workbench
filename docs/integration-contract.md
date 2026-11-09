@@ -40,7 +40,7 @@
 | GET `/api/workbench/clients/{id}/intakes/{intake_id}` | `{intake}` |
 | POST `/api/workbench/clients/{id}/intakes/{intake_id}/adopt` | 确认档案与编辑记录 → `{client,intake}`。字段与冲突处理见 [客户资料整理](feature-client-intake.md) |
 | POST `/api/parse` | 沿用ZIP `{filename,content_b64}` → 原生解析结果；原支持格式继续原解析器，PDF单独接 |
-| POST `/api/workbench/conversations` | `{client_id}` → conversation |
+| POST `/api/workbench/conversations` | `{client_id, document_ids?, creation_id?, mode?:'chat'\|'zip'}` → conversation，未传 mode 时默认 chat |
 | PUT `/api/workbench/conversations/{id}/profile` | `{name,profile,save_as_default?:true}` → `{client,conversation}`；默认只更新本任务，显式save_as_default才同步客户；profile七字段齐全，清空传空字符串 |
 | GET `/api/workbench/conversations/{id}` | conversation, articles, documents, job, operations |
 | PUT `/api/workbench/conversations/{id}/task-state` | `{pinned:true\|false}` 或 `{archived:true\|false}` → `{task:{id,pinned_at,archived_at}}`。归档清除置顶，排队或执行中的任务返回 409。归档任务可按原 ID 查阅和恢复 |
@@ -141,8 +141,8 @@ GET `/api/workbench/runtime` → `{main:{pid,port},video:{status,pid,port,start_
 - 页面路径为 `/`、`/workbench`、`/workbench/zip`；草稿 `mode` 使用 `chat` 或 `zip`。两个路径由同一服务提供，保存模式不调用模型。
 - `draft` 可附加布尔 `followup`。conversation额外返回 `mode,followup,needs_confirmation,draft_revision`；`brief`为当前草稿选项。修改在途生成要求会设置 `needs_confirmation=true` 并暂停后续；当前篇结束后，用户确认调用 `/start` 才续写。只切换模式不暂停。
 - `/start` 校验关键词、可用平台及篇数，不额外强制填写note或具体企业事实。仅当前有效note进入ZIP；助手的understanding/questions和历史已撤回原话不追加到写作提示。
-- bootstrap与zip-config均含 `target_models`，同时保留原生 `models`别名；provider-models返回 `provider_models`。bootstrap不查询外部目录；首次明确开始/模型操作按精确ID校验并缓存，显式打开目录可刷新。不自动换模型或重复不确定调用。
-- style-review结果含 `recommended`（第1、2档ID）、`default_mode:'full'`、`observations_default_selected:false`。suggestions ID为字符串，观察项以O开头。审阅主体标记为WorkBuddy模型，Codex评语初始为空；review-record只保存实际提交的双方文字，不生成“Codex已审阅”结论。
+- bootstrap 与 zip-config 均含 `target_models`，同时保留原生 `models` 别名。bootstrap 返回本机 API 识别状态 `local_api_sources`。`settings.transport` 记录 `workbuddy`、`deepseek`、`dashscope` 或 `compatible`，历史快照缺字段时按 WorkBuddy 运行。`provider-models` 仍返回 WorkBuddy 目录，启动 WorkBuddy 模型操作时按精确 ID 校验并缓存。直连接口在实际写作请求时校验模型。打开设置或保存配置时只读取本机状态。
+- style-review结果含 `recommended`（第1、2档ID）、`default_mode:'full'`、`observations_default_selected:false`。suggestions ID为字符串，观察项以O开头。审阅主体标记实际使用的模型来源，Codex评语初始为空；review-record只保存实际提交的双方文字，不生成“Codex已审阅”结论。
 - 需求整理的普通写作指令（含首条和重复发送）必须返回完整 `options.note`，输出示例与此约定一致；与当前条件接近不等于用户选择了上一轮选项。漏回时保留原话和现有有效说明，明确提示模型输出缺项，不使用理解摘要替代，也不自动重试。
 - style-rewrite先保存候选，再尝试一次只读事实复核；复核失败时候选保留，fact_check为 `unverified`，不影响ZIP成稿的查看、编辑和导出。compare的json/md包含基稿、候选、差异、修改清单、复核和双方评语。
 - 视频可请求当前采用版本，或明确指定一个曾采用过的版本；未采用候选返回409、跨客户/跨稿件版本返回404。之后切换文章版本仍可读取已固定的视频来源版本。
@@ -162,7 +162,7 @@ regenerate/audit、逻辑删除与历史复用要求本任务所有模型操作�
 
 成功时在一次事务里保存可恢复工作版本、来源证据、采用记录和显式原生参考更新。重写初稿origin=zip_regenerate_draft（核查前未自动采用），重写核查后origin=zip_regenerate，再核查origin=zip_audit；异步kind为zip_regenerate/zip_audit，result含article_id/base_version/adopted_version/audit，重写额外含draft_version。旧版本和旧来源不改。失败或不完整结束不提交新采用稿，保留旧参考和旧版本；同一操作一旦发生传输失败，禁止原生后备循环再次外发。人工及style/revision候选继续独立于生成参考，人工保存任一正文/标题/标签/声明变更均清除继承核查和评分。
 
-本地归档是当前任务的内容ZIP下载，客户端可保存到选定目录；无远程upload动作或upload_url/token设置。旧网页API base/key/直连测试由本机WorkBuddy配置与精确模型目录校验替代。以上是明确产品合同变化，不能用旧接口旁路恢复凭据或外发。
+本地归档是当前任务的内容 ZIP 下载，客户端可保存到选定目录。工作台设置只接受模型来源、模型 ID 和写作参数，连接地址和凭据由服务端从本机配置读取。
 
 ## 审阅交互与素材处理增量
 

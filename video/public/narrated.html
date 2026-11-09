@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="/video/narrated.css">
   <link rel="stylesheet" href="/video/workspace-rail.css">
   <link rel="stylesheet" href="/video/palette.css">
-  <script src="/video/narrated.js" defer></script>
+  <script type="module" src="/video/narrated.js"></script>
   <script type="module" src="/video/video-shell.mjs"></script>
 </head>
 <body class="video-shell">
@@ -42,13 +42,19 @@
     </aside>
     <main id="short-editor" tabindex="-1">
       <form id="short-source" class="short-source">
-        <p class="short-kicker" id="short-format">9:16 · 30—45 秒</p>
+        <p class="short-kicker" id="short-format">9:16 · 22 秒 · 5 幕大字</p>
         <h2>这条视频想讲什么？</h2>
         <div id="short-source-name" class="short-origin">客户资料</div>
+        <section id="short-topic-picker" class="short-topic-picker" aria-label="视频推荐选题" hidden>
+          <div class="section-head"><h3>推荐选题</h3><div class="short-topic-actions"><button id="short-topic-more" class="secondary" type="button" aria-expanded="false" hidden>看备选</button><button id="short-topic-refresh" class="secondary" type="button">推荐选题</button></div></div>
+          <p id="short-topic-status" class="muted" role="status"></p>
+          <div id="short-topic-options" hidden></div>
+        </section>
         <label for="short-topic">视频主题</label>
         <textarea id="short-topic" rows="2" maxlength="500" placeholder="例如：长毛猫到店洗护前要准备哪三件事？"></textarea>
         <label for="short-template" class="short-template-label">页面模板</label>
-        <select id="short-template"><option value="process">流程说明</option></select>
+        <select id="short-template" aria-describedby="short-template-note"><option value="auto">自动选择</option></select>
+        <p id="short-template-note" class="muted" role="status"></p>
         <div id="short-shot-settings" hidden>
           <h3 class="short-template-label">镜头说明</h3>
           <p id="short-shot-order" class="muted" aria-live="polite"></p>
@@ -80,7 +86,7 @@
     <aside class="short-preview" aria-label="页面和成片预览" id="short-preview" hidden>
       <div class="section-head"><h2>预览</h2><span id="short-size">720 × 1280</span></div>
       <div id="short-preview-tabs" class="short-preview-tabs" aria-label="选择预览页面"></div>
-      <figure class="short-phone"><img id="short-preview-image" alt="短视频页面预览"><video id="short-player" controls playsinline preload="metadata" hidden></video></figure>
+      <figure class="short-phone"><img id="short-preview-image" alt="短视频页面预览"><div id="short-preview-motion" class="short-preview-motion" hidden aria-hidden="true"></div><video id="short-player" controls playsinline preload="metadata" hidden></video></figure>
       <p id="short-preview-label" class="muted"></p>
       <section id="short-release" class="short-release" aria-label="发布信息" hidden></section>
       <div class="short-downloads" id="short-downloads"></div>

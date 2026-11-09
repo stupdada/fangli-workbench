@@ -1,7 +1,5 @@
 /* 方立工作台：平面层次、交互蓝与轻回弹。 */
 :root {
-  --selection-wash: #315dc012;
-  --hover-surface: #f1f2f5;
   --ease-elastic: cubic-bezier(.22, .9, .28, 1.14);
 }
 
@@ -32,7 +30,6 @@
 .context-chip:hover:not(:disabled), .chat-suggestions button:hover:not(:disabled) { background: var(--hover-surface); color: var(--ink); }
 .chat-suggestions button { border-radius: 5px; text-underline-offset: 4px; }
 .chat-compose-area.has-draft > .chat-suggestions { display: flex; visibility: hidden; }
-.conversation-log .message.user { background: var(--ink); }
 .reply-state { color: var(--muted); font-weight: 400; margin-left: 8px; }
 .reply-stop { margin-top: 8px; font-size: 13px; }
 .is-streaming .message-copy > :last-child::after, .is-streaming .message-copy:empty::after {
@@ -44,11 +41,11 @@
 .brand-link { font-weight: 600; }
 .icon { stroke-width: 1.65; }
 .save-status { min-height: 20px; font-variant-numeric: tabular-nums; }
-.button.primary, .send-button { background: var(--ink); color: #fff; }
-.button.primary:hover:not(:disabled), .send-button:hover:not(:disabled) { background: #3b3e46; }
+.send-button { background: var(--ink); color: #fff; }
+.send-button:hover:not(:disabled) { background: var(--primary-hover); }
 .task-row.active, .nav-button.active, .settings-layout > nav button[aria-current] { background: var(--selection-wash); color: var(--ink); }
 .task-row:hover:not(.active), .nav-button:hover:not(.active), .settings-layout > nav button:hover:not([aria-current]) { background: #eceef2; }
-.settings-layout > nav button[aria-current] { box-shadow: inset 2px 0 var(--blue); }
+.settings-layout > nav button[aria-current] { color: var(--blue); }
 .text-button, .reopen-draft { color: var(--blue); }
 .task-row, .nav-button { transition: background 150ms, color 150ms; }
 ::selection { background: #dce6fb; color: var(--ink); }
@@ -126,18 +123,9 @@ html[data-motion-hidden] :is(.activity-spinner, .writing-placeholder span, .work
 html[data-motion-hidden] .is-streaming .message-copy::after,
 html[data-motion-hidden] .is-streaming .message-copy > :last-child::after { animation-play-state: paused; }
 
-#modal, #modal.settings-dialog { border: 1px solid var(--line); box-shadow: none; }
-#modal[open] { animation: appearance-dialog-in 280ms both; }
-#modal[open]::backdrop { animation: appearance-backdrop-in 160ms both; }
 .menu-items { animation: appearance-menu-in 200ms var(--ease-elastic) both; transform-origin: top right; }
 #toast:not([hidden]) { animation: appearance-toast-in 220ms var(--ease) both; }
 .appearance-exit { pointer-events: none !important; }
-@keyframes appearance-dialog-in {
-  0% { opacity: 0; transform: translateY(10px) scale(.98); }
-  65% { opacity: 1; transform: translateY(-1px) scale(1.004); }
-  100% { opacity: 1; transform: none; }
-}
-@keyframes appearance-backdrop-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes appearance-menu-in { from { opacity: 0; transform: translateY(-4px) scale(.97); } to { opacity: 1; transform: none; } }
 @keyframes appearance-toast-in { from { opacity: 0; translate: 0 7px; } to { opacity: 1; translate: 0 0; } }
 
@@ -156,7 +144,7 @@ html[data-motion-hidden] .is-streaming .message-copy > :last-child::after { anim
 @media (prefers-reduced-motion: reduce) {
   .mode-switch::after, .article-tabs::after { transition: none; }
   .is-streaming .message-copy::after, .is-streaming .message-copy > :last-child::after { animation: none; }
-  #modal[open], #modal[open]::backdrop, .menu-items, #toast:not([hidden]) { animation: none; }
+  .menu-items, #toast:not([hidden]) { animation: none; }
   ::view-transition-old(task-workspace), ::view-transition-new(task-workspace) { animation: none; }
 }
 

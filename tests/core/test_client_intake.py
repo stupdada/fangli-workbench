@@ -14,10 +14,10 @@ from bridge.errors import Conflict, Missing, Problem
 from bridge.native import LocalStore
 from bridge.service import Service
 from bridge.storage import PROFILE_FIELDS
+from bridge.topic_suggestions import recommendation_input
 
 
-def model_result(document):
-    ref = {'document_id': document['id'], 'quote': document['text']}
+def model_result(ref):
     suggestion = {'name': '资料客户', **dict.fromkeys(PROFILE_FIELDS, '')}
     suggestion.update(company='资料公司', brand='资料品牌', products='资料产品')
     return {'profile_suggestion': suggestion, 'profile_sources': {k: [ref] if v else [] for k,v in suggestion.items()},
@@ -46,9 +46,9 @@ class IntakeTests(unittest.TestCase):
 
     def chat(self, messages, settings, **kwargs):
         doc = json.loads(messages[1]['content'])['documents'][0]
-        self.calls.append((doc['id'], settings['model'], kwargs))
+        self.calls.append((doc['filename'], settings['model'], kwargs))
         self.release.wait(3)
-        return json.dumps(model_result(doc), ensure_ascii=False)
+        return json.dumps(model_result(next(iter(doc['passages']))), ensure_ascii=False)
 
     def upload(self, cid, text='资料公司经营资料品牌的资料产品。一处写仅本地，一处写全国配送。', **kwargs):
         return self.s.ws.files.import_document(cid, {'filename': '测试资料.md',
@@ -131,6 +131,16 @@ class IntakeTests(unittest.TestCase):
         task = self.s.create_conversation(self.cid)
         self.assertEqual(task['brief']['keywords'], keywords)
         self.assertEqual(task['document_ids'], [self.doc['id']])
+        source = {'brief': task['brief'], 'documents': self.s.ws.selected_documents(task), 'platforms': []}
+        slots = [{'id': '1', 'kind': 'article'}]
+        payload = recommendation_input(self.s.freeze_creation_context(self.cid, source), slots)
+        self.assertEqual(payload['overview'], '人工确认的业务概览。')
+        self.assertNotIn('documents', payload)
+        dialogue_payload = recommendation_input(self.s.freeze_creation_context(self.cid, source), slots, dialogue=True)
+        self.assertEqual(dialogue_payload['overview'], payload['overview'])
+        self.assertEqual(dialogue_payload['client'], {'name': task['brief']['client']})
+        self.assertNotIn('documents', dialogue_payload)
+        self.assertNotIn('verified_facts', dialogue_payload)
         reused = self.ready()
         self.assertEqual(reused['proposed_client']['profile']['brand'], '人工校订品牌')
         self.assertEqual(len(self.calls), 1)
@@ -139,6 +149,12 @@ class IntakeTests(unittest.TestCase):
         with self.assertRaises(Missing): self.intake.adopt(other,record['id'],body)
         with self.assertRaises(Problem): self.intake.start(other,{'document_ids':[self.doc['id']]})
         self.assertEqual(len(self.calls),1)
+        new = self.upload(self.cid, '开头 ' * 1000 + '资料产品新版说明。', update_document_id=self.doc['id'])
+        source['documents'] = self.s.ws.selected_documents(task, [new['id']])
+        payload = recommendation_input(self.s.freeze_creation_context(self.cid, source), slots)
+        self.assertNotIn('overview', payload)
+        self.assertIn('资料产品新版说明', payload['documents'][0]['excerpt'])
+        self.assertLessEqual(len(payload['documents'][0]['excerpt']), 350)
 
     def test_concurrent_profile_and_source_revision_reject_adoption(self):
         old = self.ready()
@@ -169,6 +185,53 @@ class IntakeTests(unittest.TestCase):
         self.intake.adopt(self.cid,record['id'],body)
         with self.assertRaisesRegex(Conflict,'采用记录已更新'):
             self.intake.adopt(self.cid,record['id'],body)
+
+    def test_model_citation_resolves_to_exact_multiline_source(self):
+        quote = '资料公司  供应资料产品。\n仅限本地配送（周一至周五）。'
+        doc = self.upload(self.cid, quote + '\n\n' + '文' * 400, update_document_id=self.doc['id'])
+        record = self.ready([doc['id']])
+        self.assertEqual(record['result']['overview']['source_refs'], [{
+            'document_id': doc['id'], 'quote': quote, 'filename': doc['filename'],
+            'revision': doc['revision'], 'digest': doc['digest'],
+        }])
+        self.intake.adopt(self.cid, record['id'], self.body(record))
+
+    def test_model_citation_must_exist_in_this_request(self):
+        self.intake.chat = lambda *args, **kwargs: json.dumps(model_result('S999999'))
+        start = self.intake.start(self.cid, {'document_ids': [self.doc['id']]})
+        ident = start['intake']['id']
+        thread = self.s.threads.get(ident)
+        if thread:
+            thread.join(3)
+        record = self.intake.get(self.cid, ident)
+        self.assertEqual(record['status'], 'error')
+        self.assertIn('无法定位的资料段落', record['error'])
+        self.assertEqual(record['result'], {})
+
+    def test_reports_live_stages_until_result_is_ready(self):
+        progress = []
+
+        def observe():
+            progress.append(self.intake.latest(self.cid)['intake']['progress'])
+
+        def chat(*args, **kwargs):
+            observe()
+            return self.chat(*args, **kwargs)
+
+        def validate(*args, **kwargs):
+            observe()
+            return original_validate(*args, **kwargs)
+
+        original_validate = client_intake.validate_result
+        self.intake.chat = chat
+        with patch.object(self.s, 'ensure_model', side_effect=lambda settings: observe()), \
+                patch.object(client_intake, 'validate_result', side_effect=validate):
+            record = self.ready()
+        self.assertEqual([step['stage'] for step in progress], ['prepare', 'organize', 'verify'])
+        elapsed = [step['elapsed_seconds'] for step in progress]
+        self.assertEqual(elapsed, sorted(elapsed))
+        self.assertGreaterEqual(elapsed[0], 0)
+        self.assertIsNone(record['progress'])
 
     def test_public_claim_search_reuses_exact_revision_and_editor_keeps_evidence(self):
         url = 'https://issuer.example/certificate'

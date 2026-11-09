@@ -7,7 +7,7 @@ import threading
 import time
 from pathlib import Path
 from app import generator, llm, prompts
-from . import provider
+from . import local_api, provider
 from .accepted_expressions import AcceptedExpressions
 from .errors import Problem, Conflict, Missing
 from .storage import Workspace, PROFILE_FIELDS, dumps, integer, text_value, uid
@@ -235,38 +235,63 @@ class Service:
         from .batches import Batches
         from .client_intake import ClientIntake
         from .geo_checks import GeoChecks
+        from .writing_lab import WritingLab
         self.customers = Customers(self)
         self.intake = ClientIntake(self)
         self.batches = Batches(self)
         self.geo = GeoChecks(self)
+        self.writing_lab = WritingLab(self)
         if boot_batches:
             self.batches.boot()
 
     def public_settings(self):
         settings = self.store.get_settings()
-        return {**{k: settings[k] for k in SETTING_FIELDS}, 'transport': 'workbuddy'}
+        return {**{k: settings[k] for k in SETTING_FIELDS}, 'transport': settings.get('transport', provider.WORKBUDDY)}
 
     def save_settings(self, patch):
-        if not isinstance(patch, dict) or set(patch) - SETTING_FIELDS:
-            raise Problem('设置只接受写作模型、采样参数、标题前缀及原生写作开关')
+        if not isinstance(patch, dict) or set(patch) - (SETTING_FIELDS | {'transport'}):
+            raise Problem('设置只接受模型来源、模型 ID、采样参数及原生写作选项')
+        patch = dict(patch)
         if 'model' in patch:
-            text_value(patch['model'], '模型ID', 120, empty=False)
+            patch['model'] = text_value(patch['model'], '模型ID', 120, empty=False).strip()
         if 'temperature' in patch and (type(patch['temperature']) not in (float, int) or not 0 <= patch['temperature'] <= 1.5):
             raise Problem('temperature需在0至1.5之间')
         if 'max_tokens' in patch and (type(patch['max_tokens']) is not int or not 800 <= patch['max_tokens'] <= 8000):
             raise Problem('max_tokens需为800至8000之间的整数')
         for key in ('title_prefix', 'disable_thinking'):
             if key in patch and not isinstance(patch[key], bool): raise Problem(f'{key}需为布尔值')
-        if 'brand' in patch: text_value(patch['brand'], '默认品牌', 4000)
+        if 'brand' in patch: patch['brand'] = text_value(patch['brand'], '默认品牌', 4000).strip()
         with self.guard:
-            self.store.save_settings(patch)
-        return self.public_settings()
+            settings = self.store.get_settings()
+            current = settings.get('transport', provider.WORKBUDDY)
+            if 'transport' in patch or 'model' in patch:
+                transport = patch.get('transport', current)
+                self.check_transport(transport)
+                if transport != current and 'model' not in patch:
+                    raise Problem('切换模型来源时请选择该来源的模型 ID')
+            self.store.set_meta('settings', dumps({**settings, **patch}))
+            return self.public_settings()
+
+    @staticmethod
+    def check_transport(transport):
+        if transport == provider.WORKBUDDY:
+            return
+        if not isinstance(transport, str) or transport not in local_api.PROVIDERS:
+            raise Problem('请选择有效的写作模型来源')
+        if not local_api.connection(transport):
+            raise Problem(f'{provider.name(transport)} 的本机配置缺失或无效，请检查环境变量')
 
     def ensure_model(self, settings=None):
+        settings = settings if settings is not None else self.public_settings()
+        transport = settings.get('transport', provider.WORKBUDDY)
+        self.check_transport(transport)
+        if transport != provider.WORKBUDDY:
+            text_value(settings.get('model'), '模型ID', 120, empty=False)
+            return
         with self.guard:
             if self.catalog is None:
                 self.catalog = provider.models()
-            chosen = (settings or self.store.get_settings()).get('model')
+            chosen = settings.get('model')
             if not any(m.get('id') == chosen for m in self.catalog):
                 raise Problem('所选 WorkBuddy 模型目录中不可用；请明确选择，系统不会自动换模型')
 
@@ -297,11 +322,14 @@ class Service:
     def bootstrap(self):
         return {**self.zip_config(), 'clients': self.ws.clients(), 'conversations': self.ws.conversations(),
                 'provider_models': copy.deepcopy(self.catalog or []),
+                'local_api_sources': local_api.sources(),
                 'setting_limits': {'temperature': {'min': 0, 'max': 1.5}, 'max_tokens': {'min': 800, 'max': 8000}}}
 
-    def create_conversation(self, cid, *, document_ids=None, creation_id=None):
+    def create_conversation(self, cid, *, document_ids=None, creation_id=None, mode='chat'):
+        if mode not in ('chat', 'zip'):
+            raise Problem('创作模式需为chat或zip')
         with self.guard:
-            return self.customers.new_task(cid, document_ids=document_ids, creation_id=creation_id)
+            return self.customers.new_task(cid, document_ids=document_ids, creation_id=creation_id, mode=mode)
 
     def save_task_profile(self, ident, name, profile, save_as_default=False):
         text_value(name, '客户名称', 100, empty=False)
@@ -454,7 +482,7 @@ class Service:
                     self.ws.finish_operation(op, error='稿件版本或处理状态已变化')
                     self.cancellations.pop(op, None)
                     raise
-            settings = self.store.get_settings()
+            settings = self.public_settings()
             def run():
                 provider.local.usage, provider.local.cancel = [], cancel
                 result, error, status = {}, '', 'done'
@@ -507,7 +535,7 @@ class Service:
             messages = conv['messages'] + [{'role': 'user', 'content': text}]
             conv = self.ws.update_conversation(ident, messages=messages, draft_revision=conv['draft_revision'] + 1,
                 needs_confirmation=conv['needs_confirmation'] or bool(job and job['status'] == 'running'),
-                title=conv['title'] if conv['plan_id'] else text[:36], status=conv['status'] if job and job['status'] == 'running' else 'discussing')
+                status=conv['status'] if job and job['status'] == 'running' else 'discussing')
             return self.background('interview', ident, lambda op, settings: conduct(self, conv, op, settings))
 
     def build_brief(self, conv):
@@ -619,8 +647,9 @@ class Service:
                 job['id'] = jid
                 generator._jobs[jid] = job
             view.jid = jid
+            title = brief['client'] + ' · ' + (brief.get('topic', '').strip() or brief['keyword'])
             self.ws.update_conversation(ident, plan_id=pid, job_id=jid, status='running', needs_confirmation=False,
-                title=brief['client'] + ' · ' + brief['keyword'])
+                title=title)
             op = self.ws.create_operation('writing', ident)
             cancel = threading.Event()
             self.cancellations[op] = cancel
@@ -659,7 +688,7 @@ class Service:
             thread = threading.Thread(target=run, name='zip-' + jid, daemon=True)
             self.threads[jid] = thread
             thread.start()
-            return {'job_id': jid, 'operation_id': op, 'planned': 1 if one else len(pending), 'total': len(tasks)}
+            return {'job_id': jid, 'operation_id': op, 'planned': 1 if one else len(pending), 'total': len(tasks), 'title': title}
 
     def stop(self, ident):
         with self.guard:
@@ -787,4 +816,5 @@ class Service:
         for thread in threads: thread.join(timeout=max(0, deadline - time.monotonic()))
         if self.batches.worker:
             self.batches.worker.join(timeout=max(0, deadline - time.monotonic()))
-        return self.geo.close() and not any(thread.is_alive() for thread in threads) and not (self.batches.worker and self.batches.worker.is_alive())
+        lab_closed = self.writing_lab.close()
+        return self.geo.close() and lab_closed and not any(thread.is_alive() for thread in threads) and not (self.batches.worker and self.batches.worker.is_alive())

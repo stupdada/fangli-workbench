@@ -2,7 +2,7 @@
 const fs=require('node:fs/promises');
 const path=require('node:path');
 const {randomUUID}=require('node:crypto');
-const {POINT_MAX_CHARACTERS,DAILY,DAILY_SHOTS,TEMPLATES,assetSelection,validateDailyPhotos,publishing,freezeContext,validateDraft,problem,hash}=require('./contract.cjs');
+const {POINT_MAX_CHARACTERS,DAILY,DAILY_SHOTS,TYPOGRAPHY,TEMPLATES,assetSelection,validateDailyPhotos,publishing,freezeContext,validateDraft,problem,hash}=require('./contract.cjs');
 const {author,createLocalModel}=require('./author.cjs');
 const {runEngine}=require('./engine.cjs');
 const {sendFile}=require('../runtime/video-api.js');
@@ -216,6 +216,7 @@ function createNarrated({dataDir,workspace,workspaceBase,fetchImpl,callModel,eng
       const context=freezeContext(shared,{source,topic:input.topic,note:input.note,platform:input.platform,template:input.template,shotNotes:input.shot_notes});
       const daily=context.request.template===DAILY;
       if(daily&&selected.length!==DAILY_SHOTS)throw problem(400,'门店日常需要 5 张不同的图片');
+      if(context.request.template===TYPOGRAPHY&&selected.length)throw problem(400,'大字讲解只用文字，请取消素材勾选或换一个模板');
       const dailyMedia=daily?await mediaFor(context.client.id,selected):null;
       if(daily)validateDailyPhotos(dailyMedia.snapshots);
       const id=randomUUID();
@@ -265,6 +266,7 @@ function createNarrated({dataDir,workspace,workspaceBase,fetchImpl,callModel,eng
         const previous=record.versions.at(-1);
         const daily=validated.template===DAILY;
         if(daily!==(previous.template===DAILY))throw problem(400,'请从新建短视频切换门店日常模板');
+        if((validated.template===TYPOGRAPHY)!==(previous.template===TYPOGRAPHY))throw problem(400,'请从新建短视频切换大字讲解模板');
         const media=await mediaFor(record.context.client.id,pageAssetIds(validated.pages),previous.assets);
         if(daily)validateDailyPhotos(media.snapshots);
         const unchanged=hash(validated.script)===hash(previous.script)&&hash(validated.pages)===hash(previous.pages)&&
@@ -283,7 +285,7 @@ function createNarrated({dataDir,workspace,workspaceBase,fetchImpl,callModel,eng
       const record=await read(productionFile(id));editable(record);revision(record,input);
       if(input.narration!==undefined&&typeof input.narration!=='boolean')throw problem(400,'配音开关格式不正确');
       const renderId=randomUUID(),draft=record.versions.at(-1),output=renderDir(id,renderId);
-      const narration=draft.template!==DAILY&&input.narration!==false;
+      const narration=![DAILY,TYPOGRAPHY].includes(draft.template)&&input.narration!==false;
       const op=await start('render',{client_id:record.context.client.id,production_id:id,version:draft.version},binding,{production_id:id,render_id:renderId},async()=>{
         // A save may have happened while reading the incoming render request.
         const latest=await read(productionFile(id));editable(latest);revision(latest,input);
@@ -297,7 +299,7 @@ function createNarrated({dataDir,workspace,workspaceBase,fetchImpl,callModel,eng
       });
       json(res,202,op);return true;
     }
-    const versionAsset=/^\/versions\/(\d+)\/(page-[1-6]\.png|cover\.png)$/.exec(tail);
+    const versionAsset=/^\/versions\/(\d+)\/(page-[1-6](?:-(?:title|detail))?\.png|cover\.png)$/.exec(tail);
     const renderAsset=new RegExp(`^/renders/(${UUID})/([a-z0-9.]+)$`).exec(tail);
     if(['GET','HEAD'].includes(method)&&(versionAsset||renderAsset)){
       const record=await read(productionFile(id));

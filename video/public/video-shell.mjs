@@ -1,13 +1,10 @@
-import { workspaceRail } from './workspace-rail.mjs';
+import { workspaceRail, workbenchReturnPath } from './workspace-rail.mjs';
 import { applyWorkbenchPalette } from './palette.mjs';
 
 applyWorkbenchPalette();
 
 const initial = new URLSearchParams(location.search);
-const workbench = '/workbench/zip/index.html';
-const from = initial.get('return_to');
-const allowed = new Set([workbench,'/workbench/index.html','/workbench/classic/index.html']);
-const returnPath = allowed.has(from?.split(/[?#]/,1)[0]) ? from : workbench;
+const returnPath = workbenchReturnPath(initial.get('return_to')) || '/workbench/zip/index.html';
 const area = new URL(returnPath,location.origin).searchParams.get('area');
 const returnArea = ['quick','customers'].includes(area) ? area : 'standard';
 document.querySelector('#video-navigation').innerHTML = workspaceRail('video',{

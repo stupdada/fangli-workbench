@@ -4,9 +4,9 @@ const planKeys = ['keywords','keyword_links','selections','format_overrides','no
 export const planOptions = options => Object.fromEntries(planKeys.filter(k => options?.[k] !== undefined).map(k => [k, clone(options[k])]));
 
 export function platformFields(platforms, options, draft) {
-  const rows = [], additional = [];
+  const rows = [], choices = [];
   for (const platform of platforms.filter(enabled)) {
-    const {id,name,formats} = platform;
+    const {id,name,formats,account_type} = platform;
     const counts = selectionCounts(options,id);
     const fields = ['official','personal'].map(type => {
       const label = type === 'official' ? '官方号' : '个人号';
@@ -17,11 +17,16 @@ export function platformFields(platforms, options, draft) {
     const picks = formats.map(fmt => `<label><input type="checkbox" data-plan-format="${e(id)}" value="${e(fmt)}" ${selectedFormats.includes(fmt) ? 'checked' : ''}>${e(fmt === '短视频' ? '短视频文案' : fmt)}</label>`).join('');
     const row = `<div class="task-platform-fields">${fields}<div class="format-picks">${picks}</div></div>`;
     const selected = ['official','personal'].some(type => Number(draft?.counts[id + ':' + type] ?? counts[type]) !== 0);
-    if (selected) rows.push(`<section class="task-platform-row" aria-label="${e(name)}"><h3>${e(name)}</h3>${row}</section>`);
-    else additional.push(`<details class="plan-add-platform"><summary>${e(name)}</summary>${row}</details>`);
+    rows.push(`<section class="task-platform-row" data-plan-platform-row="${e(id)}" aria-label="${e(name)}" ${selected?'':'hidden'}><h3>${e(name)}</h3>${row}</section>`);
+    if (!selected) {
+      const account = account_type === 'official' ? 'official' : 'personal';
+      choices.push(`<button type="button" class="button outline" data-customer-action="add-plan-platform" data-id="${e(id)}" data-account="${account}" aria-label="添加 ${e(name)}"><span aria-hidden="true">＋</span>${e(name)}</button>`);
+    }
   }
-  const add = additional.length ? `<details id="customer-add-platforms" class="plan-add-platforms"><summary>添加平台</summary>${additional.join('')}</details>` : '';
-  return `<div class="task-platforms">${rows.join('')}${add}</div>`;
+  const add = choices.length ? `<div class="plan-add-platforms">
+    <h3>添加平台</h3><div class="inline-actions">${choices.join('')}</div>
+  </div>` : '';
+  return rows.length ? `<div class="task-platforms">${add}${rows.join('')}</div>` : '<p class="empty">暂无已启用的发布平台。</p>';
 }
 export function collectPlatforms(platforms, root, options = {}) {
   let result = { ...clone(options), selections:[], format_overrides:{} };

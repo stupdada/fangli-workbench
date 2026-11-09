@@ -28,9 +28,37 @@ function savedClaims(record) {
   return (record.adoption?.editorial || record.result).important_claims;
 }
 
-export function renderIntake(record, draft, { busy = false, message = '', compact = false } = {}) {
+const intakeSteps = [
+  ['prepare', '准备资料', '正在准备本次选用的资料…'],
+  ['organize', '整理档案', '正在提取档案信息、业务概览和关键词…'],
+  ['verify', '校验来源', '正在核对摘录与原文…'],
+];
+
+function renderIntakeProgress(progress) {
+  const current = intakeSteps.findIndex(([stage]) => stage === progress?.stage);
+  if (current < 0) return '';
+  const steps = intakeSteps.map(([,label], index) => {
+    const state = index < current ? ' class="is-complete"' : index === current ? ' aria-current="step"' : '';
+    return `<li${state}>${label}${index < current ? '<span class="sr-only">，已完成</span>' : ''}</li>`;
+  }).join('');
+  return `<div class="intake-progress">
+    <div class="intake-progress-status"><p role="status">第 ${current + 1} 步，共 ${intakeSteps.length} 步 · ${intakeSteps[current][2]}</p><span>已用时 ${e(progress.elapsed_seconds)} 秒</span></div>
+    <ol class="intake-progress-steps" aria-label="客户资料整理进度">${steps}</ol>
+  </div>`;
+}
+
+export function renderIntake(record, draft, { busy = false, message = '', compact = false, statusUnavailable = false } = {}) {
   if (!record) return '<div class="empty"><h2>整理客户资料</h2><p>在资料页选择文件，生成档案建议、业务概览和关键词。</p></div>';
-  if (record.status !== 'ready') return `<section class="customer-intake"><header><h2>整理客户资料</h2>${button('intake-refresh','读取状态')}</header><p role="status">${e(message || (record.status === 'running' ? '正在整理所选资料…' : record.error || '整理尚未完成'))}</p>${['error','interrupted'].includes(record.status) ? button('intake-retry','重新整理') : ''}<p class="muted">${record.sources.map(d => `${e(d.filename)} · 修订 ${e(d.revision)}`).join('；')}</p></section>`;
+  if (record.status !== 'ready') {
+    const running = record.status === 'running';
+    const progress = running && !statusUnavailable ? renderIntakeProgress(record.progress) : '';
+    return `<section class="customer-intake">
+      <header><h2>整理客户资料</h2>${running && statusUnavailable ? button('intake-refresh','读取状态') : ''}</header>
+      ${progress || `<p role="status">${e(message || (running ? '正在整理客户档案…' : record.error || '整理尚未完成'))}</p>`}
+      ${['error','interrupted'].includes(record.status) ? button('intake-retry','重新整理') : ''}
+      <p class="muted">${record.sources.map(d => `${e(d.filename)} · 修订 ${e(d.revision)}`).join('；')}</p>
+    </section>`;
+  }
   const result = draft.editorial;
   const fields = PROFILE_FIELDS.map(([key, label]) => {
     const current = key === 'name' ? record.current_client.name : record.current_client.profile[key];
@@ -59,12 +87,14 @@ export function renderIntake(record, draft, { busy = false, message = '', compac
 export class CustomerIntake {
   constructor(service, onChange) {
     this.service = service; this.onChange = onChange; this.drafts = new Map(); this.generation = 0;
+    this.statusUnavailable = false;
   }
   stop() { clearTimeout(this.timer); this.generation++; }
   switchClient(cid) { if (this.cid !== cid) { this.stop(); this.cid = cid; this.record = null; this.draft = null; this.message = ''; } }
   accept(record, message) {
     if (message !== undefined) this.message = message;
-    else if (this.record?.id !== record?.id || this.record?.status === 'running' && record?.status !== 'running') this.message = '';
+    else if (this.statusUnavailable || this.record?.id !== record?.id || this.record?.status === 'running' && record?.status !== 'running') this.message = '';
+    this.statusUnavailable = false;
     this.record = record;
     if (record?.status === 'ready') {
       const key = `${record.id}:${record.expected_profile_version}:${record.expected_adoption_id || ''}`;
@@ -85,15 +115,27 @@ export class CustomerIntake {
     this.timer = setTimeout(async () => {
       if (generation !== this.generation) return;
       try { await this.refresh(); }
-      catch (error) { this.message = error.message; this.onChange(); return; }
-      if (generation === this.generation && this.record?.status === 'running' && remaining > 1) this.watch(remaining-1);
+      catch (error) {
+        if (generation === this.generation) this.reportUnavailable(error.message);
+        return;
+      }
+      if (generation !== this.generation || this.record?.status !== 'running') return;
+      if (remaining > 1) this.watch(remaining-1);
+      else this.reportUnavailable('暂未收到整理结果，可手动读取状态。');
     },5000);
   }
-  async refresh() {
+  reportUnavailable(message) {
+    this.statusUnavailable = true;
+    this.message = message;
+    this.onChange();
+  }
+  async refresh({resume = false} = {}) {
     if (!this.record) return this.load(this.cid);
     const cid = this.cid, id = this.record.id, generation = this.generation;
     const {intake} = await this.service.intake(cid,id);
-    if (generation === this.generation && this.record?.id === id) this.accept(intake);
+    if (generation !== this.generation || this.record?.id !== id) return;
+    this.accept(intake);
+    if (resume && intake.status === 'running') this.watch(60);
   }
   change(field,value) { updateIntakeDraft(this.draft,field,value); this.message = '有修改待保存'; }
   claimChanged(index) { return this.draft.editorial.important_claims[index]?.text !== savedClaims(this.record)[index]?.text; }
@@ -111,7 +153,7 @@ export class CustomerIntake {
     const data = await this.service.adoptIntake(this.cid,this.record.id,clone(this.draft));
     this.drafts.delete(this.key); this.accept(data.intake,'已保存'); return data.client;
   }
-  view() { return renderIntake(this.record,this.draft,{busy:this.busy,message:this.message}); }
+  view() { return renderIntake(this.record,this.draft,{busy:this.busy,message:this.message,statusUnavailable:this.statusUnavailable}); }
 }
 
 export function installIntakeStyles() {

@@ -2,20 +2,24 @@ import { PROFILE_FIELDS, escapeHTML as e, splitWords } from './model.mjs';
 import { CustomerClient, BatchMonitor, importCustomerFile, activeBatch } from './customers-client.mjs';
 import { CustomerIntake, installIntakeStyles } from './customer-intake.mjs';
 import { CustomerImport, customerFileTypes } from './customer-import.mjs';
+import { RecognitionReview } from './customer-recognition.mjs';
 import { claimReviewForm, claimSearchForm } from './customer-claim-check.mjs';
 import { batchVideoResults, batchVideoRetryable, installBatchVideoStyles } from './customer-batch-video.mjs';
 import { platformFields, collectPlatforms, planOptions } from './customer-platforms.mjs';
 import { keywordLinksField, keywordLinksText, parseKeywordLinks } from './keyword-links.mjs';
-import { shortVideoPath } from './workspace-rail.mjs';
+import { geoPath, shortVideoPath } from './workspace-rail.mjs';
 
 const usable = d => !['pending','error','failed','superseded'].includes(d.status) && !!d.text?.trim();
 const statusName = status => ({ queued:'排队中', running:'生成中', done:'已完成', partial:'部分完成', error:'失败', stopped:'已停止', interrupted:'中断待确认', pending:'待处理', active:'可使用', ready:'可使用' }[status] || status || '可使用');
 const action = (name, label, attrs = '', cls = 'quiet') => `<button type="button" class="button ${cls}" data-customer-action="${name}" ${attrs}>${label}</button>`;
+const backToCustomers = action('back', '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12H4m6-6-6 6 6 6"/></svg>',
+  'aria-label="返回客户列表" title="返回客户列表"', 'customer-back');
 const idAttr = id => `data-id="${e(id)}"`;
 const customerContext = c => [c.profile?.company, c.profile?.industry].filter(Boolean).join(' · ');
 
 function keywordMarkup(words, aliases) {
-  return `<div class="spread"><label class="field" for="customer-keyword-entry"><span>常用关键词</span></label>${action('plan-aliases','别名分组')}</div>
+  return `<div class="spread"><h2 id="customer-plan-keywords-heading">常用关键词</h2>${action('plan-aliases','别名分组','','quiet sm')}</div>
+    <label class="sr-only" for="customer-keyword-entry">输入常用关键词</label>
     <div class="reply-row"><input id="customer-keyword-entry" type="text" placeholder="输入关键词，回车添加">${action('add-plan-keywords','添加','','outline')}</div>
     <input type="hidden" name="keywords" value="${e(words.join('，'))}">
     <input type="hidden" name="aliases" value="${e(JSON.stringify(aliases))}">
@@ -36,12 +40,13 @@ export class CustomersWorkspace {
       if (index < 0) this.client.state.clients.push(customer);
       else this.client.state.clients[index] = customer;
       this.render();
-    });
+    }, () => this.client.platforms);
     this.intakeSelection = new Map();
     this.planDrafts = new Map();
     this.tab = 'profile'; this.search = ''; this.active = false;
     this.dialog = document.createElement('dialog'); this.dialog.className = 'customer-dialog';
-    this.dialog.innerHTML = '<form><header><h2></h2><button type="button" data-customer-action="close-dialog" class="icon-button" aria-label="关闭窗口">×</button></header><div class="customer-dialog-body"></div><p class="error-text" role="alert"></p><footer><button type="button" class="button quiet" data-customer-action="close-dialog">取消</button><button class="button primary" type="submit">保存</button></footer></form>';
+    this.dialog.setAttribute('aria-labelledby', 'customer-dialog-title');
+    this.dialog.innerHTML = '<form><header><h2 id="customer-dialog-title"></h2><button type="button" data-customer-action="close-dialog" class="icon-button" aria-label="关闭窗口">×</button></header><div class="customer-dialog-body"></div><p class="error-text" role="alert"></p><footer><button type="button" class="button quiet" data-customer-action="close-dialog">取消</button><button class="button primary" type="submit">保存</button></footer></form>';
     document.body.append(this.dialog);
     this.dialog.querySelector('form').onsubmit = event => { event.preventDefault(); this.run(async () => { const close = await this.submitDialog?.(new FormData(event.target)); if (close !== false) this.dialog.close(); }); };
     document.addEventListener('click', event => {
@@ -58,10 +63,10 @@ export class CustomersWorkspace {
           if (start) start.disabled = !selected.size;
         }
       }
-      if (el.id === 'customer-search') { this.search = el.value; this.render(); document.getElementById('customer-search')?.focus(); }
     });
     document.addEventListener('input', event => {
       const el = event.target;
+      if (el.id === 'customer-search') { this.search = el.value; this.render(); return; }
       const plan = el.closest('#customer-plan');
       if (plan && this.active && el.id !== 'customer-keyword-entry') this.capturePlan(plan);
       if (el.dataset.intakeField && el.closest('[data-intake-editor]') && this.intake.draft) {
@@ -108,12 +113,25 @@ export class CustomersWorkspace {
   }
   async enter() { this.active = true; await this.refreshClients(); }
   leave() { this.active = false; this.monitor.start(null); this.intake.stop(); }
-  syncPlanRoute() {
+  writeLocation(params) {
+    for (const key of ['batch','customer','tab','plan']) params.delete(key);
+    if (this.batch) params.set('batch',this.batch.id);
+    else if (this.id) {
+      params.set('customer',this.id);
+      params.set('tab',this.tab);
+    }
+  }
+  syncRoute() {
     const url = new URL(location.href);
     if (url.searchParams.get('area') !== 'customers') return;
-    if (this.id && this.tab === 'plan' && !this.batch) url.searchParams.set('plan',this.id);
-    else url.searchParams.delete('plan');
+    this.writeLocation(url.searchParams);
     history.replaceState(history.state,'',url);
+  }
+  async loadIntake() {
+    const id = this.id;
+    this.intake.stop();
+    await this.intake.load(id);
+    if (this.active && this.id === id && this.tab === 'intake' && this.intake.record?.status === 'running') this.intake.watch(60);
   }
   planDraft(id = this.id) {
     if (!this.planDrafts.has(id)) {
@@ -164,8 +182,9 @@ export class CustomersWorkspace {
   }
   async detail(id, tab = this.tab) {
     this.intake.switchClient(id);
-    const token = this.detailToken = Symbol(); this.id = id; this.tab = tab; this.loading = true; this.render();
-    this.syncPlanRoute();
+    const token = this.detailToken = Symbol(); this.id = id;
+    this.tab = ['profile','documents','history','intake','plan'].includes(tab) ? tab : 'profile';
+    this.loading = true; this.syncRoute(); this.render();
     try {
       const [customer, documents, plan, history] = await Promise.all([this.service.client(id), this.service.documents(id), this.service.plan(id), this.service.history(id)]);
       if (token !== this.detailToken) return;
@@ -177,8 +196,13 @@ export class CustomersWorkspace {
       Object.assign(this, { customer, documents, planData:plan, historyData:history });
       if (customer.archived_at && ['intake','plan'].includes(this.tab)) {
         this.tab = 'profile';
-        this.syncPlanRoute();
+        this.syncRoute();
       }
+      if (this.tab === 'intake') await this.loadIntake();
+    } catch (error) {
+      if (token !== this.detailToken) return;
+      if (error.status === 404) { this.id = null; this.syncRoute(); }
+      throw error;
     } finally { if (token === this.detailToken) { this.loading = false; this.render(); } }
   }
   view() {
@@ -193,29 +217,91 @@ export class CustomersWorkspace {
     return [context, !context || ambiguous ? `编号 ${customer.id.slice(-6)}` : ''].filter(Boolean).join(' · ');
   }
   listView() {
-    const customers = this.client.state.clients.filter(c => `${c.name} ${c.profile?.brand || ''} ${c.profile?.products || ''}`.toLowerCase().includes(this.search.toLowerCase()));
-    return `<header class="customer-heading"><div><h1>客户</h1><p>档案、资料与常用创作安排。</p></div>${action('new-client','新建客户','','primary')}</header><div class="customer-list-tools"><label><span class="sr-only">查找客户</span><input id="customer-search" type="search" placeholder="查找客户、品牌或产品" value="${e(this.search)}"></label><span>${customers.length} 位客户</span>${action('archived-clients','已归档客户')}${action('import-drafts','导入草稿')}${action('batches','批次记录')}</div><div class="customer-table-scroll"><table class="customer-table"><thead><tr><th>客户</th><th>品牌 / 产品</th><th>行业</th><th>操作</th></tr></thead><tbody>${customers.map(c => `<tr><td>${action('detail',e(c.name),idAttr(c.id),'text-button')}${c.name_conflict ? `<small class="customer-disambiguator">${e(this.distinguishClient(c))}</small>` : ''}</td><td>${e([c.profile?.brand,c.profile?.products].filter(Boolean).join(' / ') || '待补充')}</td><td>${e(c.profile?.industry || '—')}</td><td>${action('create-task','开始创作',idAttr(c.id))}${action('open-plan','常用方案',idAttr(c.id))}</td></tr>`).join('')}</tbody></table></div>${!customers.length ? `<div class="empty large"><h2>建立第一位客户</h2><p>先填写名称、添加资料，再保存常用发布安排。</p>${action('new-client','新建客户','','primary')}</div>` : ''}`;
+    const query = this.search.trim().toLowerCase();
+    const all = this.client.state.clients;
+    const customers = all.filter(c => [c.name,c.profile?.brand,c.profile?.products,c.profile?.industry]
+      .filter(Boolean).join(' ').toLowerCase().includes(query));
+    const cards = customers.map(c => {
+      const context = c.name_conflict ? this.distinguishClient(c) : [c.profile?.brand,c.profile?.industry].filter(Boolean).join(' · ');
+      return `<li class="customer-card"><div class="customer-identity">
+        ${action('detail',e(c.name),idAttr(c.id),'customer-name')}
+        ${context ? `<span class="customer-context">${e(context)}</span>` : ''}
+        </div><p class="customer-products">${e(c.profile?.products || '待补充产品资料')}</p>
+        <div class="customer-card-actions">${action('open-plan','常用方案',idAttr(c.id),'quiet')}${action('create-task','开始创作',idAttr(c.id),'outline')}</div></li>`;
+    }).join('');
+    return `<div class="customer-directory"><header class="customer-heading"><div><h1>客户</h1><p>档案、资料与常用创作安排。</p></div>${action('new-client','新建客户','','primary')}</header>
+      <div class="customer-list-tools customer-directory-tools"><label><span class="sr-only">查找客户</span><input id="customer-search" type="search" placeholder="查找客户、品牌或产品" value="${e(this.search)}"></label><span aria-live="polite">${customers.length} 位客户</span><div class="customer-directory-management">${action('archived-clients','已归档客户','','quiet sm')}${action('import-drafts','导入草稿','','quiet sm')}${action('batches','批次记录','','quiet sm')}</div></div>
+      ${cards ? `<ul class="customer-directory-list" aria-label="客户列表">${cards}</ul>` : `<div class="empty large">${query && all.length ? '<h2>未找到匹配客户</h2><p>试试客户简称、品牌或产品关键词。</p>' : '<h2>建立第一位客户</h2><p>填写客户名称后，就可以添加资料和常用创作安排。</p>'}</div>`}
+      </div>`;
   }
   detailView() {
     const c = this.customer;
     if (this.loading || !c || c.id !== this.id) return `<p role="status">正在读取客户资料…</p>`;
     const videoQuery = new URLSearchParams({client_id:c.id, return_to:location.pathname + location.search});
+    const geoQuery = new URLSearchParams({client:c.id, return_to:location.pathname + location.search});
     const tabs = [['profile','档案'],['documents','资料'],['history','历史']];
     if (!c.archived_at) tabs.splice(2,0,['intake','整理档案'],['plan','常用方案']);
     const controls = c.archived_at ? `<span class="helper">已归档</span>${action('restore-client','恢复客户',idAttr(c.id),'outline')}` :
-      `${action('archive-client','归档客户')}${action('edit-client','编辑档案')}<a class="button quiet" href="/workbench/geo/?client=${encodeURIComponent(c.id)}">查看 GEO 检测</a><a class="button outline" href="${e(`${shortVideoPath}?${videoQuery}`)}">制作短视频</a>${action('create-task','开始创作',idAttr(c.id),'primary')}`;
-    return `${action('back','返回客户列表')}<header class="customer-heading"><div><h1>${e(c.name)}</h1><p>${e(c.profile?.products || c.profile?.industry || '客户内容空间')}</p></div><div>${controls}</div></header><nav class="customer-tabs" aria-label="客户详情">${tabs.map(([key,title]) => action('tab',title,`data-tab="${key}" aria-pressed="${this.tab === key}"`,this.tab === key ? 'active' : 'quiet')).join('')}</nav>${({profile:() => this.profileView(),documents:() => this.documentsView(),intake:() => this.intake.view(),plan:() => this.planView(),history:() => this.historyView()})[this.tab]()}`;
+      `${action('archive-client','归档客户')}${action('edit-client','编辑档案')}<a class="button quiet" href="${e(`${geoPath}?${geoQuery}`)}">查看 GEO 检测</a><a class="button outline" href="${e(`${shortVideoPath}?${videoQuery}`)}">制作短视频</a>${action('create-task','开始创作',idAttr(c.id),'primary')}`;
+    return `${backToCustomers}<header class="customer-heading"><div><h1>${e(c.name)}</h1><p>${e(c.profile?.products || c.profile?.industry || '客户内容空间')}</p></div><div>${controls}</div></header><nav class="customer-tabs" aria-label="客户详情">${tabs.map(([key,title]) => action('tab',title,`data-tab="${key}" aria-pressed="${this.tab === key}"`,this.tab === key ? 'active' : 'quiet')).join('')}</nav>${({profile:() => this.profileView(),documents:() => this.documentsView(),intake:() => this.intake.view(),plan:() => this.planView(),history:() => this.historyView()})[this.tab]()}`;
   }
   profileView() { return `<dl class="customer-profile">${PROFILE_FIELDS.map(([key,label]) => `<div><dt>${label}</dt><dd>${e(key === 'name' ? this.customer.name : this.customer.profile?.[key] || '未填写')}</dd></div>`).join('')}</dl>`; }
   documentsView() {
     const selected = this.intakeSelection.get(this.id) || new Set();
-    return `<div class="customer-list-tools">${this.customer.archived_at ? '' : `${action('upload','上传文件','','primary')}${action('paste','粘贴资料')}${action('intake-start','整理所选资料',selected.size ? '' : 'disabled','outline')}`}${action('removed-documents','已移出资料')}${action('refresh-detail','刷新')}</div><div class="customer-documents">${this.documents.map(d => `<div class="customer-document"><div>${this.customer.archived_at ? `<strong>${e(d.filename)}</strong>` : `<label class="intake-document-choice"><input type="checkbox" data-intake-document="${e(d.id)}" ${selected.has(d.id) ? 'checked' : ''} ${usable(d) ? '' : 'disabled'} aria-label="整理 ${e(d.filename)}"><strong>${e(d.filename)}</strong></label>`}<p>修订 ${d.revision || 1} · ${e(statusName(d.status))} · ${(d.text || '').length.toLocaleString()} 字${d.has_original ? ' · 已保存原件' : ' · 无原件副本'}</p>${d.error ? `<p class="error-text">${e(d.error)}</p>` : ''}</div><div>${this.customer.archived_at ? '' : `${action('document','核对 / 修订',idAttr(d.id))}${action('remove-document','移出资料库',idAttr(d.id))}`}${action('revisions','历史',idAttr(d.id))}${d.has_original ? `<a class="button quiet" href="${e(this.service.path(this.id,`/documents/${encodeURIComponent(d.id)}/original`))}" download>原件</a>` : ''}<a class="button quiet" href="${e(this.service.path(this.id,`/documents/${encodeURIComponent(d.id)}/text`))}" download>文字</a></div></div>`).join('') || `<p class="empty">${this.customer.archived_at ? '暂无资料。' : '上传客户资料，或粘贴已经核对的文字。'}</p>`}</div>`;
+    return `<div class="customer-list-tools">${this.customer.archived_at ? '' : `${action('upload','上传文件','','primary')}${action('paste','粘贴资料')}${action('intake-start','整理所选资料',selected.size ? '' : 'disabled','outline')}`}${action('removed-documents','已移出资料')}${action('refresh-detail','刷新')}</div><div class="customer-documents">${this.documents.map(d => this.documentRow(d,selected)).join('') ||
+      `<p class="empty">${this.customer.archived_at ? '暂无资料。' : '上传客户资料，或粘贴已经核对的文字。'}</p>`}</div>`;
+  }
+
+  documentRow(doc, selected) {
+    const archived = this.customer.archived_at;
+    const pending = doc.has_recognition && doc.status === 'pending';
+    const id = idAttr(doc.id);
+    const path = this.service.path(this.id,`/documents/${encodeURIComponent(doc.id)}`);
+    const title = archived ? `<strong>${e(doc.filename)}</strong>` :
+      `<label class="intake-document-choice"><input type="checkbox" data-intake-document="${e(doc.id)}"
+        ${selected.has(doc.id) ? 'checked' : ''} ${usable(doc) ? '' : 'disabled'} aria-label="整理 ${e(doc.filename)}">
+        <strong>${e(doc.filename)}</strong></label>`;
+    const status = pending ? '识别文字待确认' : doc.has_recognition && !usable(doc) && doc.status === 'ready' ? '原件与图片已保存' : statusName(doc.status);
+    return `<div class="customer-document"><div>${title}
+      <p>修订 ${doc.revision || 1} · ${e(status)} · ${(doc.text || '').length.toLocaleString()} 字${doc.has_original ? ' · 已保存原件' : ' · 无原件副本'}</p>
+      ${doc.error ? `<p class="error-text">${e(doc.error)}</p>` : ''}</div><div>
+      ${doc.has_recognition ? action('document-recognition',pending && !archived ? '核对识别文字' : '图片与原页',id) : ''}
+      ${archived ? '' : `${pending ? '' : action('document','核对 / 修订',id)}${action('remove-document','移出资料库',id)}`}
+      ${action('revisions','历史',id)}
+      ${doc.has_original ? `<a class="button quiet" href="${e(path)}/original" download>原件</a>` : ''}
+      <a class="button quiet" href="${e(path)}/text" download>文字</a></div></div>`;
   }
   planView() {
     const plan = this.planData.plan, o = plan.options || {};
     const draft = this.planDraft();
     const changed = draft && draft.revision !== plan.revision;
-    return `<form id="customer-plan"><div class="customer-list-tools"><p>新任务沿用此方案和所选资料组的最新有效修订。本次任务临时调整不会改写这里。</p></div>${(this.planData.issues || []).map(issue => `<p class="error-text">${e(typeof issue === 'string' ? issue : issue.error || issue.message)}</p>`).join('')}<div class="form-grid"><section class="keyword-editor customer-plan-keywords" data-plan-keywords>${keywordMarkup(draft ? splitWords(draft.keywords || '') : o.keywords || [], draft?.aliases ?? o.aliases ?? [])}</section>${keywordLinksField(draft?.keywordLinks ?? keywordLinksText(o.keyword_links))}<label class="field"><span>长期写作要求</span><textarea class="input" name="note" rows="2">${e(draft?.note ?? o.note ?? '')}</textarea></label></div><h2 class="section-title">常用发布安排</h2>${platformFields(this.client.platforms,o,draft)}<h2 class="section-title">默认资料</h2><div class="library-list">${this.documents.map(d => `<label><input type="checkbox" name="documents" value="${e(d.id)}" ${(draft?.documents ?? plan.document_ids ?? []).includes(d.id) ? 'checked' : ''} ${usable(d) ? '' : 'disabled'}><span>${e(d.filename)}<small>修订 ${d.revision || 1} · ${e(statusName(d.status))}</small></span></label>`).join('') || '<p class="empty">先在资料页上传或粘贴正文。</p>'}</div><footer class="customer-plan-footer"><span>方案修订 ${plan.revision || 0}</span><span data-plan-unsaved ${draft ? '' : 'hidden'}><span role="status">${changed ? '方案已有新版本，本页保留了原草稿。' : '有未保存的修改'}</span> ${action('discard-plan','放弃修改')}</span>${action('save-plan','保存客户常用方案','','primary')}</footer></form>`;
+    return `<form id="customer-plan">
+      <p class="helper customer-plan-intro">新任务沿用此方案和所选资料组的最新有效修订。本次任务临时调整不会改写这里。</p>
+      <div class="customer-plan-cards">
+        <section class="customer-plan-card" aria-labelledby="customer-plan-platforms-heading">
+          <h2 id="customer-plan-platforms-heading">常用发布安排</h2>
+          ${platformFields(this.client.platforms,o,draft)}
+          ${(this.planData.issues || []).map(issue => `<p class="error-text">${e(typeof issue === 'string' ? issue : issue.error || issue.message)}</p>`).join('')}
+        </section>
+        <section class="customer-plan-card customer-plan-keyword-card" aria-labelledby="customer-plan-keywords-heading">
+          <div class="keyword-editor customer-plan-keywords" data-plan-keywords>${keywordMarkup(draft ? splitWords(draft.keywords || '') : o.keywords || [], draft?.aliases ?? o.aliases ?? [])}</div>
+          ${keywordLinksField(draft?.keywordLinks ?? keywordLinksText(o.keyword_links))}
+        </section>
+        <section class="customer-plan-card" aria-labelledby="customer-plan-note-heading">
+          <h2 id="customer-plan-note-heading">长期写作要求</h2>
+          <textarea class="input" name="note" rows="3" aria-labelledby="customer-plan-note-heading">${e(draft?.note ?? o.note ?? '')}</textarea>
+        </section>
+        <section class="customer-plan-card" aria-labelledby="customer-plan-documents-heading">
+          <h2 id="customer-plan-documents-heading">默认资料</h2>
+          <div class="library-list">${this.documents.map(d => `<label><input type="checkbox" name="documents" value="${e(d.id)}" ${(draft?.documents ?? plan.document_ids ?? []).includes(d.id) ? 'checked' : ''} ${usable(d) ? '' : 'disabled'}><span>${e(d.filename)}<small>修订 ${d.revision || 1} · ${e(statusName(d.status))}</small></span></label>`).join('') || '<p class="empty">先在资料页上传或粘贴正文。</p>'}</div>
+        </section>
+      </div>
+      <footer class="customer-plan-footer">
+        <span>方案修订 ${plan.revision || 0}</span>
+        <span data-plan-unsaved ${draft ? '' : 'hidden'}><span role="status">${changed ? '方案已有新版本，本页保留了原草稿。' : '有未保存的修改'}</span> ${action('discard-plan','放弃修改')}</span>
+        ${action('save-plan','保存客户常用方案','','primary')}
+      </footer>
+    </form>`;
   }
   historyView() {
     return `<h2 class="section-title">创作任务</h2>${(this.historyData.conversations || []).map(t => `<div class="customer-document"><span>${e(t.title)} <small>${e(t.deleted_at ? '已删除' : t.archived_at ? '已归档' : statusName(t.status))} · ${e(t.created_at || '')}</small></span><div>${t.deleted_at ? '' : action('open-task','打开',idAttr(t.id))}${this.customer.archived_at || t.deleted_at ? '' : `<details><summary>更多</summary>${action('reuse-task','沿用安排新建',idAttr(t.id))}</details>`}</div></div>`).join('') || '<p class="empty">还没有创作任务。</p>'}<h2 class="section-title">生成批次</h2>${this.batchRows(this.historyData.batches || [])}`;
@@ -239,7 +325,7 @@ export class CustomersWorkspace {
     const progress = `文章 <strong>${Number(b.completed || 0)}</strong> / ${Number(b.total || 0)} 篇${videoTotal ? ` · 视频 <strong>${videoCompleted}</strong> / ${videoTotal} 条` : ''}`;
     const stopHint = videoTotal ? '停止后，尚未开始的内容暂停排队。' : '停止会取消尚未开始项，并请求当前篇收尾。';
     const headingStatus = [b.created_at,statusName(b.status)].filter(Boolean).map(e).join(' · ');
-    return `${action('back','返回客户列表')}<header class="customer-heading batch-heading"><div><h1>生成批次</h1><p>${headingStatus}</p></div><div class="batch-heading-actions">${action('refresh-batch','刷新')}${download}${continueAction}</div></header><p class="batch-progress" role="status">${progress}</p><p class="helper">已完成项会保留。${stopHint}</p>${articles}${batchVideoResults(b,statusName)}`;
+    return `${backToCustomers}<header class="customer-heading batch-heading"><div><h1>生成批次</h1><p>${headingStatus}</p></div><div class="batch-heading-actions">${action('refresh-batch','刷新')}${download}${continueAction}</div></header><p class="batch-progress" role="status">${progress}</p><p class="helper">已完成项会保留。${stopHint}</p>${articles}${batchVideoResults(b,statusName)}`;
   }
   editClient(c) {
     const field = ([key,label]) => `<label class="field"><span>${label}</span><input name="${key}" value="${e(key === 'name' ? c.name : c.profile?.[key] || '')}" ${key === 'name' ? 'required maxlength="100"' : 'maxlength="4000"'}></label>`;
@@ -259,15 +345,48 @@ export class CustomersWorkspace {
     const clientId = this.id; const results = [];
     // The resolution dialog owns its own submit handler; do not keep the outer UI busy while awaiting it.
     this.busy = false;
-    for (const file of files) results.push(await importCustomerFile(this.service, clientId, file, info => this.resolveImport(info)));
+    for (const file of files) results.push(await importCustomerFile(this.service, clientId, file, info => this.resolveImport(info), {recognize:true}));
     await this.detail(clientId,'documents');
-    this.toast(results.map(r => r.is_current === false ? '原件属于历史修订，当前版本未改变' : ({created:'已保存原件与解析文字',updated:'已更新资料修订',duplicate:'原件已存在，已复用',pending:'原件已保存，解析待处理',cancelled:'已取消导入',needs_resolution:'资料待确认'})[r.outcome] || r.outcome).join('；'));
+    this.toast(results.map(r => r.is_current === false ? '原件属于历史修订，当前版本未改变' : r.outcome === 'pending' && r.document?.has_recognition ? '原件已保存，可以核对识别文字' : ({created:'已保存原件与解析文字',updated:'已更新资料修订',duplicate:'原件已存在，已复用',pending:'原件已保存，解析待处理',cancelled:'已取消导入',needs_resolution:'资料待确认'})[r.outcome] || r.outcome).join('；'));
   }
-  async showBatch(batch) { this.batch = batch; this.monitor.start(batch); this.render(); }
+
+  showDocumentRecognition(review, {onConfirm, label = '确认识别文字', auto = false} = {}) {
+    const update = async work => {
+      const status = this.dialog.querySelector('[data-recognition-progress]');
+      this.dialog.querySelector('.customer-recognition').inert = true;
+      try { await work(message => { status.textContent = message; }); }
+      finally { if (this.dialog.open && this.submitDialog === confirm) this.showDocumentRecognition(review,{onConfirm,label}); }
+    };
+    const recognize = () => update(progress => review.processWaiting((done,total) => progress(`已识别 ${done} / ${total} 页`), () => !this.dialog.open));
+    const confirm = async () => {
+      if (!review.report.pages.length) {
+        await update(async progress => { progress('正在读取原件…'); await review.retry(); });
+        return false;
+      }
+      if (review.waiting.length) {
+        await recognize();
+        return false;
+      }
+      const doc = await review.confirm();
+      if (onConfirm) await onConfirm(doc);
+      else {
+        await this.detail(review.clientId,'documents');
+        this.toast('识别结果已保存');
+      }
+    };
+    this.modal(review.doc.filename, `<p class="helper" role="status" data-recognition-progress></p>${review.markup()}`,
+      review.editable ? confirm : null, !review.report.pages.length ? '重新读取原件' : review.waiting.length ? '识别剩余页面' : label);
+    review.bind(this.dialog, page => this.run(() => update(async progress => {
+      progress(`正在重新识别第 ${page} 页…`);
+      await review.retry(page);
+    })));
+    if (auto && review.waiting.length) return this.run(recognize);
+  }
+  async showBatch(batch) { this.batch = batch; this.syncRoute(); this.monitor.start(batch); this.render(); }
   async perform(name, el) {
     const id = el.dataset.id;
     if (name === 'close-dialog') { this.dialog.close(); return; }
-    if (name === 'back') { this.id = null; this.batch = null; this.monitor.start(null); this.intake.stop(); this.syncPlanRoute(); this.render(); return; }
+    if (name === 'back') { this.id = null; this.batch = null; this.monitor.start(null); this.intake.stop(); this.syncRoute(); this.render(); return; }
     if (name === 'archived-clients') {
       const archived = await this.service.clients(true);
       this.modal('已归档客户',archived.map(c => `<div class="customer-document"><span>${e(c.name)}
@@ -296,9 +415,9 @@ export class CustomersWorkspace {
       return;
     }
     if (name === 'detail' || name === 'open-plan') return this.detail(id,name === 'open-plan' ? 'plan' : 'profile');
-    if (name === 'tab') { this.tab = el.dataset.tab; this.syncPlanRoute(); if (this.tab === 'intake') { this.intake.stop(); await this.intake.load(this.id); if (this.intake.record?.status === 'running') this.intake.watch(60); } else this.intake.stop(); this.render(); return; }
-    if (name === 'intake-start') { const ids = [...(this.intakeSelection.get(this.id) || [])]; if (!ids.length) throw new Error('请选择要整理的资料'); this.tab = 'intake'; await this.intake.start(this.id,ids); this.render(); return; }
-    if (name === 'intake-refresh') return this.intake.refresh();
+    if (name === 'tab') { this.tab = el.dataset.tab; this.syncRoute(); this.render(); if (this.tab === 'intake') await this.loadIntake(); else this.intake.stop(); return; }
+    if (name === 'intake-start') { const ids = [...(this.intakeSelection.get(this.id) || [])]; if (!ids.length) throw new Error('请选择要整理的资料'); this.tab = 'intake'; this.syncRoute(); await this.intake.start(this.id,ids); this.render(); return; }
+    if (name === 'intake-refresh') return this.intake.refresh({resume:true});
     if (name === 'intake-retry') return this.intake.start(this.id,this.intake.record.sources.map(d => d.id),true);
     if (name === 'intake-use-field') return this.intake.useField(el.dataset.field);
     if (name === 'claim-search' || name === 'claim-review') {
@@ -370,6 +489,19 @@ export class CustomersWorkspace {
         },'应用分组');
       return;
     }
+    if (name === 'add-plan-platform') {
+      const form = el.closest('#customer-plan');
+      const row = form.querySelector(`[data-plan-platform-row="${CSS.escape(id)}"]`);
+      const count = row.querySelector(`[data-plan-account="${el.dataset.account}"]`);
+      row.hidden = false;
+      count.value = '1';
+      const chooser = el.closest('.plan-add-platforms');
+      el.remove();
+      if (!chooser.querySelector('button')) chooser.remove();
+      this.capturePlan(form);
+      count.focus();
+      return;
+    }
     if (name === 'save-plan') {
       const root = document.getElementById('customer-plan');
       this.addPlanKeywords(root,root.querySelector('#customer-keyword-entry').value);
@@ -385,6 +517,14 @@ export class CustomersWorkspace {
     }
     if (name === 'upload') { const input = document.createElement('input'); input.type = 'file'; input.multiple = true; input.accept = customerFileTypes; input.onchange = () => this.run(() => this.importFiles([...input.files])); input.click(); return; }
     if (name === 'paste') { this.modal('粘贴客户资料','<label class="field"><span>资料名称</span><input name="filename" required value="粘贴资料"></label><label class="field"><span>正文</span><textarea name="text" required rows="10"></textarea></label>',async data => { const result = await this.service.addDocument(this.id,{filename:String(data.get('filename')),text:String(data.get('text'))}); if (!result.document || result.outcome === 'needs_resolution') throw new Error('同名资料已存在，请从资料列表明确选择修订对象'); await this.detail(this.id,'documents'); }); return; }
+    if (name === 'document-recognition') {
+      const cid = this.id;
+      const doc = this.documents.find(item => item.id === id);
+      const editable = !this.customer.archived_at && doc.status === 'pending';
+      const report = await this.service.recognition(cid,id);
+      this.showDocumentRecognition(new RecognitionReview(this.service,cid,doc,report,{editable}));
+      return;
+    }
     if (name === 'document') { const d = this.documents.find(d => d.id === id); this.modal(d.filename,`<label class="field"><span>解析正文</span><textarea name="text" rows="14">${e(d.text || '')}</textarea></label>`, async data => { const result = await this.service.addDocument(this.id,{filename:d.filename,kind:d.kind,text:String(data.get('text')),update_document_id:d.id}); if (!result.document || !usable(result.document)) throw new Error(result.document?.error || '修订尚未成为有效资料'); await this.detail(this.id,'documents'); },'保存新修订'); return; }
     if (name === 'remove-document') {
       const cid = this.id, doc = this.documents.find(item => item.id === id);

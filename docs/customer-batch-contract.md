@@ -8,7 +8,7 @@
 
 - GET/PUT `/api/workbench/clients/{id}`；PUT `{name,profile}` 独立更新客户，profile 的七个字段与现有合同相同，允许空值；历史任务不回写。
 - GET `/api/workbench/clients` 返回活动客户，`?archived=1` 返回已归档客户。POST `/api/workbench/clients/{id}/archive|restore` 使用空对象切换状态，保留原 ID。若已有同名活动客户，恢复返回 409。归档后仍可按原 ID 读取档案、资料与历史，创建新任务和提交新批次时只接受活动客户。
-- GET `/api/workbench/import-drafts` 列出未确认的导入；POST 同一路径传 `{id,name}`，其中 `id` 为浏览器生成的 UUID、`name` 可留空。草稿的成功正文与失败原件分开保留。失败原件可用 POST `…/documents/{id}/retry` 重试，或传 `{text}` 保存已核对的正文。资料修复后识别并核对，只有采用整理结果才会将客户、档案与关键词一并确认。草稿不进入活动或归档客户列表。
+- GET `/api/workbench/import-drafts` 列出未确认的导入。POST 同一路径传 `{id,name}`，其中 `id` 为浏览器生成的 UUID，`name` 可留空。草稿的成功正文与失败原件分开保留。失败原件可用 POST `…/documents/{id}/retry` 重试，或传 `{text}` 保存已核对的正文。含正文的草稿通过采用整理结果确认。只含已确认图片等无正文资料时，POST `/api/workbench/import-drafts/{id}/finalize` 传 `{name}` 保存客户。草稿在确认前独立列出。
 - 新建、改名、采用整理结果和从任务保存默认档案共用名称规则。全半角、大小写和连续空白规范化后撞名返回 409。旧库已有的同名档案保留原 ID，列表用 `name_conflict` 提示运营处理。
 - GET/PUT `/api/workbench/clients/{id}/generation-plan`；PUT `{options,document_ids,expected_revision?}`，options 只接受 keywords/keyword_links/selections/format_overrides/note/rivals/aliases/models。note 是长期要求，keywords 是内容方向的搜索词。每客户一套；GET 返回 `{plan:{revision,options,document_ids},issues,ready}`。批量任务按方案中保存的资料组取最新有效修订。
 - `keyword_links` 为有序词对列表 `[[搜索词,关联词],…]`。普通任务继承后可修改本次规则，批次继承并保存到快照。左侧词恰好是该篇主词时，右侧词进入该篇写作要求，由资料支持实际关联。右侧词保留关联身份，篇数及主词分配沿用现有规则。
@@ -20,8 +20,9 @@
 
 - GET `/api/workbench/clients/{id}/documents` 返回最新有效修订及待处理资料，沿用 id/client_id/filename/kind/text/digest；增加 group_id/revision/status/has_original/raw_sha256/original_url/text_url/error。
 - POST `…/documents/check` `{filename,sha256,text_digest?}` 在传副本前检查；返回 `{duplicate:document|null,candidates:[],text_matches:[]}`。名称只移除末尾 `(1)`、`（1）`、副本等复制后缀，不用前缀自动合并。
-- POST `…/documents` `{filename,kind?,text?,content_b64?,update_document_id?,as_new?}`。文件要传 content_b64；PDF 同时传浏览器提取的 text（现有本机 PDF 解析器）。其他格式由后端重新解析。纯粘贴只传 text。update_document_id 指向该组当前有效修订；as_new=true 明确另存。原文件重复直接返回已存在的 document。
+- POST `…/documents` 接受 `{filename,kind?,text?,content_b64?,update_document_id?,as_new?,recognize?}`。文件传 `content_b64`，纯粘贴传 `text`。`recognize:true` 用于本机 PDF 和图片识别，上传时保留原件并返回待处理资料。历史 PDF 路径可同时传浏览器提取的 `text`。`update_document_id` 指向待核对或当前有效修订，`as_new:true` 明确另存。原文件重复时返回已有资料。
 - 导入结果 `{outcome:'created'|'updated'|'duplicate'|'needs_resolution'|'pending',document?,candidates?,text_matches?}`。needs_resolution 不写副本；pending 保留原件但未启用，旧有效版不变。
+- GET `…/documents/{id}/recognition` 返回 `{recognition:{pages,images,confirmed,error}}`。每页提供页码、文字、状态、错误和预览链接。图片提供来源页码、预览链接和下载链接。POST `…/documents/{id}/retry` 传 `{retry_pages:[页码]}` 识别一页，完成后可传 `{pages:[{page,text}]}` 确认全部页面并形成新修订。无正文的已确认图片保留在资料库，客户档案整理只使用有正文的资料。
 - GET `…/documents/{document_id}/revisions` 返回 `{documents}`；GET `…/original` 下载原件；GET `…/text` 下载解析文字。客户归属必须一致；历史未保存原件时 original 返回404，不伪造原件。
 - DELETE `…/documents/{document_id}` 使用空对象移出对应资料组，并在同一事务中从常用方案取消默认取材。GET `…/documents?removed=1` 查看已移出资料，原件和修订仍按原 ID 可查。POST `…/documents/{id}/restore` 使原资料组重新可选；只有显式传 `{add_to_defaults:true}` 才会加回默认取材。旧任务保留原来选中的修订。
 - 新修订不覆盖旧 wb_documents 行；历史任务仍按原 document_id 读取。资料手工修订通过 documents POST 的 update_document_id + text 创建新修订。

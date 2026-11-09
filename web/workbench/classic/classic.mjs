@@ -1,4 +1,5 @@
 import { WorkbenchClient } from '../client.mjs';
+import { chooseArticleTopic } from '../topic-picker.mjs';
 import { CustomerClient, importCustomerFile } from '../customers-client.mjs';
 import { classicURL } from '../classic-view.mjs';
 import { streamDocument, remainingCount } from '../live-model.mjs';
@@ -330,8 +331,8 @@ async function beginWriting() {
     if (!confirmation) return;
   }
   s.error = '';
-  await client.start({confirmed:s.needsConfirmation});
-  setStep(3);
+  const started = await client.start({confirmed:s.needsConfirmation,chooseTopic:chooseArticleTopic});
+  if (started) setStep(3);
 }
 
 async function changeTask(action) {

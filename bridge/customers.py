@@ -123,7 +123,7 @@ class Customers:
         brief, docs = self.check(cid, options, ids)
         return brief, docs, row['revision'] if row else 0
 
-    def new_task(self, cid, *, document_ids=None, creation_id=None):
+    def new_task(self, cid, *, document_ids=None, creation_id=None, mode='chat'):
         if creation_id is not None:
             validate_creation_id(creation_id)
             try:
@@ -141,7 +141,7 @@ class Customers:
             options = self.service.normalize_options(options)
         ids = self.current_documents(cid) if document_ids is None else [
             doc['id'] for doc in self.ws.selected_documents({'client_id': cid}, document_ids, active_only=True)]
-        return self.ws.create_conversation(cid, options, document_ids=ids, creation_id=creation_id)
+        return self.ws.create_conversation(cid, options, document_ids=ids, creation_id=creation_id, mode=mode)
 
     def history(self, cid):
         self.ws.client(cid)

@@ -6,10 +6,11 @@
 
 开发交接与后续工作见 [docs/HANDOFF.md](docs/HANDOFF.md)，给接手开发 Agent 的完整提示词见 [docs/AGENT_START.md](docs/AGENT_START.md)。2026-11-05 的交接分支为 `feature/customer-batch-storage`；同事从提供的交接提交继续开发，无需等待合并 main。已有本机配置与源码修改按接手说明保留，验收范围以各报告为准。
 
-建议 Python 3.11+、Node.js 20+。文章后端使用 Python 标准库，SDK 已随仓库提供，无 npm 安装步骤；整站启动还会托管视频服务，需要 Pillow、FFmpeg/ffprobe 和中文字体。先安装视频 Python 依赖，并创建本机连接配置：
+建议 Python 3.11+、Node.js 20+。文章后端使用 Python 标准库，SDK 已随仓库提供，无需安装 npm 包。整站启动会托管视频服务，需要 Pillow、FFmpeg/ffprobe 和中文字体。客户 PDF 与图片识别需要另外安装 OCR 依赖。
 
 ```powershell
-python -m pip install -r requirements-video.txt
+python -m venv .venv
+& ./.venv/Scripts/python.exe -m pip install -r requirements-video.txt -r requirements-ocr.txt
 if (-not (Test-Path -LiteralPath config/workbuddy.json)) {
     Copy-Item config/workbuddy.example.json config/workbuddy.json
 }
@@ -17,23 +18,33 @@ if (-not (Test-Path -LiteralPath config/workbuddy.json)) {
 
 把 `config/workbuddy.json` 中的三个占位值替换为自己的有效 WorkBuddy 配置。该文件被 Git 忽略；配置示例不可用于真实模型调用。SDK为 `vendor/workbuddy-sdk.js`，连接只在服务端读取。FFmpeg/ffprobe 需位于 PATH；Windows 使用微软雅黑，Linux 字体路径要求见视频引擎说明。打开页面不会主动调用外部模型。
 
-双击 `启动.bat`，或在此目录运行：
+双击 `启动.bat` 使用项目的 `.venv`，或在此目录运行：
 
 ```powershell
-python main.py
+& ./.venv/Scripts/python.exe main.py
 ```
 
-默认入口 `http://127.0.0.1:8770/` 和 `/workbench` 进入分步创作。对话创作为 `/workbench/index.html`，展示页为 `/index.html`，内部使用指南为 `/guide/index.html`，视频为 `/video/`。同一次启动自动拉起并管理视频子服务，终端输出实际主端口、主PID及视频PID。关闭窗口或Ctrl+C退出。`启动_开发模式.bat` 保留终端但不自动打开浏览器。
+默认入口 `http://127.0.0.1:8770/` 和 `/workbench` 打开工作台开始页。展示页为 `/index.html`，内部使用指南为 `/guide/index.html`，视频为 `/video/`。同一次启动自动拉起并管理视频子服务，终端输出实际主端口、主PID及视频PID。关闭窗口或Ctrl+C退出。`启动_开发模式.bat` 保留终端但不自动打开浏览器。
 
 可指定独立数据目录、端口或让系统分配端口：
 
 ```powershell
-python main.py --no-browser --port 0 --data-dir "./data/dev-workbench"
+& ./.venv/Scripts/python.exe main.py --no-browser --port 0 --data-dir "./data/dev-workbench"
 ```
 
 默认库为 `data/workbench/workbench.db`，新客户和稿件为空，仅初始化ZIP配置种子。不会迁移旧库。每个库只允许一个服务进程，避免另一进程清除在途锁。数据、模型调用记录与快照均不作为静态文件发布。仅监听127.0.0.1，使用页面显示的同源地址访问。
 
-写作模型默认精确ID `deepseek-v4.1-flash`。打开首页和保存草稿不查询模型目录、不生成文章；明确开始模型操作时验证目录并缓存，目录缺少所选ID即停止，不自动换模型。设置接口只接受写作参数，连接密钥不进入HTTP响应。
+左侧 GEO 检测下方的「文案训练台」提供同题片段和全文盲选，可以加自由评语、原文选段和改写。两类盲选评完后，WorkBuddy 自动分析本轮反馈，也可从「本轮结果」提前分析已评样本。用候选提示词开下一轮时，输入新题，逐题比较现有写法和候选写法。试验稿、提示词、反馈及模型原返存入运行目录的 `writing-lab.sqlite3`，并随工作区备份保存。训练批次暂停后可继续尚未调用的稿件。
+
+在「工作台设置 → 写作模型」选择 WorkBuddy 或本地 API，再保存。默认使用 WorkBuddy 的 `deepseek-v4.1-flash`，启动写作时核对精确模型 ID。已启动的操作及已提交的批次使用各自保存的模型来源和 ID。
+
+本地 API 由工作台进程自动读取环境变量。它识别 `DEEPSEEK_API_KEY` 和 `DASHSCOPE_API_KEY`，默认模型分别为 `deepseek-flash` 和 `qwen-plus`。可用相同前缀的 `_BASE_URL` 和 `_MODEL` 变量指定区域地址或默认模型。其他 OpenAI Chat Completions 兼容服务通过 `GEO_LLM_BASE_URL`、`GEO_LLM_API_KEY` 配置，可用 `GEO_LLM_MODEL` 预填模型。修改环境变量后重启工作台。设置页只显示识别到的配置，实际调用由对应 API 校验。
+
+### 局域网访问
+
+在可信的办公网内使用时，保持主服务运行，在 `data/lan-http/access.json` 配置主机局域网 IPv4、允许访问的网段和端口，例如 `{"address":"192.168.5.17","subnet":"192.168.5.0/24","port":8770}`。从仓库根目录运行 `node tools/lan-gateway.cjs data/lan-http`，并在 Windows 防火墙仅放行该网段到这个监听地址和端口的 TCP 入站。主服务默认使用本机 `8770`，修改主服务端口时在网关配置中设置 `upstreamPort`。
+
+同网段设备打开 `http://192.168.5.17:8770/` 即进入同一套工作台并共享服务端数据。访问不需要证书或登录，网段内能访问的设备拥有业务操作权限。关停、视频服务重启和 GEO 连接修改仍通过本机入口执行。长期使用时，在路由器中为主机保留该地址。
 
 ## 稿件与操作
 
@@ -53,7 +64,7 @@ python main.py --no-browser --port 0 --data-dir "./data/dev-workbench"
 - 文章导出支持docx/md/txt/json，采用当前明确选中的版本，仍调用ZIP原渲染器。处理中稿件暂不能导出。
 - 本地归档下载真实ZIP，含有效安排、解析文字、冻结输入、各版正文/原核查/差异/实际审阅意见与当前导出；连接凭据和私有诊断不进入归档。
 
-Word、Excel、PPT与文本资料继续使用ZIP解析器。PDF由前端读取成文字后按资料接口保存，不替换原解析器。
+Word、Excel、PPT 与文本资料使用 ZIP 解析器。客户资料支持本机识别 PDF、JPG、PNG、WebP、BMP、TIFF 和 HEIC/HEIF。PDF 逐页读取文字层，扫描页和嵌入图片使用本机 CPU OCR。可逐页核对文字、预览原页、下载提取出的图片。客户资料识别的 PDF 最多 50 MB，其他文件最多 8 MB。PDF 和多页 TIFF 最多 100 页。使用识别功能前，请在运行工作台的 Python 环境安装 `requirements-ocr.txt`。从识别后的文字整理客户档案时，仍使用已配置的 WorkBuddy 模型。
 
 普通任务的首次写作沿用 ZIP 生成器，按平台、账号身份和发布形态读取 `style-library/` 的适用写法。展开“本次可选调整”可设本次篇幅；本次明确值优先，其次采用客户常用方案里的篇幅偏好，最后采用平台对应形态的默认篇幅。风格只影响写法，业务依据来自本次客户档案和选定资料。在稿件的资料面板可查看“本版创作配置”。适用规则、认可表达、风格版本及资料修订随本次输入冻结。去味仍为生成后的独立编辑操作，使用 `config/de-ai-taste.md` 和 `config/ai-taste-signals.md`。
 

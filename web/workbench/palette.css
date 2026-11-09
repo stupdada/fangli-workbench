@@ -1,3 +1,70 @@
+:root {
+  --radius-control: 16px;
+  --radius-editor: 20px;
+  --radius-panel: 24px;
+  --radius-action: 999px;
+  --surface-paper: var(--palette-paper, #fff);
+  --field-border: #d8dce4;
+  --hover-surface: #f1f2f5;
+  --primary-hover: #3b3e46;
+  --selection-wash: #315dc012;
+  --dialog-scrim: #20273555;
+  --floating-shadow: 0 8px 24px #252e481a;
+}
+
+/* Continuous corners for large surfaces and capsule controls. */
+:where(
+  dialog, textarea,
+  .chat-workbench .composer, .conversation-log .message.user, .article-workspace .revision-box,
+  .content-wrap > .inspector, .preparation-grid > :is(.sources-preview,.keyword-editor),
+  .customer-card, .customer-plan-card, .customer-import-drop, .recognition-source, .recognition-gallery img,
+  .quick-preview-kind, .new-content, .geo-evidence, .short-phone, .preview-frame,
+  .stage, .demo-workbench, .review-stage, .fresh-requirement
+) {
+  corner-shape: squircle;
+}
+
+:where(
+  .button.primary, .button.blue, .creation-start-actions .button,
+  .composer-topic, .mode-switch, .mode-switch button,
+  .composer-foot [data-action="start"], .step-actions [data-action="start"], .live-toolbar [data-action="start"],
+  .customer-import-platforms .keyword-choice, .plan-add-platforms .button.outline,
+  .quick-length button, .video-surface .primary, .short-preview-tabs button,
+  .customer-progress:indeterminate
+),
+.mode-switch::after,
+.intake-progress-steps li::before {
+  corner-shape: squircle;
+}
+
+input[type="file"]::file-selector-button {
+  margin-inline-end: 10px;
+  padding: 7px 12px;
+  border: 1px solid var(--field-border);
+  border-radius: var(--radius-control);
+  background: var(--surface-paper);
+  color: var(--ink);
+  font: inherit;
+}
+
+input[type="file"]:not(:disabled)::file-selector-button { cursor: pointer; }
+input[type="file"]:not(:disabled)::file-selector-button:hover { background: var(--hover-surface); }
+
+@media (prefers-reduced-motion: no-preference) {
+  dialog[open] { animation: workspace-dialog-enter 240ms cubic-bezier(.16,1,.3,1) both; }
+  dialog[open]::backdrop { animation: workspace-scrim-enter 160ms ease-out both; }
+}
+
+@keyframes workspace-dialog-enter {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes workspace-scrim-enter {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 :root[data-workbench-palette="blue"] {
   --palette-canvas: #f5f7fa;
   --palette-paper: #fff;
@@ -7,6 +74,7 @@
   --ink: #1b2430;
   --muted: #4a5869;
   --line: #e3e8ef;
+  --field-border: #cfd9e7;
   --side: #eef2f7;
   --blue: #1f6feb;
   --hover-surface: var(--palette-hover);
@@ -70,8 +138,4 @@
 
 [data-workbench-palette="blue"] .article-workspace .revision-box {
   background-color: var(--palette-canvas);
-}
-
-[data-workbench-palette="blue"] .conversation-log .message.user {
-  background-color: var(--palette-blue-hover);
 }

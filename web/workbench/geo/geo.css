@@ -7,7 +7,7 @@
 .geo-brand { font-size: 16px; font-weight: 600; }
 .geo-client { display: flex; align-items: center; gap: 10px; max-width: 100%; }
 .geo-client select { max-width: min(260px,55vw); }
-.geo-main select, #geo-dialog select, #geo-dialog input, #geo-dialog textarea { min-height: 40px; width: 100%; border: 1px solid var(--line); border-radius: 9px; padding: 8px 12px; background: var(--palette-paper, white); color: var(--ink); }
+.geo-main select, #geo-dialog :is(select,input,textarea) { min-height: 40px; }
 .geo-surface { width: min(100%,1050px); margin: 0 auto; padding: clamp(28px,5vw,65px) clamp(20px,5vw,56px) 64px; font-size: 15px; }
 .geo-surface h1 { font-size: clamp(27px,4vw,36px); line-height: 1.2; margin: 0 0 10px; letter-spacing: -.03em; }
 .geo-surface h2 { font-size: 17px; margin: 0; }
@@ -21,7 +21,7 @@
 .geo-disclosure summary { color: var(--blue); cursor: pointer; width: fit-content; padding-block: 5px; }
 .geo-disclosure ol { padding-left: 23px; line-height: 1.8; }
 .geo-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
-.geo-primary { border-radius: 999px; font-size: 14px; min-height: 42px; padding-inline: 19px; }
+.geo-primary { font-size: 14px; min-height: 42px; padding-inline: 19px; }
 .geo-action { font-size: 14px; min-height: 38px; }
 .geo-meta { font-size: 13px; color: var(--muted); }
 .geo-history { padding-top: 26px; }
@@ -34,7 +34,7 @@
 .geo-summary p { margin: 0; }
 .geo-results details > summary { cursor: pointer; padding: 12px 4px; min-height: 46px; overflow-wrap: anywhere; }
 .geo-results details > summary span { margin-inline-start: 7px; }
-.geo-evidence { background: var(--palette-hover, #f5f6f8); padding: 14px 17px; margin: 0 0 10px; border-radius: 12px; overflow-wrap: anywhere; }
+.geo-evidence { background: var(--hover-surface); padding: 14px 17px; margin: 0 0 10px; border-radius: var(--radius-editor); overflow-wrap: anywhere; }
 .geo-evidence p { margin: 8px 0; }
 .geo-answer { white-space: pre-wrap; }
 .geo-evidence a { color: var(--blue); }

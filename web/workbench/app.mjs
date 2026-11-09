@@ -1,5 +1,5 @@
-import { installTaskContext, recentTaskMarkup, recentTasks, taskStateButton } from './task-list.mjs';
-import { railIcons, shortVideoPath, workspaceRail } from './workspace-rail.mjs';
+import { compactTaskTitle, installTaskContext, recentTaskMarkup, recentTasks, taskDisplayTitle, taskStateButton } from './task-list.mjs';
+import { geoPath, guidePath, railIcons, shortVideoPath, workspaceRail } from './workspace-rail.mjs';
 import { activityMarkup, liveMarkup, reconcile, setupLiveUI, tickElapsed, captureFollowing, restoreFollowing } from './live-workspace.mjs';
 import { remainingCount } from './live-model.mjs';
 import { createModeSwitcher } from './mode-switch.mjs';
@@ -8,11 +8,14 @@ import { createWorkbenchPaperFeedback } from './paper-feedback.mjs';
 import { paperMotionEnabled, setPaperMotionEnabled } from '../assets/paper-motion.mjs';
 import { liveReplyMarkup } from './dialogue-view.mjs';
 import { WorkbenchClient } from './client.mjs';
-import { PROFILE_FIELDS, clone, enabled, running, accountName, splitWords, normalizeOptions, selectionCounts, setCount,
+import { randomUUID } from './browser-crypto.mjs';
+import { DEFAULT_MODEL, PROFILE_FIELDS, clone, enabled, running, accountName, splitWords, normalizeOptions, selectionCounts, setCount,
   togglePlatform, planSummary, optionIssues, escapeHTML as e, markdown, articleBody, valueText,OPERATION_KIND,latestOperation,reviewDefaults,reviewSelection,interviewMessageText } from './model.mjs';
 import { CustomersWorkspace } from './customers.mjs';
+import { chooseArticleTopic } from './topic-picker.mjs';
 import { createQuickCreation } from './quick/batch.mjs';
-import { CustomerClient, importCustomerFile } from './customers-client.mjs';
+import { CustomerClient, importCustomerFile, recognitionExtensions } from './customers-client.mjs';
+import { RecognitionReview } from './customer-recognition.mjs';
 import { applyFontSizes, changeFontSize, fontSizeControl, installReadingLayout, restoreReadingScroll } from './reading-view.mjs';
 import { articleWordCount, generationLengthField, generationContextMarkup } from './generation-style.mjs';
 import { keywordLinksField, keywordLinksText, parseKeywordLinks } from './keyword-links.mjs';
@@ -27,11 +30,15 @@ const client = new WorkbenchClient();
 const updatePaperFeedback = createWorkbenchPaperFeedback();
 const taskPresentation = createTaskPresentation(document, {reduced:()=>matchMedia('(prefers-reduced-motion: reduce)').matches});
 const customerService = new CustomerClient(client.api.bind(client));
-let pendingChat=null;
+let pendingChat=null, topicPickerOpen=false;
 const syncReadingLayout = installReadingLayout($('#root'));
 applyFontSizes(client.state.ui);
 const initialRoute = new URLSearchParams(location.search);
 let customerArea = initialRoute.get('area') === 'customers', quickArea = initialRoute.get('area') === 'quick';
+let entryView = initialRoute.get('area') === 'new' ? 'new' : initialRoute.has('conversation') ? null : 'start';
+const DEFAULT_ENTRY_MODE = 'zip';
+let entryMode = DEFAULT_ENTRY_MODE;
+let creatingTask = false, newTaskRequest = null;
 let wasWriting = false, navigationGeneration = 0;
 const classicSettingsVisit = classicEnabled() && new URLSearchParams(location.search).get('entry') === 'settings';
 function enterClassic(id = client.state.conversation?.id) {
@@ -94,19 +101,32 @@ function baseDialog(title, html, submit, { label = '保存', wide = false } = {}
   if(!modal.open){lastFocus = document.activeElement?.closest('.toolbar-menu')?.querySelector('summary')||document.activeElement;lastFocusAction=lastFocus?.dataset.action;} modal.classList.toggle('wide', wide);
   $('#modal-body').onchange = null;$('#modal-body').onclick=null;
   $('#platform-summary')?.remove();
+  $('#profile-switch-toggle')?.remove();
   $('#modal-title').textContent = title; $('#modal-body').innerHTML = html; $('#modal-error').textContent = '';
   $('#modal-submit').disabled=false;$('#modal-submit').textContent = label; $('#modal-submit').hidden = !submit; modalSubmit = submit;
   if (!modal.open) modal.showModal();
 }
 function toast(message) { clearTimeout(toastTimer); $('#toast').textContent = message; $('#toast').hidden = false; toastTimer = setTimeout(() => $('#toast').hidden = true, 4200); }
+function displayTaskTitle(task, compact = false) {
+  const s = client.state;
+  const active = task.id === s.conversation?.id;
+  const brief = active ? s.options : task.brief;
+  const documentIds = active ? s.documentIds : task.document_ids;
+  const topic = client.writingTopic(task.id, {options:brief, documentIds});
+  const customer = s.clients.find(c => c.id === task.client_id);
+  const customerName = brief?.client?.trim() || customer?.name?.trim() || '';
+  const title = taskDisplayTitle(task, {brief, topic, customerName});
+  return compact ? compactTaskTitle(title, customerName, customer?.profile?.brand) : title;
+}
 function updateTaskSearch() {
   const search = $('#task-search');
   if (!search) return;
   const archived = $('#task-search-archived').checked;
   const phrase = search.value.trim().toLowerCase();
   const tasks = (archived ? client.state.conversations.filter(t=>t.archived_at) : recentTasks(client.state.conversations))
-    .filter(t=>(t.title||'未命名内容').toLowerCase().includes(phrase));
-  $('#task-search-results').innerHTML = tasks.map(t=>`<div class="task-search-row"><button type="button" class="task-row" data-task="${e(t.id)}" data-guide-intent="${e(search.dataset.guideIntent)}">${e(t.title||'未命名内容')}</button>${archived ? taskStateButton(t,'archived') : ''}</div>`).join('') || '<p class="empty">没有匹配的任务。</p>';
+    .map(task => ({task, title:displayTaskTitle(task)}))
+    .filter(({task, title}) => title.toLowerCase().includes(phrase) || displayTaskTitle(task, true).toLowerCase().includes(phrase));
+  $('#task-search-results').innerHTML = tasks.map(({task, title})=>`<div class="task-search-row"><button type="button" class="task-row" data-task="${e(task.id)}" data-guide-intent="${e(search.dataset.guideIntent)}">${e(title)}</button>${archived ? taskStateButton(task,'archived') : ''}</div>`).join('') || '<p class="empty">没有匹配的任务。</p>';
 }
 function findTask(intent='') {
   const titles={review:'选择要审阅的任务',export:'选择要导出的任务'};
@@ -175,48 +195,93 @@ function sidebarToggle(collapsed) {
   const label = collapsed ? '展开任务栏' : '折叠任务栏';
   return `<button type="button" class="icon-button ${collapsed ? 'task-sidebar-opener' : ''}" id="sidebar-toggle" data-action="collapse" aria-label="${label}" aria-controls="task-sidebar" aria-expanded="${!collapsed}" title="${label}">${icon('menu')}</button>`;
 }
-function videoReturnPath(articleId) {
+function workspaceReturnPath(articleId) {
   const params = new URLSearchParams();
-  if (client.state.conversation?.id) params.set('conversation',client.state.conversation.id);
+  if (!entryView && client.state.conversation?.id) params.set('conversation',client.state.conversation.id);
+  if (entryView === 'new' && !customerArea && !quickArea) params.set('area','new');
   if (customerArea) {
     params.set('area','customers');
-    if (customers.tab === 'plan' && customers.id) params.set('plan',customers.id);
-    if (customers.batch) params.set('batch',customers.batch.id);
+    customers.writeLocation(params);
   }
   if (quickArea) {
     params.set('area','quick');
     if (quick.batchId) params.set('batch',quick.batchId);
   }
-  if (articleId) params.set('article',articleId);
+  if (!entryView && articleId) params.set('article',articleId);
   return location.pathname + (params.size ? '?' + params : '');
 }
 function videoWorkspaceHref(customerId) {
-  const query = new URLSearchParams({return_to:videoReturnPath(currentArticle()?.id)});
+  const query = new URLSearchParams({return_to:workspaceReturnPath(currentArticle()?.id)});
   if (customerId) query.set('client_id',customerId);
   return `${shortVideoPath}?${query}`;
 }
 function sidebar(s) {
   const area = quickArea ? 'quick' : customerArea ? 'customers' : 'standard';
   const customerId = customerArea ? (customers.customer?.archived_at ? null : customers.id) :
-    quickArea ? null : s.conversation?.client_id;
+    quickArea || standardEntry() ? null : s.conversation?.client_id;
+  const links = {video:videoWorkspaceHref(customerId)};
+  if (customerArea && customerId && !customers.batch) {
+    links.geo = `${geoPath}?${new URLSearchParams({client:customerId,return_to:workspaceReturnPath()})}`;
+  }
   const recent = recentTasks(s.conversations);
   return `<aside class="sidebar workbench-sidebar" aria-label="工作台导航">
-    ${workspaceRail(area,{actions:['standard','quick','customers','settings'],links:{video:videoWorkspaceHref(customerId)}})}
+    ${workspaceRail(area,{actions:['standard','quick','customers','settings'],links})}
     <section class="task-sidebar" id="task-sidebar" aria-label="任务列表" ${s.ui.collapsed?'hidden':''}>
-      <header class="task-sidebar-head"><strong>方立</strong><div>${iconButton('find-task','查找任务','search')}${s.ui.collapsed?'':sidebarToggle(false)}</div></header>
-      <button type="button" class="nav-button task-new" data-action="new-task">${icon('plus')}新建内容</button>
-      <div class="recent" id="recent"><h2>最近任务</h2>${recent.length ? recent.map(t=>recentTaskMarkup(t,area==='standard' && t.id===s.conversation?.id)).join('') : '<p class="empty-tasks">创建内容后，任务会保存在这里。</p>'}</div>
+      <header class="task-sidebar-head"><a class="task-sidebar-brand" href="${guidePath}" aria-label="方立科技使用指南" title="使用指南"><svg class="task-sidebar-mark" viewBox="94 43.5 68 45" width="30" height="20" aria-hidden="true" focusable="false"><use href="/assets/ferly-mark.svg#mark"/></svg><span>方立科技</span></a><div>${iconButton('find-task','查找任务','search')}${s.ui.collapsed?'':sidebarToggle(false)}</div></header>
+      <button type="button" class="nav-button task-new" data-action="start-page">${icon('plus')}新建内容</button>
+      <div class="recent" id="recent"><h2>最近任务</h2>${recent.length ? recent.map(t=>recentTaskMarkup(t,area==='standard' && !standardEntry() && t.id===s.conversation?.id,displayTaskTitle(t,true))).join('') : '<p class="empty-tasks">创建内容后，任务会保存在这里。</p>'}</div>
       <div class="resizer" id="sidebar-resizer" role="separator" aria-label="调整任务侧栏宽度" aria-orientation="vertical" tabindex="0" aria-valuemin="190" aria-valuemax="380" aria-valuenow="${s.ui.sidebarWidth}"></div>
     </section></aside>`;
 }
+function modeSwitchMarkup(selectedMode, disabled = false) {
+  return `<div class="mode-switch" role="group" aria-label="创作方式">${[['chat','对话'],['zip','分步']].map(([value,label]) =>
+    `<button type="button" data-action="mode-${value}" class="${selectedMode === value ? 'active' : ''}" aria-pressed="${selectedMode === value}" ${disabled ? 'disabled' : ''}><span class="mode-label">${label}</span></button>`).join('')}</div>`;
+}
 function topbar(s) {
   const opener = s.ui.collapsed ? sidebarToggle(true) : '';
-  if (quickArea || customerArea) return `<header class="topbar"><div class="task-heading">${opener}${customerArea?'<strong>客户</strong>':''}</div></header>`;
+  const entry = standardEntry();
+  if (entry) return `<header class="topbar entry-topbar"><div class="task-heading">${opener}</div>${entry === 'new' && !classicEnabled() ? modeSwitchMarkup(entryMode,creatingTask) : ''}</header>`;
+  if (quickArea || customerArea) {
+    const back = customerArea && quick.returningFromDocuments ? button('quick','返回本批安排','back','outline') : '';
+    return `<header class="topbar${customerArea?' customer-topbar':''}"><div class="task-heading">${opener}</div>${back}</header>`;
+  }
   const a = currentArticle();
   const reading = a && (mode === 'zip' ? step === 4 : draftPanelState().open && draftPanelState().view === 'article');
-  return `<header class="topbar"><div class="task-heading">${opener}<strong>${e(s.conversation?.title || '新建内容')}</strong><span class="save-status" role="status">${s.dirty ? '草稿待保存' : s.saved ? '草稿已保存' : s.conversation ? '已从后台恢复' : '先选择客户，开始本次创作'}</span></div>
-    <div class="mode-switch" role="group" aria-label="创作方式"><button data-action="mode-chat" class="${mode === 'chat' ? 'active' : ''}" aria-pressed="${mode === 'chat'}"><span class="mode-label">对话</span></button><button data-action="mode-zip" class="${mode === 'zip' ? 'active' : ''}" aria-pressed="${mode === 'zip'}"><span class="mode-label">分步</span></button></div>
+  return `<header class="topbar"><div class="task-heading">${opener}<strong>${e(s.conversation ? displayTaskTitle(s.conversation) : '新建内容')}</strong><span class="save-status" role="status">${s.dirty ? '草稿待保存' : s.saved || s.conversation?.status === 'draft' ? '草稿已保存' : '已从后台恢复'}</span></div>
+    ${modeSwitchMarkup(mode)}
     <div class="top-actions">${reading ? '' : button('sources', '<span class="action-label">资料</span>', 'file', 'quiet', false, `aria-expanded="${panel === 'sources'}"`)}${s.conversation?.archived_at ? taskStateButton(s.conversation,'archived') : s.conversation ? moreMenu('task-menu','任务更多操作',taskStateButton(s.conversation,'archived')+button('delete-task','删除任务',null,'quiet sm danger',client.activeJob||isOperationRunning())) : ''}${!reading && s.conversation ? button('export','导出','download','outline') : ''}</div></header>`;
+}
+function standardEntry() {
+  if (customerArea || quickArea) return null;
+  return entryView || (!client.state.conversation ? 'start' : null);
+}
+
+function startPage() {
+  return `<section class="creation-entry creation-start" aria-labelledby="creation-entry-title">
+    <h1 id="creation-entry-title" tabindex="-1">今天想做什么？</h1>
+    <div class="creation-start-actions">
+      <div>${button('new-task','新建内容','plus','primary')}<p>选客户，写一篇文章</p></div>
+      <div>${button('add-customer','新建客户','plus','outline')}<p>建档，导入客户资料</p></div>
+    </div>
+  </section>`;
+}
+
+function newContentPage() {
+  const clients = client.state.clients.filter(c => !c.archived_at && !c.import_draft);
+  return `<section class="creation-entry creation-new" aria-labelledby="creation-entry-title">
+    ${button('start-page','返回开始页','back','quiet sm')}
+    <h1 id="creation-entry-title" tabindex="-1">新建内容</h1>
+    ${clients.length ? `<form id="new-content-form">
+      <label class="field"><span>给谁写</span><select name="client_id" required data-key="${e(JSON.stringify(clients.map(c=>[c.id,c.name,c.name_conflict])))}" ${creatingTask?'disabled':''}>
+        <option value="">选择客户</option>
+        ${clients.map(c => `<option value="${e(c.id)}" ${newTaskRequest?.clientId===c.id?'selected':''}>${e(c.name + (c.name_conflict ? ' · ' + customers.distinguishClient(c) : ''))}</option>`).join('')}
+      </select></label>
+      <div class="creation-entry-actions">
+        ${button('new-client','新建客户','plus','outline',creatingTask)}
+        <button class="button primary" type="submit" ${creatingTask?'disabled':''}>${creatingTask?'正在创建…':'继续创作'}</button>
+      </div>
+    </form>` : `<p>先建一位客户，再开始写作。</p>${button('new-client','新建客户','plus','primary',creatingTask)}`}
+  </section>`;
 }
 function notices(s) {
   const issues=optionIssues(s.options,client.platforms,client.targets);
@@ -227,7 +292,10 @@ function notices(s) {
 }
 function clientLine() {
   const c = currentClient();
-  return `<div class="client-line"><span>本次客户</span>${c ? `<strong>${e(c.name)}</strong>${button('profile', '查看档案', null, 'quiet sm')}` : '<strong>尚未选择</strong>'}${button('choose-client', c ? '切换 / 新建任务' : '选择客户', null, c ? 'quiet sm' : 'outline sm')}${c ? '' : button('new-client','新建客户','plus','outline sm')}</div>`;
+  const customer = c
+    ? button('profile', `<span>${e(c.name)}</span>${icon('chevron')}`, null, 'customer-profile-trigger', false, 'aria-haspopup="dialog"')
+    : `<strong>尚未选择</strong>${button('choose-client','选择客户',null,'outline sm')}${button('new-client','新建客户','plus','outline sm')}`;
+  return `<div class="client-line"><span>本次客户</span>${customer}</div>`;
 }
 function docRows(docs, { selectable = false, compact = false } = {}) {
   const selected = new Set(client.state.documentIds.map(String));
@@ -245,9 +313,14 @@ function taskDocumentChoices() {
   const library = client.state.library.filter(doc => doc.is_current && doc.status === 'ready' && doc.text?.trim());
   return [...new Map([...library, ...selected].map(doc => [String(doc.id), doc])).values()];
 }
+function pendingImageRows() {
+  if (client.state.batch?.frozen) return '';
+  return client.state.library.filter(doc=>doc.status==='pending' && doc.has_recognition).map(doc=>
+    `<div class="doc-row" data-key="recognition-${e(doc.id)}"><span class="doc-info"><strong>${e(doc.filename)}</strong><small>识别待确认</small></span>${button('recognize-document','核对识别文字',null,'quiet sm',importing,`data-recognition-id="${e(doc.id)}"`)}</div>`).join('');
+}
 function narratedVideoHref(conversation, article) {
   if (!conversation?.client_id) return '';
-  const query = new URLSearchParams({client_id:conversation.client_id,return_to:videoReturnPath(article?.id)});
+  const query = new URLSearchParams({client_id:conversation.client_id,return_to:workspaceReturnPath(article?.id)});
   if (article) {
     if (!Number.isSafeInteger(article.id) || article.id < 1 || !Number.isSafeInteger(article.current_version) || article.current_version < 1) return '';
     query.set('article_id', article.id);
@@ -273,11 +346,18 @@ async function openMaterialsVideo() {
   location.assign(href);
 }
 function sourceBlock() {
-  return `<div class="sources-preview" id="source-dropzone" data-dropzone><div class="spread"><h2 class="section-title">客户资料</h2><div class="inline-actions">${button('upload', '上传文件', 'plus', 'quiet sm', importing)}${button('paste', '粘贴', null, 'quiet sm')}${materialsVideoButton()}</div></div>${docRows(taskDocumentChoices(), {selectable:true})}${importing?'<p role="status">正在保存原件并解析…</p>':''}</div>`;
+  return `<div class="sources-preview" id="source-dropzone" data-dropzone><div class="spread"><h2 class="section-title">客户资料</h2><div class="inline-actions">${button('upload', '上传文件或图片', 'plus', 'quiet sm', importing)}${button('paste', '粘贴', null, 'quiet sm')}${materialsVideoButton()}</div></div>${docRows(taskDocumentChoices(), {selectable:true})}${pendingImageRows()}${importing?'<p role="status">正在保存原件并解析…</p>':''}</div>`;
 }
-function keywordEditor() {
+function keywordEditor({showAliases = true} = {}) {
   const selected = new Set(client.state.options.keywords);
-  return `<section class="keyword-editor"><div class="spread"><label class="field" for="keyword-entry"><span>目标搜索关键词</span></label><div class="inline-actions">${button('detect-aliases','别名分组',null,'quiet sm')}${button('edit-keyword-links','串联关键词',null,'quiet sm')}</div></div><div class="reply-row"><input type="text" id="keyword-entry" placeholder="输入关键词，回车添加">${button('add-keyword','添加','plus','outline')}</div><div class="keyword-list">${client.keywordChoices.map((word,index)=>`<label class="keyword-choice"><input type="checkbox" id="keyword-choice-${index}" data-keyword-choice="${e(word)}" ${selected.has(word) ? 'checked' : ''}><span>${e(word)}</span></label>`).join('')}</div>${aliasHint()}</section>`;
+  return `<section class="keyword-editor">
+    <div class="spread"><label class="field" for="keyword-entry"><span>目标搜索关键词</span></label>
+      <div class="inline-actions">${showAliases ? button('detect-aliases','别名分组',null,'quiet sm') : ''}${button('edit-keyword-links','串联关键词',null,'quiet sm')}</div>
+    </div>
+    <div class="reply-row"><input type="text" id="keyword-entry" placeholder="输入关键词，回车添加">${button('add-keyword','添加','plus','outline')}</div>
+    <div class="keyword-list">${client.keywordChoices.map((word,index)=>`<label class="keyword-choice"><input type="checkbox" id="keyword-choice-${index}" data-keyword-choice="${e(word)}" ${selected.has(word) ? 'checked' : ''}><span>${e(word)}</span></label>`).join('')}</div>
+    ${showAliases ? aliasHint() : ''}
+  </section>`;
 }
 function aliasHint() {
   if(aliasState.status==='loading')return '<p class="helper" role="status">正在检查关键词的别名写法…</p>';
@@ -327,7 +407,7 @@ async function reviseFromChat() {
   if(!text)throw new Error('请写下对当前稿的修改要求');
   if(localEditor(a)?.dirty)throw new Error('请先保存右侧的人工编辑，再提交修改要求');
   client.assertEditable(a.id);
-  const note={id:crypto.randomUUID(),text,anchor:(s.conversation.messages||[]).filter(m=>m.role!=='system'&&m.role!=='tool').length,articleId:a.id,number:s.articles.findIndex(row=>row.id===a.id)+1};chatRevisionMessages().push(note);
+  const note={id:randomUUID(),text,anchor:(s.conversation.messages||[]).filter(m=>m.role!=='system'&&m.role!=='tool').length,articleId:a.id,number:s.articles.findIndex(row=>row.id===a.id)+1};chatRevisionMessages().push(note);
   showDraft('article');operationBusy=true;render();
   try {
     const result=await client.articleOperation(a.id,'revise',{instruction:text});
@@ -361,10 +441,33 @@ function fitMessageInput(followCaret=false) {
   input.style.overflowY=content>limit+1?'auto':'hidden';
   input.scrollTop=followCaret&&document.activeElement===input&&input.selectionEnd===input.value.length?input.scrollHeight:previousScroll;
   input.closest('.chat-compose-area').classList.toggle('has-draft',!!input.value);
+  const nextLabel = $('[data-writing-cta] .writing-cta-label');
+  if (nextLabel) nextLabel.textContent = writingGap(true)?.label || '开始写作';
+}
+function writingGap(allowMessage = false) {
+  const {options} = client.state;
+  const issues = optionIssues(options,client.platforms,client.targets);
+  if (issues.some(issue=>issue.startsWith('目标 AI'))) return {kind:'targets',label:'调整目标 AI'};
+  if (issues.some(issue=>issue.includes('发布形态'))) return {kind:'formats',label:'调整发布形态'};
+  if (issues.some(issue=>issue.startsWith('平台 '))) return {kind:'platforms',label:'调整发布平台'};
+  if (!planSummary(options,client.platforms).count) return {kind:'platforms',label:'先选发布平台'};
+  const hasKeyword = options.keywords.some(word=>word.trim());
+  if (!hasKeyword && !(allowMessage && client.messageDraft().trim())) return {kind:'keywords',label:'先补充关键词'};
+  return null;
+}
+function writingButton(disabled, chat = false) {
+  const label = writingGap(chat)?.label || '开始写作';
+  return button('start',`<span class="writing-cta-label">${label}</span>`,'right','primary',disabled,'data-writing-cta');
 }
 function composeView() {
   const s=client.state,c=currentClient(),target=messageTarget(),hasMessages=!!s.conversation?.messages?.length||client.activeJob||!!s.articles.length||isOperationRunning()||operationBusy;
-  return `<section class="chat-workbench ${hasMessages?'is-conversation':'is-first'}">${!hasMessages?'<h1>这次想写什么？</h1>':''}<div class="chat-context">${button('choose-client',c?e(c.name):'选择客户','chevron','context-chip')}${button('sources',`资料 ${s.documentIds.length} 份`,'file','context-chip')}${button('arrangement','本次安排','settings','context-chip',false,'data-paper-arrangement')}</div>${chatHistory()}${s.job||s.operations.some(running)?activityMarkup(s,'chat'):''}<div class="chat-compose-area"><div class="composer"><textarea id="message-input" rows="1" aria-label="创作消息" placeholder="${target==='article'?'说说这篇稿件需要怎样修改':'说说这次想写什么'}">${e(client.messageDraft())}</textarea><div class="composer-toolbar">${iconButton('upload','添加资料','plus')}<span class="spacer"></span><button type="button" class="context-chip composer-platform" data-action="platforms" aria-label="平台安排" title="平台安排">${icon('settings')}</button><button class="send-button" data-action="interview" aria-label="发送消息" ${operationBusy||isOperationRunning()?'disabled':''}>${icon('arrow')}</button></div></div><div class="composer-foot"><div class="composer-followup">${s.articles.some(a=>a.current_version)?`<label class="message-target"><span class="sr-only">本条消息用途</span><select id="message-target" aria-label="本条消息用途"><option value="requirements" ${target==='requirements'?'selected':''} ${s.batch?.frozen?'disabled':''}>调整本次要求</option><option value="article" ${target==='article'?'selected':''} ${client.activeJob?'disabled':''}>修改第 ${s.articles.findIndex(a=>a.id===currentArticle()?.id)+1} 篇</option></select></label>`:''}<label class="check-label" ${target==='article'?'hidden':''}><input type="checkbox" id="followup-enabled" ${s.ui.followup?'checked':''}>追问</label></div><div class="inline-actions">${s.articles.length?button('articles',`查看 ${s.articles.length} 篇稿件`,null,'quiet'):''}${target==='requirements'&&!client.activeJob&&remainingCount(s,client.platforms)>0?button('start','开始写作','right','primary',isOperationRunning()||operationBusy):''}</div></div>${client.messageError()?`<div class="composer-error" role="alert"><span>${e(client.messageError())}</span><div>${button('arrangement','查看本次安排',null,'quiet sm')}${button('dismiss-message-error','关闭提示',null,'quiet sm')}</div></div>`:''}${!hasMessages?'<div class="prompt-examples chat-suggestions"><button data-prompt="0">介绍产品或服务</button><button data-prompt="1">解答常见问题</button><button data-prompt="2">介绍客户与业务</button></div>':''}</div></section>`;
+  const canPickTopic=target==='requirements'&&!s.batch?.frozen&&!client.activeJob;
+  const topic=canPickTopic?client.writingTopic():'';
+  const topicActions=canPickTopic?button('recommend-topic',topic?'更换选题':'推荐选题',null,'context-chip composer-topic',operationBusy||isOperationRunning(),'aria-haspopup="dialog"'):'';
+  const topicSummary=topic?`<div class="composer-topic-summary"><span>已选题</span><strong>${e(topic)}</strong>${button('clear-writing-topic','移除',null,'quiet sm',operationBusy||isOperationRunning(),'aria-label="移除已选题"')}</div>`:'';
+  const writingAction = target === 'requirements' && !s.batch?.frozen && !client.activeJob &&
+    (!s.articles.length || remainingCount(s,client.platforms) > 0) ? writingButton(isOperationRunning()||operationBusy,true) : '';
+  return `<section class="chat-workbench ${hasMessages?'is-conversation':'is-first'}">${!hasMessages?'<h1>这次想写什么？</h1>':''}<div class="chat-context">${button('choose-client',c?e(c.name):'选择客户','chevron','context-chip')}${button('sources',`资料 ${s.documentIds.length} 份`,'file','context-chip')}${button('arrangement','本次安排','settings','context-chip',false,'data-paper-arrangement')}</div>${chatHistory()}${s.job||s.operations.some(running)?activityMarkup(s,'chat'):''}<div class="chat-compose-area"><div class="composer"><textarea id="message-input" rows="1" aria-label="创作消息" placeholder="${target==='article'?'说说这篇稿件需要怎样修改':'说说这次想写什么'}">${e(client.messageDraft())}</textarea><div class="composer-toolbar">${iconButton('upload','添加资料','plus')}<span class="spacer"></span><button type="button" class="context-chip composer-platform" data-action="platforms" aria-label="平台安排" title="平台安排">${icon('settings')}</button><button class="send-button" data-action="interview" aria-label="发送消息" ${operationBusy||isOperationRunning()?'disabled':''}>${icon('arrow')}</button></div></div><div class="composer-foot"><div class="composer-followup">${s.articles.some(a=>a.current_version)?`<label class="message-target"><span class="sr-only">本条消息用途</span><select id="message-target" aria-label="本条消息用途"><option value="requirements" ${target==='requirements'?'selected':''} ${s.batch?.frozen?'disabled':''}>调整本次要求</option><option value="article" ${target==='article'?'selected':''} ${client.activeJob?'disabled':''}>修改第 ${s.articles.findIndex(a=>a.id===currentArticle()?.id)+1} 篇</option></select></label>`:''}<label class="check-label" ${target==='article'?'hidden':''}><input type="checkbox" id="followup-enabled" ${s.ui.followup?'checked':''}>追问</label>${topicActions}</div><div class="inline-actions">${s.articles.length?button('articles',`查看 ${s.articles.length} 篇稿件`,null,'quiet'):''}${writingAction}</div></div>${topicSummary}${client.messageError()?`<div class="composer-error" role="alert"><span>${e(client.messageError())}</span><div>${button('arrangement','查看本次安排',null,'quiet sm')}${button('dismiss-message-error','关闭提示',null,'quiet sm')}</div></div>`:''}${!hasMessages?'<div class="prompt-examples chat-suggestions"><button data-prompt="0">介绍产品或服务</button><button data-prompt="1">解答常见问题</button><button data-prompt="2">介绍客户与业务</button></div>':''}</div></section>`;
 }
 function configBlock(section) {
   const cfg = client.state.config;
@@ -400,8 +503,8 @@ function zipView() {
     const steps = `<div class="reading-steps"><div id="reading-steps-full">${stepper()}</div><button type="button" class="button quiet sm reading-expand" data-expand-reading aria-controls="reading-steps-full" aria-expanded="false">展开步骤</button></div>`;
     return steps + (step === 4 ? articleView() : liveView(true));
   }
-  if(step===2)return `${stepper()}<section class="step-surface"><div class="spread"><div><h1>平台安排</h1><p>${e(planSummary(s.options,client.platforms).text)}</p></div>${button('platforms','选择平台','plus','quiet')}</div>${taskPlatforms()}<div class="step-actions">${button('step-1','上一步','back','quiet')}${button('start','开始写作','right','primary',client.activeJob||isOperationRunning()||operationBusy)}</div></section>`;
-  return `${stepper()}<section class="step-surface"><h1>创作准备</h1>${clientLine()}<div class="preparation-grid">${sourceBlock()}${keywordEditor()}</div><label class="field task-note"><span>本次方向与补充要求</span><textarea class="input" id="zip-note" data-option="note" rows="3" placeholder="说明本次想表达的重点">${e(s.options.note)}</textarea></label>${expandedOptions()}<div class="step-actions"><span></span>${button('step-2','下一步：平台安排','right','primary')}</div></section>`;
+  if(step===2)return `${stepper()}<section class="step-surface"><div class="spread"><div><h1>平台安排</h1><p>${e(planSummary(s.options,client.platforms).text)}</p></div>${button('platforms','选择平台','plus','quiet')}</div>${taskPlatforms()}<div class="step-actions">${button('step-1','上一步','back','quiet')}${writingButton(client.activeJob||isOperationRunning()||operationBusy)}</div></section>`;
+  return `${stepper()}<section class="step-surface"><header class="preparation-heading"><h1>创作准备</h1>${button('step-2','下一步：平台安排','right','primary')}</header>${clientLine()}<div class="preparation-grid">${sourceBlock()}${keywordEditor({showAliases:false})}</div><label class="field task-note"><span>本次方向与补充要求</span><textarea class="input" id="zip-note" data-option="note" rows="3" placeholder="说明本次想表达的重点">${e(s.options.note)}</textarea></label>${expandedOptions()}</section>`;
 }
 function liveView(inStep = false) {
   return liveMarkup(client.state,client.platforms,button,{inStep})+(inStep?`<div class="step-actions">${button('step-2','返回配置','back','quiet')}<span></span></div>`:'');
@@ -443,8 +546,9 @@ function sourcesPanel() {
     <section><h3>本次资料</h3>${docRows(selectedDocs(), { compact: true })}
       <details class="inspector-disclosure" id="inspector-add-materials">
         <summary>添加资料</summary>
-        <div class="inline-actions">${button('upload','上传','plus','quiet sm',importing)}${button('paste','粘贴',null,'quiet sm')}${button('library','资料库',null,'quiet sm')}</div>
+        <div class="inline-actions">${button('upload','上传文件或图片','plus','quiet sm',importing)}${button('paste','粘贴',null,'quiet sm')}${button('library','资料库',null,'quiet sm')}</div>
       </details>
+      ${pendingImageRows()}
       ${importing ? '<p class="helper" role="status">正在保存原件并解析…</p>' : ''}
     </section>
     ${profile}
@@ -515,11 +619,51 @@ function versionsPanel() {
   return `${a ? `<p>原生初稿、ZIP 成稿、人工版本与候选均保留。当前导出采用版本 ${a.current_version}。</p>${button('load-versions','刷新版本',null,'quiet sm')}${data ? (data.versions || []).map(v => `<section class="version-row"><h3>${e(v.label || v.origin || '工作版本')} ${v.id === a.current_version ? '<span class="version-current">当前采用</span>' : ''}</h3><small>版本 ${v.id} · ${e(v.created_at || '')}</small><div class="inline-actions">${button('version-preview','查看全文与差异',null,'quiet sm',false,`data-version="${v.id}"`)}${button('version-editorial','查看核查',null,'quiet sm',false,`data-version="${v.id}"`)}${v.id !== a.current_version ? button('version-select',['style','revision'].includes(v.origin) ? '采用候选' : '恢复此版',null,'outline sm',a.locked,`data-version="${v.id}"`) : ''}</div></section>`).join('') : '<p class="helper">正在加载版本…</p>'}` : '<p class="empty">还没有稿件。</p>'}`;
 }
 function settingLimits() { return client.state.bootstrap?.setting_limits || {temperature:{min:0,max:1.5},max_tokens:{min:800,max:8000}}; }
+function workBuddyModelOptions(selected) {
+  const models = client.state.bootstrap?.provider_models || [];
+  const names = models.map(model => typeof model === 'string' ? model : model.id || model.name);
+  const options = names.includes(selected) ? names : [selected, ...names];
+  return options.map(name => `<option ${name === selected ? 'selected' : ''} value="${e(name)}">${e(name)}${names.length && !names.includes(name) ? '（当前目录未确认）' : ''}</option>`).join('');
+}
 function settingsPanel() {
-  const s = client.state, settings = s.bootstrap?.settings || {}, models = s.bootstrap?.provider_models || [], limits=settingLimits();
-  const names = models.map(m => typeof m === 'string' ? m : m.id || m.name);
-  if (!names.includes(s.model)) names.unshift(s.model);
-  return `<h3>写作模型</h3><label class="field"><span>WorkBuddy 模型</span><select id="setting-model">${names.map(name => `<option ${name === s.model ? 'selected' : ''} value="${e(name)}">${e(name)}${models.length && !models.some(m => (typeof m === 'string' ? m : m.id || m.name) === name) ? '（当前目录未确认）' : ''}</option>`).join('')}</select></label>${button('provider-models','查询可用模型',null,'quiet sm')}<div class="form-grid" style="margin-top:20px"><label class="field"><span>Temperature</span><input type="number" id="setting-temperature" min="${e(limits.temperature.min)}" max="${e(limits.temperature.max)}" step="0.1" value="${e(settings.temperature ?? 0.7)}"></label><label class="field"><span>最大输出 Token</span><input type="number" id="setting-max-tokens" min="${e(limits.max_tokens.min)}" max="${e(limits.max_tokens.max)}" step="1" value="${e(settings.max_tokens || 8000)}"></label><label class="check-label field wide"><span><input type="checkbox" id="setting-title-prefix" ${settings.title_prefix ? 'checked' : ''}>标题附平台与账号前缀</span></label></div><label class="field" style="margin-top:20px"><span>默认品牌</span><input type="text" id="setting-brand" value="${e(settings.brand||'')}" placeholder="新建客户时预填，可在档案中清空"></label><label class="check-label" style="margin-top:14px"><input type="checkbox" id="setting-disable-thinking" ${settings.disable_thinking?'checked':''}>关闭模型深度思考</label>`;
+  const bootstrap = client.state.bootstrap || {}, settings = bootstrap.settings || {}, limits = settingLimits();
+  const transport = settings.transport || 'workbuddy', useApi = transport !== 'workbuddy';
+  const sources = (bootstrap.local_api_sources || []).filter(source => source.configured || source.id === transport);
+  const selected = sources.find(source => source.id === transport) || sources[0];
+  return `<h3>写作模型</h3>
+    <fieldset class="writing-source"><legend>模型来源</legend><div class="inline-actions">
+      <label class="check-label"><input type="radio" name="writing-source" value="workbuddy" ${useApi ? '' : 'checked'}>WorkBuddy</label>
+      <label class="check-label"><input type="radio" name="writing-source" value="api" ${useApi ? 'checked' : ''}>本地 API</label>
+    </div></fieldset>
+    <div id="setting-workbuddy" ${useApi ? 'hidden' : ''}>
+      <label class="field"><span>WorkBuddy 模型</span><select id="setting-model">${workBuddyModelOptions(useApi ? DEFAULT_MODEL : settings.model || DEFAULT_MODEL)}</select></label>
+      ${button('provider-models','查询可用模型',null,'quiet sm')}
+    </div>
+    <div id="setting-api" ${useApi ? '' : 'hidden'}>
+      <label class="field"><span>API 服务</span><select id="setting-api-provider" aria-describedby="setting-api-status" ${sources.length ? '' : 'disabled'}>${sources.length ? sources.map(source => `<option value="${e(source.id)}" ${source === selected ? 'selected' : ''}>${e(source.name)}${source.configured ? '' : '（配置缺失）'}</option>`).join('') : '<option value="">未发现可用配置</option>'}</select></label>
+      <label class="field"><span>API 模型 ID</span><input type="text" id="setting-api-model" maxlength="120" autocomplete="off" spellcheck="false" value="${e(useApi ? settings.model || '' : selected?.default_model || '')}" ${selected?.configured ? '' : 'disabled'}></label>
+      <p class="helper" id="setting-api-status" role="status">${apiSourceStatus(selected)}</p>
+    </div>
+    <div class="form-grid" style="margin-top:20px"><label class="field"><span>Temperature</span><input type="number" id="setting-temperature" min="${e(limits.temperature.min)}" max="${e(limits.temperature.max)}" step="0.1" value="${e(settings.temperature ?? 0.7)}"></label><label class="field"><span>最大输出 Token</span><input type="number" id="setting-max-tokens" min="${e(limits.max_tokens.min)}" max="${e(limits.max_tokens.max)}" step="1" value="${e(settings.max_tokens || 8000)}"></label><label class="check-label"><input type="checkbox" id="setting-title-prefix" ${settings.title_prefix ? 'checked' : ''}>标题附平台与账号前缀</label></div><label class="field" style="margin-top:20px"><span>默认品牌</span><input type="text" id="setting-brand" value="${e(settings.brand||'')}" placeholder="新建客户时预填，可在档案中清空"></label><label class="check-label" style="margin-top:14px"><input type="checkbox" id="setting-disable-thinking" ${settings.disable_thinking?'checked':''}>关闭模型深度思考</label>`;
+}
+function apiSourceStatus(source) {
+  return source?.configured ? '已发现本机配置。请使用该服务支持的模型 ID。' : '请配置模型服务的环境变量，然后重启工作台。';
+}
+function syncWritingSource(resetApiModel = false) {
+  const content = $('#settings-content');
+  const choice = $('[name="writing-source"]:checked', content);
+  if (!choice) return;
+  $('#setting-workbuddy', content).hidden = choice.value !== 'workbuddy';
+  $('#setting-api', content).hidden = choice.value !== 'api';
+  const ident = $('#setting-api-provider', content).value;
+  const source = client.state.bootstrap?.local_api_sources?.find(item => item.id === ident);
+  const input = $('#setting-api-model', content);
+  if (resetApiModel) {
+    const saved = client.state.bootstrap.settings;
+    input.value = saved.transport === ident ? saved.model : source?.default_model || '';
+  }
+  input.disabled = !source?.configured;
+  $('#setting-api-status', content).textContent = apiSourceStatus(source);
 }
 const settingsSections=[['writing','写作模型'],['platforms','发布平台'],['targets','目标 AI'],['preferences','抓取偏好'],['risks','风险清单'],['appearance','外观']];
 function captureSettings() {
@@ -552,7 +696,18 @@ function openSettings(section='writing',reset=false) {
   }
   if(reset)settingsSession.views.delete(section);
   const saved=settingsSession.views.get(section);
-  if(saved){settingsDisplay(saved.title,saved.html,saved.submit,saved.options);$$('input,textarea,select',$('#settings-content')).forEach((el,i)=>{if(saved.values?.[i]){el.value=saved.values[i].value;el.checked=saved.values[i].checked;}});return;}
+  if(saved){
+    const writing = section === 'writing' && saved.main;
+    settingsDisplay(saved.title,writing ? settingsPanel() : saved.html,saved.submit,saved.options);
+    $$('input,textarea,select',$('#settings-content')).forEach((el,i)=>{
+      const previous = saved.values?.[i];
+      if(!previous)return;
+      if(el.id==='setting-model')el.innerHTML=workBuddyModelOptions(previous.value);
+      el.value=previous.value;el.checked=previous.checked;
+    });
+    if(writing)syncWritingSource();
+    return;
+  }
   const title=settingsSections.find(([key])=>key===section)?.[1]||'写作模型';
   const html=section==='writing'?settingsPanel():['platforms','targets'].includes(section)?catalogueMarkup(section):configBlock(section);
   settingsDisplay(title,html,section==='writing'?saveSettings:null,{settingsMain:true,label:'保存设置'});
@@ -577,7 +732,13 @@ function freezeTaskInputs() {
 
 function render() {
   if (composing) { renderPending = true; return; }
-  if(lastTask && client.state.conversation?.id && lastTask!==client.state.conversation.id && $('#root>.app') && !taskPresentation.applying){taskPresentation.present(render);return;}
+  const entry = standardEntry();
+  const workspace = $('#workspace');
+  if (!entry && workspace && workspace.dataset.workspaceView !== 'new' && lastTask &&
+      client.state.conversation?.id && lastTask !== client.state.conversation.id && !taskPresentation.applying) {
+    taskPresentation.present(render);
+    return;
+  }
   const previousTask=lastTask,previousArticle=renderedArticleId;
   const following=captureFollowing($('#root')),oldComposer=$('.chat-compose-area')?.getBoundingClientRect();
   const active = document.activeElement, focusId = active?.id, focusAction=active?.dataset.action;
@@ -591,6 +752,7 @@ function render() {
   if(wasWriting&&!client.activeJob&&s.job?.status==='done'&&s.articles.length&&draftPanelState().view==='live'){selectedId=s.articles.filter(a=>a.current_version!=null&&!a.locked).at(-1)?.id??selectedId;}
   wasWriting=client.activeJob;
   if (s.conversation?.id !== lastTask) {
+    if (!entry && !customerArea && !quickArea && !creatingTask) syncTaskMode();
     lastTask = s.conversation?.id; modeViews.clear(); modeSwitcher.reset(); stepGeneration++; reviews = {}; versionsData = {}; selectedId = null;selectedReviewId=null;
     if (!previousTask && lastTask === initialRoute.get('conversation')) {
       selectedId = s.articles.find(a => String(a.id) === initialRoute.get('article'))?.id ?? null;
@@ -603,7 +765,11 @@ function render() {
     $('#root').innerHTML = `<div class="boot-state"><h1>方立</h1><p>${e(s.error || '正在打开工作台…')}</p>${s.loaded ? '<p>请确认本机工作台服务已启动，然后刷新页面。</p>' : ''}</div>`; return;
   }
   document.documentElement.style.setProperty('--sidebar', `${s.ui.sidebarWidth}px`);
-  const html = `<div class="app ${s.ui.collapsed ? 'collapsed' : ''}">${sidebar(s)}<button class="mobile-scrim" data-action="collapse" aria-label="关闭任务导航"></button><main class="main">${topbar(s)}<div class="workspace-notices">${customerArea||quickArea?'':notices(s)}</div><div class="content-wrap"><div class="workspace" id="workspace" tabindex="-1" data-workspace-view="${quickArea?'quick':customerArea?'customers':mode==='zip'?'zip-'+step:'chat'}" data-task-id="${e(s.conversation?.id||'')}">${quickArea ? '<div class="quick-host"></div>' : customerArea ? customers.view() : mode === 'zip' ? zipView() : chatWorkspace()}</div>${!customerArea&&!quickArea||panel==='settings'?inspector():''}</div></main></div>`;
+  const view = entry || (quickArea ? 'quick' : customerArea ? 'customers' : mode === 'zip' ? 'zip-'+step : 'chat');
+  const content = entry === 'start' ? startPage() : entry === 'new' ? newContentPage() :
+    quickArea ? '<div class="quick-host"></div>' : customerArea ? customers.view() : mode === 'zip' ? zipView() : chatWorkspace();
+  const status = entry ? (s.error ? `<div class="notice error" role="alert">${e(s.error)}</div>` : '') : customerArea||quickArea ? '' : notices(s);
+  const html = `<div class="app ${s.ui.collapsed ? 'collapsed' : ''}">${sidebar(s)}<button class="mobile-scrim" data-action="collapse" aria-label="关闭任务导航"></button><main class="main">${topbar(s)}<div class="workspace-notices">${status}</div><div class="content-wrap"><div class="workspace" id="workspace" tabindex="-1" data-workspace-view="${view}" data-task-id="${entry?'':e(s.conversation?.id||'')}">${content}</div>${!entry&&!customerArea&&!quickArea||panel==='settings'?inspector():''}</div></main></div>`;
   const template=document.createElement('template');template.innerHTML=html;
   const desiredParts=new Map(['.sidebar','.topbar','.workspace-notices','.workspace','.inspector'].map(selector=>[selector,$(selector,template.content)?.outerHTML]));
   const fresh=template.content,oldApp=$('#root>.app');
@@ -639,63 +805,90 @@ function render() {
   if(!modal.open&&mode==='chat'&&surface==='compose'&&(previousTask!==s.conversation?.id||document.activeElement===document.body))$('#message-input')?.focus({preventScroll:true});
 }
 const customers = new CustomersWorkspace(client,{render,toast,openTask:openStandardTask,newTask:beginCustomerTask,reuseTask});
-const quick = createQuickCreation(client,customers.service,{onBatch:quickBatchUpdated});
+const quick = createQuickCreation(client,customers.service,{
+  onBatch:quickBatchUpdated,
+  openDocuments:async id => {
+    await openCustomersArea();
+    if (customerArea) {
+      await customers.detail(id,'documents');
+      $('[data-customer-action="upload"]',$('#workspace'))?.focus();
+    }
+  },
+  newCustomer:() => customers.customerImport.open(customer => quick.addCustomer(customer.id)),
+});
 client.subscribe(()=>render());
 document.addEventListener('compositionstart', () => composing = true);
 document.addEventListener('compositionend', () => { composing = false; if (renderPending) { renderPending = false; render(); } });
 
 async function requireTask() {
-  if (client.state.conversation) return true;
-  chooseClient(); return false;
+  if (!standardEntry() && client.state.conversation) return true;
+  await openCreationEntry('new');
+  return false;
 }
-function chooseClient() {
-  const clients = client.state.clients;
-  dialog('选择本次客户', `<p class="helper">一个任务对应一个客户。选择后创建新的内容任务。</p>${clients.length ? `<label class="field"><span>已有客户</span><select name="client_id">${clients.map(c => `<option value="${e(c.id)}">${e(c.name)}</option>`).join('')}</select></label>` : '<p class="empty">还没有客户档案，先创建第一位客户。</p>'}<div style="margin-top:20px">${button('new-client','新建客户','plus','outline')}</div>`, clients.length ? data => beginCustomerTask(data.get('client_id')) : null, { label:'创建任务' });
+async function openCreationEntry(view) {
+  if (creatingTask) return;
+  const navigation = ++navigationGeneration;
+  if (client.state.dirty && client.state.conversation) await client.saveDraft();
+  if (navigation !== navigationGeneration) return;
+  if (modal.open) modal.close();
+  entryView = view;
+  if (view === 'new') entryMode = client.state.conversation ? mode : DEFAULT_ENTRY_MODE;
+  newTaskRequest = null;
+  showArea(view === 'new' ? 'new' : undefined);
+  $('#new-content-form')?.reset();
+  $('#workspace')?.scrollTo(0,0);
+  $('#creation-entry-title')?.focus({preventScroll:true});
 }
-function showNewTask({ split = false } = {}) {
+function showNewTask(nextMode) {
+  entryView = null;
   if (classicEnabled()) { enterClassic(); return; }
   quickArea=customerArea=false;customers.leave();panel=null;surface='compose';step=1;
-  if(split && mode!=='zip') { applyMode('zip'); return; }
+  if (nextMode !== mode) { applyMode(nextMode); return; }
   history.replaceState(null,'',`${location.pathname}?conversation=${encodeURIComponent(client.state.conversation.id)}`);
   render();
 }
 function workspaceURL(area, batchId) {
   const params = new URLSearchParams();
   if (area) params.set('area',area);
-  if (client.state.conversation?.id) params.set('conversation',client.state.conversation.id);
+  if (!entryView && client.state.conversation?.id) params.set('conversation',client.state.conversation.id);
   if (batchId) params.set('batch',batchId);
   return location.pathname + (params.size ? `?${params}` : '');
 }
 function showArea(area, batchId) {
+  modeSwitcher.reset();
   quickArea = area === 'quick';
   customerArea = area === 'customers';
   if (!customerArea) customers.leave();
   panel = null;
+  if (!area && !entryView) syncTaskMode();
   history.replaceState(null,'',workspaceURL(area,batchId));
   if (innerWidth <= 760) client.setUI({collapsed:true});
   else render();
 }
 async function openQuickCreation() {
+  if (creatingTask) return;
   const navigation = ++navigationGeneration;
   if (client.state.dirty && client.state.conversation) await client.saveDraft();
   if (navigation !== navigationGeneration) return;
   showArea('quick',quick.batchId);
-  const id = client.state.conversation?.client_id;
+  const id = entryView ? null : client.state.conversation?.client_id;
   await quick.enter({clientIds:id ? [id] : []});
 }
 async function openCustomersArea(batchId) {
+  if (creatingTask) return;
   const navigation = ++navigationGeneration;
   if (client.state.dirty && client.state.conversation) await client.saveDraft();
   if (navigation !== navigationGeneration) return;
   showArea('customers',batchId);
   await customers.enter();
-  if (!batchId && navigation === navigationGeneration) customers.syncPlanRoute();
+  if (!batchId && navigation === navigationGeneration) customers.syncRoute();
   if (batchId && navigation === navigationGeneration) {
     const batch = await customers.service.batch(batchId);
     if (navigation === navigationGeneration) await customers.showBatch(batch);
   }
 }
 async function openStandardTask(id, intent) {
+  if (creatingTask) return;
   const navigation = ++navigationGeneration;
   if (client.state.dirty && client.state.conversation) await client.saveDraft();
   if (navigation !== navigationGeneration) return;
@@ -703,6 +896,7 @@ async function openStandardTask(id, intent) {
   if (id && !await client.load(id)) return;
   if (navigation !== navigationGeneration) return;
   if (modal.open) modal.close();
+  entryView = null;
   showArea();
   if (intent) await openGuideTarget(intent);
 }
@@ -721,30 +915,113 @@ function quickBatchUpdated(batch) {
   if (changed) render();
 }
 async function beginCustomerTask(id, options) {
-  await client.createConversation(id, options);
-  showNewTask();
+  if (creatingTask) return;
+  const fromEntry = standardEntry() === 'new' && !classicEnabled();
+  const nextMode = fromEntry ? entryMode : client.state.conversation ? mode : 'chat';
+  const navigation = navigationGeneration;
+  creatingTask = true;
+  render();
+  try {
+    const created = await client.createConversation(id, {...options, mode:nextMode}, {inheritUnassigned:false});
+    if (navigation !== navigationGeneration) return;
+    // A retry can recover an existing task created before the user changed their selection.
+    if (fromEntry && created.mode !== nextMode) await client.saveDraft(nextMode);
+    showNewTask(nextMode);
+  } finally {
+    creatingTask = false;
+    render();
+  }
 }
 async function reuseTask(id) {
   await client.cloneConversation(id);
-  showNewTask({split:true});
+  if (client.state.conversation.mode !== 'zip') await client.saveDraft('zip');
+  showNewTask('zip');
   toast('已沿用安排创建新任务');
 }
 function openCustomerImport() {
   if (modal.open) modal.close();
   customers.customerImport.open((customer, options) => beginCustomerTask(customer.id, options), {forTask:true});
 }
+function openCustomerSetup() {
+  customers.customerImport.open(async customer => {
+    await openCustomersArea();
+    await customers.detail(customer.id,'profile');
+    toast('客户档案已保存');
+  });
+}
+document.addEventListener('submit', event => {
+  if (event.target.id !== 'new-content-form') return;
+  event.preventDefault();
+  const clientId = new FormData(event.target).get('client_id');
+  if (!clientId || creatingTask) return;
+  if (newTaskRequest?.clientId !== clientId) newTaskRequest = {clientId,id:randomUUID()};
+  act(() => beginCustomerTask(clientId,{creation_id:newTaskRequest.id}));
+});
 function profileDialog() {
   const c = currentClient();
   if (!c) return openCustomerImport();
   const frozen=!!client.state.batch?.frozen;
+  const taskId = client.state.conversation.id;
+  const alternatives = client.state.clients.filter(item => item.id !== c.id && !item.archived_at && !item.import_draft);
   const fields = PROFILE_FIELDS.map(([key,label]) => `<label class="field ${['products','address'].includes(key) ? 'wide' : ''}"><span>${label}${key === 'name' ? ' *' : ''}</span><input type="text" name="${key}" value="${e(key === 'name' ? c.name : c.profile[key]??'')}" ${key === 'name' ? 'required maxlength="100"' : 'maxlength="4000"'}></label>`).join('');
-  dialog('本次任务档案', `<p class="helper">${frozen?'本批客户档案只读。':''}品牌、公司与产品分别填写。此处临时调整只用于当前任务；永久档案请在客户区编辑。</p><div class="form-grid">${fields}</div>`, frozen ? null : async data => {
+  const switchCustomer = `<div class="profile-switch" id="profile-switch-panel" hidden>
+    ${alternatives.length ? `<label class="field"><span>选择客户</span><select data-profile-customer>
+      <option value="">请选择</option>
+      ${alternatives.map(item => `<option value="${e(item.id)}">${e(item.name + (item.name_conflict ? ' · ' + customers.distinguishClient(item) : ''))}</option>`).join('')}
+    </select></label><p class="helper">更换后会为所选客户新建任务。当前任务仍可在最近任务中打开。</p>
+    <button type="button" class="button outline" data-switch-profile-customer disabled>确认更换</button>`
+    : '<p class="helper">暂无其他客户可选。</p>'}
+  </div>`;
+  dialog('本次任务档案', `${switchCustomer}<p class="helper">${frozen?'本批客户档案只读。':''}品牌、公司与产品分别填写。此处临时调整只用于当前任务；永久档案请在客户区编辑。</p><div class="form-grid">${fields}</div>`, frozen ? null : async data => {
     const name = String(data.get('name')).trim(); if (!name) throw new Error('请填写客户或项目名称');
     const profile = Object.fromEntries(PROFILE_FIELDS.filter(([key]) => key !== 'name').map(([key]) => [key, String(data.get(key)||'').trim()]));
     await client.updateProfile(name,profile);
     toast('本次任务档案已保存');
   }, { label:'保存档案' });
   if(frozen)for(const input of $$('input',modal))input.readOnly=true;
+  $('#modal-title').insertAdjacentHTML('afterend', '<button type="button" class="button quiet sm" id="profile-switch-toggle" aria-controls="profile-switch-panel" aria-expanded="false">更换客户</button>');
+  const toggle = $('#profile-switch-toggle');
+  const switchPanel = $('#profile-switch-panel');
+  const select = $('[data-profile-customer]',modal);
+  const confirm = $('[data-switch-profile-customer]',modal);
+  toggle.onclick = () => {
+    switchPanel.hidden = !switchPanel.hidden;
+    toggle.setAttribute('aria-expanded', String(!switchPanel.hidden));
+    if (!switchPanel.hidden) select?.focus();
+  };
+  modal.addEventListener('close', () => toggle.remove(), {once:true});
+  if (!select) return;
+  const requests = new Map();
+  const save = $('#modal-submit');
+  const error = $('#modal-error');
+  const closeButtons = $$('[data-close]',modal);
+  let switching = false;
+  const guardClose = event => { if (switching) event.preventDefault(); };
+  modal.addEventListener('cancel', guardClose);
+  modal.addEventListener('close', () => modal.removeEventListener('cancel',guardClose), {once:true});
+  select.onchange = () => { confirm.disabled = !select.value; error.textContent = ''; };
+  confirm.onclick = async () => {
+    if (switching || creatingTask || save.disabled || client.state.conversation?.id !== taskId) return;
+    const id = select.value;
+    if (!alternatives.some(item => item.id === id)) return;
+    const data = new FormData($('#modal-form'));
+    const edited = PROFILE_FIELDS.some(([key]) => String(data.get(key) ?? '').trim() !==
+      String(key === 'name' ? c.name : c.profile[key] ?? '').trim());
+    if (edited) { error.textContent = '请先保存当前档案的修改，再更换客户。'; return; }
+    if (!requests.has(id)) requests.set(id, randomUUID());
+    switching = select.disabled = confirm.disabled = save.disabled = toggle.disabled = true;
+    closeButtons.forEach(el => { el.disabled = true; });
+    error.textContent = '';
+    try {
+      await beginCustomerTask(id,{creation_id:requests.get(id)});
+      modal.close();
+    } catch (err) {
+      error.textContent = err.message;
+    } finally {
+      switching = select.disabled = confirm.disabled = save.disabled = toggle.disabled = false;
+      closeButtons.forEach(el => { el.disabled = false; });
+    }
+  };
 }
 function platformDialog() {
   if (mode === 'zip' && step === 2) return platformPicker();
@@ -806,21 +1083,98 @@ function platformPicker() {
   },{label:'确认平台'});
 }
 modal.addEventListener('close', () => { $('#modal-body').onchange = null;$('#modal-body').onclick=null; });
+const imageTypes = recognitionExtensions.filter(ext=>ext!=='.pdf');
+const isTaskImage = filename => imageTypes.includes(filename.slice(filename.lastIndexOf('.')).toLowerCase());
+const taskFileInput = document.createElement('input');
+taskFileInput.type = 'file';
+taskFileInput.multiple = taskFileInput.hidden = true;
+taskFileInput.accept = ['.docx','.docm','.xlsx','.xlsm','.pptx','.txt','.md','.markdown','.csv','.tsv','.json','.html','.htm','.log','.pdf',...imageTypes].join(',');
+document.body.append(taskFileInput);
+function taskUploadContext() {
+  const {conversation} = client.state;
+  const navigation = navigationGeneration;
+  return {
+    cid:conversation.client_id,
+    current:()=>client.state.conversation?.id === conversation.id && navigationGeneration === navigation && !entryView && !customerArea && !quickArea,
+  };
+}
+async function refreshTaskLibrary(context) {
+  const library = await customerService.documents(context.cid);
+  if (!context.current()) return false;
+  client.state.library = library;
+  return true;
+}
+async function selectUploadedDocuments(docs) {
+  const revisions = new Map(docs.map(doc=>[doc.group_id,doc]));
+  const current = new Map(selectedDocs().map(doc=>[String(doc.id),doc]));
+  const keep = client.state.documentIds.filter(id=>!revisions.has(current.get(String(id))?.group_id));
+  client.state.documents = [...client.state.documents.filter(doc=>!revisions.has(doc.group_id)),...revisions.values()];
+  client.selectDocuments([...keep,...[...revisions.values()].map(doc=>doc.id)]);
+  await client.saveDraft();
+}
+async function openTaskRecognition(id) {
+  if (client.state.batch?.frozen || !client.state.conversation) return;
+  const context = taskUploadContext();
+  const doc = client.state.library.find(item=>item.id===id && item.has_recognition && item.status==='pending');
+  if (!doc) return;
+  const report = await customerService.recognition(context.cid,id);
+  if (!context.current()) return;
+  const review = new RecognitionReview(customerService,context.cid,doc,report);
+  await customers.showDocumentRecognition(review,{auto:true,label:'确认并选入本次资料',onConfirm:async confirmed=>{
+    if (!await refreshTaskLibrary(context)) return;
+    if (confirmed.text?.trim()) {
+      await selectUploadedDocuments([confirmed]);
+      if (context.current()) toast('识别文字已入库并选入本次任务');
+    } else {
+      render(); toast('已保存原图；图片没有可用于创作的文字');
+    }
+  }});
+}
 async function uploadFiles(files) {
+  if (!files.length || importing) return;
   if(client.state.batch?.frozen){toast('本批安排已冻结，可复用为新任务调整');return;}
   if (!await requireTask()) return;
-  importing = true; render(); const failures = [];
-  for (const file of files) {
-    try { const cid=client.state.conversation.client_id,taskId=client.state.conversation.id;const result=await importCustomerFile(customerService,cid,file,info=>customers.resolveImport(info));if(result.outcome==='cancelled')continue;if(result.is_current===false){failures.push(`${file.name}：原件属于历史修订，请在客户资料中选择当前版本`);continue;}if(!result.document||result.outcome==='pending'||result.outcome==='needs_resolution')throw new Error(result.document?.error||'原件已保存，资料尚待处理');if(client.state.conversation?.id!==taskId)continue;const doc=result.document;client.state.library=await customerService.documents(cid);client.state.documents=[...client.state.documents.filter(d=>d.id!==doc.id),doc];client.selectDocuments([...new Set([...client.state.documentIds,doc.id])]);await client.saveDraft(); }
-    catch(error) { failures.push(`${file.name}：${error.message}`); }
+  const context = taskUploadContext(), failures = [], uploaded = new Set();
+  let pending = [], added = 0;
+  importing = true; render();
+  try {
+    for (const file of files) {
+      if (!context.current()) return;
+      try {
+        const {outcome,document:doc} = await importCustomerFile(customerService,context.cid,file,
+          info=>context.current() ? customers.resolveImport(info) : null,{recognize:isTaskImage(file.name)});
+        if (outcome==='cancelled') continue;
+        if (!doc || (!doc.has_recognition && doc.status!=='ready')) throw new Error(doc?.error || '原件已保存，资料尚待处理');
+        if (doc.status!=='pending' && !doc.is_current) throw new Error('原件属于历史修订，请从资料库选当前版本');
+        if (doc.status==='ready' && !doc.text?.trim()) throw new Error('原件已保存，没有可用于创作的文字');
+        uploaded.add(doc.id);
+      } catch(error) { failures.push(`${file.name}：${error.message}`); }
+    }
+    if (!context.current() || !await refreshTaskLibrary(context)) return;
+    const docs = client.state.library.filter(doc=>uploaded.has(doc.id));
+    pending = docs.filter(doc=>doc.status==='pending' && doc.has_recognition);
+    const ready = docs.filter(doc=>doc.status==='ready' && doc.is_current && doc.text?.trim());
+    added = ready.length;
+    if (added) await selectUploadedDocuments(ready);
+  } finally {
+    importing = false;
+    render();
   }
-  importing = false; render(); if (failures.length) client.fail(new Error(failures.join('；'))); else toast(`已解析并添加 ${files.length} 份资料`);
+  if (!context.current()) return;
+  if (failures.length) client.fail(new Error(failures.join('；')));
+  if (pending.length) {
+    if (mode==='chat') { panel='sources'; render(); }
+    await openTaskRecognition(pending[0].id);
+  }
+  else if (added && !failures.length) toast(`已解析并添加 ${added} 份资料`);
 }
-async function upload() {
-  if (!await requireTask()) return;
-  const input = document.createElement('input'); input.type='file'; input.multiple=true;
-  input.accept='.docx,.docm,.xlsx,.xlsm,.pptx,.txt,.md,.markdown,.csv,.tsv,.json,.html,.htm,.log,.pdf';
-  input.onchange=()=>uploadFiles([...input.files]); input.click();
+function upload() {
+  if (!client.state.conversation || standardEntry()) return requireTask();
+  if (importing || client.state.batch?.frozen) return;
+  const context = taskUploadContext();
+  taskFileInput.value = '';
+  taskFileInput.onchange=()=>{if(context.current())act(()=>uploadFiles([...taskFileInput.files]));};
+  taskFileInput.click();
 }
 async function paste() {
   if (!await requireTask()) return;
@@ -848,11 +1202,60 @@ async function detectAliases() {
   const groups=[],seen=new Set();for(const group of [...client.state.options.aliases,...detected]){const key=JSON.stringify([...group].sort());if(!seen.has(key)){seen.add(key);groups.push(group);}}
   dialog('确认别名分组',`<p class="helper">勾选属于同一实体的写法。确认后交由原 ZIP 分组，不改变关键词原文。</p><div class="library-list">${groups.map((group,index)=>`<label><input type="checkbox" name="alias" value="${index}" checked><span>${e(group.join(' / '))}</span></label>`).join('')||'<p class="empty">未发现疑似别名。仍可在完整选项中手工填写。</p>'}</div>`,async data=>{client.setOptions({aliases:data.getAll('alias').map(index=>groups[Number(index)])});await client.saveDraft();toast('别名分组已保存');},{label:'按勾选合并'});
 }
+async function recommendChatTopic() {
+  if(topicPickerOpen||operationBusy||isOperationRunning())return;
+  topicPickerOpen=true;
+  try {
+    if(!await requireTask())return;
+    const currentTopic=client.writingTopic();
+    const topic=await client.pickWritingTopic(recommend=>mode==='chat'&&!standardEntry()&&!quickArea&&!customerArea
+      ?chooseArticleTopic(recommend,{submitLabel:'使用这个选题',expanded:true,currentTopic})
+      :null);
+    if(topic)client.setWritingTopic(topic);
+  } finally {topicPickerOpen=false;}
+}
 async function start(confirmed=false,one=false) {
-  if(!await requireTask())return;
+  if(topicPickerOpen||!await requireTask())return;
   pendingChat=mode==='chat'?{id:client.state.conversation.id,text:client.messageDraft()}:null;operationBusy=true;render();
-  try { const done=mode==='chat'?await client.submitMessage({start:true,confirmed,one}):await client.start({confirmed,one});if(done===null)return;surface='live';step=3;showDraft('live'); }
+  try {
+    const options = {confirmed,one,chooseTopic:chooseArticleTopic};
+    const done = mode==='chat' ? await client.submitMessage({start:true,...options}) : await client.start(options);
+    if(done===null)return;
+    surface='live';step=3;showDraft('live');
+  }
+  catch (error) {
+    const gap = error.status === 400 && error.operationKind !== OPERATION_KIND.chat && writingGap();
+    if (!gap) throw error;
+    await fillWritingGap(gap);
+  }
   finally {pendingChat=null;operationBusy=false;render();}
+}
+async function fillWritingGap(gap) {
+  if (gap.kind === 'keywords') {
+    if (mode === 'zip') await setStep(1);
+    else { panel = 'arrangement'; render(); }
+    $('#keyword-entry')?.focus();
+    return;
+  }
+  if (gap.kind === 'targets') {
+    const available = client.targets.filter(enabled).map(target=>target.name || target);
+    const choices = available.map(name=>`<label><input type="checkbox" name="target" value="${e(name)}" ${client.state.options.models.includes(name)?'checked':''}>${e(name)}</label>`).join('');
+    dialog('调整目标 AI',`<p class="helper">保存后会移除已停用的目标 AI。</p><div class="target-list">${choices}</div>`,async data => {
+      client.setOptions({models:data.getAll('target')});
+      await client.saveDraft();
+    },{label:'保存目标 AI'});
+    return;
+  }
+  const reset = mode === 'zip' && gap.kind === 'formats' && $('[data-action="reset-task-formats"]');
+  if (reset) { reset.focus(); return; }
+  platformDialog();
+  $('#modal-body input:not(:disabled)')?.focus();
+}
+async function requestWriting(one = false) {
+  if (!await requireTask()) return;
+  const gap = writingGap(mode === 'chat');
+  if (gap) return fillWritingGap(gap);
+  return client.state.needsConfirmation ? confirmPlan(one) : start(false,one);
 }
 async function interview() {
   if(!await requireTask())return;
@@ -925,7 +1328,7 @@ function deleteArticleDialog() {
 }
 function deleteTaskDialog() {
   client.assertSettled();
-  dialog('删除任务',`<p>确认删除“${e(client.state.conversation.title)}”？</p><p class="helper">任务将从历史列表移除。客户档案和已固定的视频来源保留，未保存的编辑也会移除。</p>`,async()=>{await client.deleteConversation();history.replaceState(null,'',location.pathname);panel=null;toast('任务已删除');},{label:'确认删除任务'});
+  dialog('删除任务',`<p>确认删除“${e(displayTaskTitle(client.state.conversation))}”？</p><p class="helper">任务将从历史列表移除。客户档案和已固定的视频来源保留，未保存的编辑也会移除。</p>`,async()=>{await client.deleteConversation();history.replaceState(null,'',location.pathname);panel=null;toast('任务已删除');},{label:'确认删除任务'});
 }
 async function downloadFile(url,filename) {
   const response=await fetch(url);if(!response.ok){let result;try{result=await response.json();}catch{}throw new Error(result?.error||'下载失败，请核对当前状态');}
@@ -1070,14 +1473,18 @@ async function exportDialog() {
   const omitted=client.state.ui.exportOmitted?.[client.state.conversation.id]||[];
   const a=currentArticle();
   const videoHref=a && !a.locked && narratedVideoHref(client.state.conversation,a);
-  const formats='<option value="docx">正文 Word（DOCX）</option><option value="md">正文 Markdown</option><option value="txt">正文 TXT</option><option value="json">任务资料 JSON</option>';
-  dialog('导出',`<label class="field"><span>下载内容</span><select name="fmt">${articles.length?formats:''}<option value="archive">下载任务记录 ZIP</option></select></label><p id="archive-description" class="helper" ${articles.length?'hidden':''}>打包本次安排、资料文字、稿件版本与核查记录。</p><div id="export-article-picks" ${articles.length?'':'hidden'}><div class="inline-actions"><button type="button" class="button quiet sm" data-export-pick="all">全选</button><button type="button" class="button quiet sm" data-export-pick="none">全不选</button></div><div class="library-list">${articles.map(a=>`<label><input type="checkbox" name="ids" value="${a.id}" ${omitted.includes(String(a.id))?'':'checked'}><span>${e(a.title)}<small>${e(a.platform_name||a.platform||'')} · ${accountName(a.account_type)} · 版本 ${a.current_version}</small></span></label>`).join('')}</div></div>${videoHref?`<div class="inline-actions export-video"><a class="button quiet sm" href="${e(videoHref)}">${icon('video')}用当前采用稿制作视频</a></div>`:''}`,async data=>{
+  const formats = `${articles.length?'<optgroup label="稿件正文"><option value="docx">Word（DOCX）</option><option value="md">Markdown</option><option value="txt">纯文本（TXT）</option></optgroup>':''}
+    <optgroup label="任务数据与留档">${articles.length?'<option value="json">任务资料 JSON</option>':''}<option value="archive">任务记录 ZIP</option></optgroup>`;
+  const descriptions = {docx:'交付用 Word，所选稿件每篇另起一页。',md:'保留标题、列表等 Markdown 排版。',txt:'适合复制粘贴，保留段落和列表。',json:'包含本次创作安排、资料信息及所选稿件。',archive:'打包本次安排、资料文字、稿件版本与核查记录。'};
+  dialog('导出',`<label class="field"><span>下载内容</span><select name="fmt" aria-describedby="export-description">${formats}</select></label>
+    <p id="export-description" class="helper">${descriptions[articles.length?'docx':'archive']}</p>
+    <div id="export-article-picks" ${articles.length?'':'hidden'}><div class="inline-actions"><button type="button" class="button quiet sm" data-export-pick="all">全选</button><button type="button" class="button quiet sm" data-export-pick="none">全不选</button></div><div class="library-list">${articles.map(a=>`<label><input type="checkbox" name="ids" value="${a.id}" ${omitted.includes(String(a.id))?'':'checked'}><span>${e(a.title)}<small>${e(a.platform_name||a.platform||'')} · ${accountName(a.account_type)} · 版本 ${a.current_version}</small></span></label>`).join('')}</div></div>${videoHref?`<div class="inline-actions export-video"><a class="button quiet sm" href="${e(videoHref)}">${icon('video')}用当前采用稿制作视频</a></div>`:''}`,async data=>{
     const fmt=data.get('fmt');
     if(fmt==='archive')return archiveTask();
     const ids=data.getAll('ids');
     if(!ids.length)throw new Error('至少选择一篇稿件');
     const query=new URLSearchParams({fmt,ids:ids.join(',')});
-    if(fmt==='md'||fmt==='txt')query.set('scope','body');
+    if(fmt!=='json')query.set('scope','delivery');
     const response=await fetch(client.path(`/export?${query}`));
     if(!response.ok){
       let detail;
@@ -1087,15 +1494,16 @@ async function exportDialog() {
     const blob=await response.blob();
     const link=document.createElement('a'),objectUrl=URL.createObjectURL(blob);
     link.href=objectUrl;
-    link.download=`方立-${client.state.conversation.id}.${fmt}`;
+    const filename = response.headers.get('Content-Disposition')?.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+    link.download=filename ? decodeURIComponent(filename) : `方立-${client.state.conversation.id}.${fmt}`;
     link.click();
     setTimeout(()=>URL.revokeObjectURL(objectUrl),2000);
     toast('已导出所选采用版本');
   },{label:articles.length?'导出文件':'下载 ZIP'});
   $('[name=fmt]',modal).onchange=event=>{
-    const archive=event.target.value==='archive';
+    const format=event.target.value, archive=format==='archive';
     $('#export-article-picks').hidden=archive;
-    $('#archive-description').hidden=!archive;
+    $('#export-description').textContent=descriptions[format];
     $('#modal-submit').textContent=archive?'下载 ZIP':'导出文件';
   };
 }
@@ -1105,10 +1513,31 @@ function rememberExportSelection() {
 }
 async function reloadConfig() {client.state.config=await client.api('/api/workbench/zip-config');client.state.configError='';render();}
 async function saveSettings() {
-  const model=$('#setting-model').value,temperature=Number($('#setting-temperature').value),max_tokens=Number($('#setting-max-tokens').value),title_prefix=$('#setting-title-prefix').checked,brand=$('#setting-brand').value,disable_thinking=$('#setting-disable-thinking').checked;
+  const useApi = $('[name="writing-source"]:checked').value === 'api';
+  const transport = useApi ? $('#setting-api-provider').value : 'workbuddy';
+  if (useApi && $('#setting-api-model').disabled) throw new Error('请配置本机 API 后重启工作台，或选择 WorkBuddy');
+  const model = $(useApi ? '#setting-api-model' : '#setting-model').value.trim();
+  if (!model) throw new Error('请输入该 API 服务的模型 ID');
+  const temperature=Number($('#setting-temperature').value),max_tokens=Number($('#setting-max-tokens').value),title_prefix=$('#setting-title-prefix').checked,brand=$('#setting-brand').value,disable_thinking=$('#setting-disable-thinking').checked;
   const limits=settingLimits();
   if(!Number.isFinite(temperature)||temperature<limits.temperature.min||temperature>limits.temperature.max||!Number.isInteger(max_tokens)||max_tokens<limits.max_tokens.min||max_tokens>limits.max_tokens.max)throw new Error(`请填写有效的温度（${limits.temperature.min}—${limits.temperature.max}）与最大 Token（${limits.max_tokens.min}—${limits.max_tokens.max}）`);
-  const d=await client.api('/api/workbench/settings','POST',{model,temperature,max_tokens,title_prefix,brand,disable_thinking});client.state.bootstrap.settings={...client.state.bootstrap.settings,...d.settings,model,temperature,max_tokens,title_prefix,brand,disable_thinking};client.state.model=model;client.emit();toast('写作设置已保存');
+  const patch = {transport,model,temperature,max_tokens,title_prefix,brand,disable_thinking};
+  const d=await client.api('/api/workbench/settings','POST',patch);
+  client.state.bootstrap.settings={...client.state.bootstrap.settings,...patch,...d.settings};
+  client.state.model=client.state.bootstrap.settings.model;client.emit();toast('写作设置已保存');
+}
+async function refreshWorkBuddyModels(trigger) {
+  const select = $('#setting-model');
+  trigger.disabled = true;
+  try {
+    const data = await client.api('/api/workbench/provider-models');
+    client.state.bootstrap.provider_models = data.provider_models || [];
+    const current = $('#setting-model');
+    if (current) current.innerHTML = workBuddyModelOptions((select?.isConnected ? select : current).value);
+    toast('模型目录已更新');
+  } finally {
+    trigger.disabled = false;
+  }
 }
 function configAdmin() { openSettings('platforms'); }
 function deleteCatalogue(kind,id) {
@@ -1150,10 +1579,12 @@ document.addEventListener('click', event => {
     const action=actionButton.dataset.action;
     const actions={
       collapse:()=>client.setUI({collapsed:!client.state.ui.collapsed}),
-      standard:()=>openStandardTask(),customers:()=>openCustomersArea(),'open-quick-batch':()=>openCustomersArea(actionButton.dataset.batchId),
-      'new-task':chooseClient,'choose-client':chooseClient,'new-client':openCustomerImport,profile:profileDialog,
+      standard:()=>openCreationEntry('start'),customers:()=>openCustomersArea(),'open-quick-batch':()=>openCustomersArea(actionButton.dataset.batchId),
+      'start-page':()=>openCreationEntry('start'),'new-task':()=>openCreationEntry('new'),'choose-client':()=>openCreationEntry('new'),
+      'new-client':openCustomerImport,'add-customer':openCustomerSetup,profile:profileDialog,
       'find-task':()=>findTask(),quick:openQuickCreation,
       'mode-chat':()=>switchMode('chat'),'mode-zip':()=>switchMode('zip'),platforms:platformDialog,upload,paste,library,
+      'recognize-document':()=>openTaskRecognition(actionButton.dataset.recognitionId),
       'reset-task-formats':()=>{
         const id = actionButton.dataset.platformId, platform = client.platforms.find(p => String(p.id) === id);
         client.setOptions({format_overrides:{...client.state.options.format_overrides,[id]:[...platform.formats]}});
@@ -1163,7 +1594,8 @@ document.addEventListener('click', event => {
       'open-draft':()=>{showDraft(client.activeJob?'live':'article');render();},'close-draft':()=>{draftPanelState().open=false;client.persist();render();$('.reopen-draft')?.focus();},'follow-stream':()=>{const scroll=$('#stream-scroll');if(scroll){scroll.dataset.follow='true';restoreReadingScroll(scroll,scroll.scrollHeight);$('.new-content').hidden=true;}},
       'step-1':()=>setStep(1),'step-2':()=>setStep(2),'step-4':()=>setStep(4),
       'add-keyword':addKeyword,'detect-aliases':detectAliases,'edit-keyword-links':editKeywordLinks,'narrated-from-materials':openMaterialsVideo,
-      start:()=>client.state.needsConfirmation?confirmPlan():start(),'write-one':()=>client.state.needsConfirmation?confirmPlan(true):start(false,true),stop:async()=>{await client.stop();toast('已请求暂停后续，当前篇继续收尾');},'confirm-plan':()=>confirmPlan(),'new-requirement':newRequirement,
+      'recommend-topic':recommendChatTopic,'clear-writing-topic':()=>{client.setWritingTopic('');$('[data-action="recommend-topic"]')?.focus();},
+      start:()=>requestWriting(),'write-one':()=>requestWriting(true),stop:async()=>{await client.stop();toast('已请求暂停后续，当前篇继续收尾');},'confirm-plan':()=>confirmPlan(),'new-requirement':newRequirement,
       'clone-task':()=>reuseTask(),'delete-task':deleteTaskDialog,
       'native-regenerate':()=>nativeActionDialog('regenerate'),'native-audit':()=>nativeActionDialog('audit'),'delete-article':deleteArticleDialog,
       interview:()=>interview(),'chat-candidate':()=>compareDialog(Number(actionButton.dataset.articleId),Number(actionButton.dataset.candidateVersion)),
@@ -1184,7 +1616,7 @@ document.addEventListener('click', event => {
         await client.selectVersion(a.id,version);versionsData[a.id]=null;toast('已采用修订');
       },
       export:exportDialog,'reload-config':reloadConfig,'save-settings':saveSettings,'config-admin':configAdmin,'add-platform':()=>editPlatform(null),'add-target':()=>editTarget(null),'add-risk':()=>editRisk(null),
-      'provider-models':async()=>{const d=await client.api('/api/workbench/provider-models');client.state.bootstrap.provider_models=d.models||d.provider_models||[];client.emit();toast('模型目录已更新');},
+      'provider-models':()=>refreshWorkBuddyModels(actionButton),
     };
     if(actions[action]){event.preventDefault();act(actions[action]);const menu=actionButton.closest('.toolbar-menu');if(menu)menu.open=false;}
     return;
@@ -1232,6 +1664,10 @@ document.addEventListener('input',event=>{
   else if(el.id==='rewrite-material'){clearReviewValidation();storeReviewDraft();}
 });
 document.addEventListener('change',event=>{
+  if(event.target.matches('[name="writing-source"],#setting-api-provider')){
+    syncWritingSource(event.target.id === 'setting-api-provider');
+    return;
+  }
   if(event.target.matches('[data-workbench-palette-select]')){
     setWorkbenchPalette(event.target.value);
     return;
@@ -1269,22 +1705,41 @@ document.addEventListener('change',event=>{
   if(el.dataset.materialChoice){el.value==='conservative'?conservativeSuggestions.add(el.dataset.materialChoice):conservativeSuggestions.delete(el.dataset.materialChoice);clearReviewValidation();storeReviewDraft();}
   if(el.dataset.prefModel)act(async()=>{await client.api('/api/prefs','POST',{model_id:Number(el.dataset.prefModel),platform_id:Number(el.dataset.prefPlatform),level:el.value});const prefs=client.state.config.prefs||client.state.config.preferences||[];const pref=prefs.find(p=>String(p.model_id)===el.dataset.prefModel&&String(p.platform_id)===el.dataset.prefPlatform);if(pref)pref.level=el.value;else prefs.push({model_id:Number(el.dataset.prefModel),platform_id:Number(el.dataset.prefPlatform),level:el.value});toast('抓取偏好已保存');});
 });
+const modePath = value => value === 'zip' ? '/workbench/zip/index.html' : '/workbench/index.html';
+function setModeChrome(value) {
+  mode = value;
+  document.body.dataset.mode = mode;
+  document.title = (mode==='zip'?'分步创作':'对话创作')+' · 方立';
+}
+function syncTaskMode() {
+  const saved = client.state.conversation?.mode;
+  if (saved !== 'chat' && saved !== 'zip') return;
+  if (saved !== mode) setModeChrome(saved);
+  const path = modePath(saved);
+  if (location.pathname !== path) history.replaceState(history.state,'',path+location.search+location.hash);
+}
 function applyMode(nextMode) {
   modeViews.set(mode,{step,surface,following:captureFollowing($('#root')),
     scrolls:['#workspace','.chat-pane','#article-scroll'].map(selector=>[selector,$(selector)?.scrollTop||0])});
   const saved=modeViews.get(nextMode)||{step:client.activeJob?3:client.state.articles.length?4:1,
     surface:client.activeJob?'live':client.state.articles.length?'articles':'compose'};
-  mode=nextMode;document.body.dataset.mode=mode;
-  document.title=(mode==='zip'?'分步创作':'对话创作')+' · 方立';
+  setModeChrome(nextMode);
   quickArea=customerArea=false;customers.leave();panel=null;
   step=mode==='zip'&&client.activeJob?3:saved.step;surface=client.activeJob?'live':saved.surface;
-  const path=mode==='zip'?'/workbench/zip/index.html':'/workbench/index.html';
+  const path=modePath(mode);
   history.replaceState(history.state,'',path+(client.state.conversation?`?conversation=${encodeURIComponent(client.state.conversation.id)}`:''));
   render();
   for(const [selector,top] of saved.scrolls||[])if($(selector))restoreReadingScroll($(selector),top);
   restoreFollowing($('#root'),saved.following||[]);
 }
 async function switchMode(nextMode) {
+  if (standardEntry() === 'new') {
+    if (!creatingTask && nextMode !== entryMode) {
+      entryMode = nextMode;
+      render();
+    }
+    return;
+  }
   return modeSwitcher.select(nextMode,{force:customerArea});
 }
 async function setStep(next) {
@@ -1345,7 +1800,7 @@ function bindInspectorResize() {
 }
 function hideTooltip(){clearTimeout(tooltipTimer);$('#task-tooltip').hidden=true;}
 function showTooltip(button) {
-  clearTimeout(tooltipTimer);tooltipTimer=setTimeout(()=>{const t=client.state.conversations.find(x=>x.id===button.dataset.task);if(!t)return;const box=$('#task-tooltip'),rect=button.getBoundingClientRect();box.innerHTML=`<strong>${e(t.title||'未命名内容')}</strong><dl class="plain-dl"><div><dt>创建时间</dt><dd>${e(t.created_at||'未记录')}</dd></div><div><dt>状态</dt><dd>${statusText(t.status)}</dd></div><div><dt>客户</dt><dd>${e(client.state.clients.find(c=>c.id===t.client_id)?.name||'')}</dd></div></dl>`;box.hidden=false;box.style.left=`${Math.min(rect.right+12,innerWidth-box.offsetWidth-12)}px`;box.style.top=`${Math.max(12,Math.min(rect.top,innerHeight-box.offsetHeight-12))}px`;},320);
+  clearTimeout(tooltipTimer);tooltipTimer=setTimeout(()=>{const t=client.state.conversations.find(x=>x.id===button.dataset.task);if(!t)return;const box=$('#task-tooltip'),rect=button.getBoundingClientRect();box.innerHTML=`<strong>${e(displayTaskTitle(t))}</strong><dl class="plain-dl"><div><dt>创建时间</dt><dd>${e(t.created_at||'未记录')}</dd></div><div><dt>状态</dt><dd>${statusText(t.status)}</dd></div><div><dt>客户</dt><dd>${e(client.state.clients.find(c=>c.id===t.client_id)?.name||'')}</dd></div></dl>`;box.hidden=false;box.style.left=`${Math.min(rect.right+12,innerWidth-box.offsetWidth-12)}px`;box.style.top=`${Math.max(12,Math.min(rect.top,innerHeight-box.offsetHeight-12))}px`;},320);
 }
 document.addEventListener('pointerover',event=>{const row=event.target.closest('.task-row');if(row)showTooltip(row);});
 document.addEventListener('pointerout',event=>{if(event.target.closest('.task-row'))hideTooltip();});
@@ -1378,7 +1833,7 @@ window.addEventListener('pagehide',()=>taskPresentation.dispose());
 window.addEventListener('pagehide',()=>{quick.dispose();customers.dispose();clearTimeout(aliasTimer);client.persist();client.dispose();});
 window.matchMedia('(max-width:760px)').addEventListener('change',event=>{if(event.matches)client.setUI({collapsed:true});});
 window.addEventListener('beforeunload',event=>{if(!intentionalNavigation&&(client.state.dirty||Object.values(client.state.editors).some(ed=>ed.dirty))){event.preventDefault();event.returnValue='';}});
-await client.boot(initialRoute.get('conversation')).catch(()=>{});
+await client.boot(entryView === 'new' ? null : initialRoute.get('conversation'), {resumeCached:false}).catch(()=>{});
 if (quickArea && client.state.bootstrap) {
   const currentClientId = client.state.conversation?.client_id;
   const legacyClients = [...initialRoute.getAll('clients'), ...initialRoute.getAll('client')];
@@ -1390,8 +1845,9 @@ if(customerArea&&client.state.bootstrap){
     await customers.enter();
     const query = new URLSearchParams(location.search);
     if (query.get('batch')) await customers.showBatch(await customers.service.batch(query.get('batch')));
+    else if (query.get('customer')) await customers.detail(query.get('customer'),query.get('tab'));
     else if (query.get('plan')) await customers.detail(query.get('plan'),'plan');
-  } catch (error) { client.fail(error); }
+  } catch (error) { toast(error.message); }
 }
 if(innerWidth<=760)client.setUI({collapsed:true});
 if(client.state.bootstrap){

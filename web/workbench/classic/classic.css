@@ -1,4 +1,7 @@
 .top-actions { flex-wrap: wrap; }
+:where(.chip, .pt-btn, .kb-chip, .kb-input, .lv, .tr-over, .auto-progress, .auto-progress i, .pill) {
+  corner-shape: squircle;
+}
 .top-actions a { text-decoration: none; }
 .classic-dialog { border: 1px solid var(--line); border-radius: var(--radius); color: var(--ink); padding: 24px; width: min(620px, calc(100vw - 32px)); max-height: calc(100vh - 40px); overflow: auto; }
 .classic-dialog::backdrop { background: rgb(27 36 48 / 38%); }

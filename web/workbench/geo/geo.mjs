@@ -1,5 +1,6 @@
-import { workspaceRail } from '../workspace-rail.mjs';
+import { workspaceRail, workbenchReturnPath } from '../workspace-rail.mjs';
 import { applyWorkbenchPalette } from '../palette.mjs';
+import { randomUUID, sha256Hex } from '../browser-crypto.mjs';
 
 applyWorkbenchPalette();
 const $ = selector => document.querySelector(selector);
@@ -7,6 +8,7 @@ const root = $('#geo-app');
 const dialog = $('#geo-dialog');
 const form = $('#geo-form');
 const route = new URL(location.href);
+const returnPath = workbenchReturnPath(route.searchParams.get('return_to'));
 const state = { clients: [], customer: '', home: null, plan: null, run: null, busy: false, loading: true, error: '' };
 let generation = 0;
 let pollTimer;
@@ -123,7 +125,7 @@ function render() {
   const focus = root.contains(document.activeElement) ? { id: document.activeElement.id, action: document.activeElement.dataset.geoAction } : null;
   const options = state.clients.map(c => '<option value="' + e(c.id) + '"' + (c.id === state.customer ? ' selected' : '') + '>' + e(c.name) + '</option>').join('');
   const history = state.home?.runs || [];
-  root.innerHTML = workspaceRail('geo') + '<main id="geo-main" class="geo-main"><div class="geo-topbar"><span class="geo-brand">方立工作台</span>' +
+  root.innerHTML = workspaceRail('geo',{links:{customers:returnPath}}) + '<main id="geo-main" class="geo-main"><div class="geo-topbar"><span class="geo-brand">方立工作台</span>' +
     (state.clients.length ? '<label class="geo-client"><span>客户</span><select id="geo-customer" ' + (state.busy ? 'disabled' : '') + '><option value="">选择客户</option>' + options + '</select></label>' : '') +
     '</div><div class="geo-surface"><h1>GEO 检测</h1><p class="geo-intro">看 AI 有没有提到客户，或引用已发布的稿件。</p>' +
     (state.error ? '<p class="error-text geo-message" role="alert">' + e(state.error) + '</p>' : '') +
@@ -296,10 +298,9 @@ async function start(repeatRunId) {
   const cid = state.customer, epoch = generation;
   const {topic, aliases, questions, repeat, urls, article_id, version_id} = state.plan;
   const payload = repeatRunId ? {repeat_run_id: repeatRunId} : {plan: {topic, aliases, questions, repeat, urls, article_id, version_id}};
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify([cid, payload])));
-  const signature = Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, '0')).join('');
+  const signature = sha256Hex(new TextEncoder().encode(JSON.stringify([cid, payload])));
   try { pendingRequest ||= JSON.parse(sessionStorage.getItem('fangli.geo.pending')); } catch { /* Optional recovery. */ }
-  if (pendingRequest?.signature !== signature) pendingRequest = {signature, key: crypto.randomUUID()};
+  if (pendingRequest?.signature !== signature) pendingRequest = {signature, key: randomUUID()};
   try { sessionStorage.setItem('fangli.geo.pending', JSON.stringify(pendingRequest)); } catch { /* In-memory deduplication remains. */ }
   const {run_id} = await api(clientPath('/runs', cid), 'POST', {...payload, request_key: pendingRequest.key});
   pendingRequest = null;

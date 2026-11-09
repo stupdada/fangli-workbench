@@ -20,7 +20,7 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from bridge import provider
+from bridge import provider, visual_documents
 from bridge.http import create_server
 from bridge.checks import article_checks
 from app import render, prompts, seeds
@@ -83,6 +83,75 @@ class CustomersAndBatches(unittest.TestCase):
 
     def submit(self, key, items=None):
         return self.http('/api/workbench/batches', 'POST', {'request_key': key, 'items': items or [{'client_id': self.cid}]})['batch']
+
+    def test_recognition_uses_owned_pages_and_creates_confirmed_revision(self):
+        pending_pages = [{'page': index, 'status': 'waiting', 'text': '', 'error': ''} for index in (1, 2)]
+        original = b'fixture PDF'
+        with patch.object(visual_documents, 'new_report', return_value=pending_pages):
+            pending = self.http(self.base + '/documents', 'POST', {
+                'filename': '样本.pdf', 'content_b64': base64.b64encode(original).decode(), 'recognize': True,
+            })['document']
+        path = pending['recognition_url']
+        retry = path.removesuffix('/recognition') + '/retry'
+        self.assertEqual(pending['status'], 'pending')
+        self.assertEqual(self.http(pending['original_url'], raw=True), original)
+        self.assertEqual(self.http(path)['recognition']['pages'], [
+            {**page, 'preview_url': None} for page in pending_pages])
+        self.http(retry, 'POST', {'pages': [{'page': 1, 'text': ''}, {'page': 2, 'text': ''}]}, expected=409)
+        other = self.customer('其他客户')['id']
+        self.http(path.replace(self.cid, other), expected=404)
+
+        with patch.object(visual_documents, 'read_page', side_effect=[
+            visual_documents.RecognizedPage('PDF 原始文字', b'preview', [b'picture']),
+            visual_documents.RecognizedPage(errors=['暂时失败']),
+            visual_documents.RecognizedPage('第二页', b'second preview'),
+        ]) as recognize:
+            for page in (1, 1, 2):
+                self.http(retry, 'POST', {'retry_pages': [page]})
+            self.assertEqual(self.http(path)['recognition']['pages'][1]['status'], 'error')
+            self.http(retry, 'POST', {'retry_pages': [2]})
+            self.assertEqual(recognize.call_count, 3)
+        ready = self.http(retry, 'POST', {'pages': [
+            {'page': 1, 'text': '校对后的文字'}, {'page': 2, 'text': ''},
+        ]})['document']
+        self.assertEqual(ready['text'], '【第 1 页】\n校对后的文字')
+        self.assertEqual(ready['revision'], pending['revision'] + 1)
+        self.assertEqual([doc['id'] for doc in self.http(self.base + '/documents')['documents']], [ready['id']])
+        self.assertEqual(self.http(ready['original_url'], raw=True), original)
+        report = self.http(ready['recognition_url'])['recognition']
+        self.assertTrue(report['confirmed'])
+        self.assertEqual(report['pages'][1]['status'], 'no_text')
+        self.assertEqual(report['images'][0]['page'], 1)
+        image = report['images'][0]['download_url']
+        self.assertEqual(self.http(image, raw=True), b'picture')
+        self.http(image.replace(self.cid, other), expected=404)
+        revision = self.http(self.base + '/documents', 'POST', {
+            'filename': ready['filename'], 'text': '再校对', 'update_document_id': ready['id'],
+        })['document']
+        inherited = self.http(revision['recognition_url'])['recognition']['images'][0]
+        self.assertEqual(self.http(inherited['download_url'], raw=True), b'picture')
+
+    def test_confirmed_asset_only_import_finalizes_customer_without_text_source(self):
+        from uuid import uuid4
+        cid = str(uuid4())
+        self.http('/api/workbench/import-drafts', 'POST', {'id': cid})
+        finalize = f'/api/workbench/import-drafts/{cid}/finalize'
+        path = f'/api/workbench/clients/{cid}/documents'
+        page = {'page': 1, 'status': 'waiting', 'text': '', 'error': ''}
+        with patch.object(visual_documents, 'new_report', return_value=[page]):
+            pending = self.http(path, 'POST', {
+                'filename': '设备照片.png', 'content_b64': 'ZmFrZQ==', 'recognize': True,
+            })['document']
+        self.http(finalize, 'POST', {'name': '设备客户'}, expected=409)
+        retry = f"{path}/{pending['id']}/retry"
+        with patch.object(visual_documents, 'read_page', return_value=visual_documents.RecognizedPage(preview=b'photo')):
+            self.http(retry, 'POST', {'retry_pages': [1]})
+        ready = self.http(retry, 'POST', {'pages': [{'page': 1, 'text': ''}]})['document']
+        self.assertEqual(ready['text'], '')
+        self.assertFalse(self.http(finalize, 'POST', {'name': '设备客户'})['client']['import_draft'])
+        self.assertEqual(self.http(finalize, 'POST', {'name': '设备客户'})['client']['id'], cid)
+        task = self.http('/api/workbench/conversations', 'POST', {'client_id': cid})['conversation']
+        self.assertEqual(task['document_ids'], [])
 
     def test_keyword_links_reach_chat_zip_and_batch_only_from_main_term(self):
         document = self.document(text='资料支持西邦24用于橡胶与金属粘接。')['document']

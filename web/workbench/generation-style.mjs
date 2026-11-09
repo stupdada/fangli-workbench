@@ -25,7 +25,17 @@ export function articleWordCount(body) {
 }
 
 export function generationLengthField(options = {}) {
-  return `<label class="field wide"><span>本次篇幅</span><input class="input" data-option="length_hint" value="${e(options.length_hint || '')}" placeholder="例如：正文600—800字"><small>本次明确要求优先；未填写时采用客户偏好或平台默认。</small></label>`;
+  const hint = options.length_hint || '';
+  const presets = ['', '短篇', '长篇'];
+  const saved = !presets.includes(hint);
+  return `<label class="field wide" ${saved ? `data-key="saved-length-${e(hint)}"` : ''}>
+    <span>本次篇幅</span>
+    <select id="generation-length" data-option="length_hint">
+      ${presets.map(value => `<option value="${value}" ${value === hint ? 'selected' : ''}>${value || '自动'}</option>`).join('')}
+      ${saved ? `<option value="${e(hint)}" selected disabled>已保存的篇幅（${e(hint)}）</option>` : ''}
+    </select>
+    <small>自动按本次要求、客户偏好或平台默认决定。短篇和长篇按平台和发布形态调整。</small>
+  </label>`;
 }
 
 export function generationContextMarkup(context) {

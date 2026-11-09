@@ -15,20 +15,25 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from app import generator, parsers, grouping
-from . import provider, exports, configuration
+from . import provider, exports, configuration, visual_documents
 from .batch_video import BatchVideoClient
 from .creation_context import fact_findings, key, video_projection, video_style
 from .errors import Problem, Missing, Conflict, Forbidden
 from .native import LocalStore
 from .service import Service, ROOT
-from .storage import integer
+from .storage import integer, text_value
+from .topic_suggestions import recommend
 from .video_process import VideoProcess
 from .zip_evidence import article_metadata
 
 MAX_BODY = 12 * 1024 * 1024
+# JSON carries the original as Base64, plus a small amount of document metadata.
+MAX_DOCUMENT_BODY = 4 * ((visual_documents.MAX_PDF_BYTES + 2) // 3) + 1024 * 1024
 MAX_VIDEO_TRANSFER = 64 * 1024 * 1024
 WEB = ROOT / 'web'
 GEO_ROUTE = re.compile(r'/api/workbench/clients/([^/]+)/geo(?:/(articles|runs|plan)(?:/([^/]+)(/stop)?)?)?')
+DOCUMENT_UPLOAD_ROUTE = re.compile(r'/api/workbench/clients/([^/]+)/documents')
+WRITING_LAB_ROUTE = re.compile(r'/api/workbench/writing-lab/([a-f0-9-]+)(?:/(next|events|vote|undo|report|pause|resume|analysis)(?:/([a-f0-9-]+))?)?')
 
 
 class DatabaseLease:
@@ -83,6 +88,7 @@ class Server(ThreadingHTTPServer):
 
     def serve_forever(self, poll_interval=.5):
         self.service.batches.boot()
+        self.service.writing_lab.analysis.boot()
         return super().serve_forever(poll_interval)
 
     def server_close(self):
@@ -141,19 +147,20 @@ class Handler(BaseHTTPRequestHandler):
         lengths = self.headers.get_all('Content-Length', [])
         if len(lengths) > 1 or lengths and not lengths[0].isdigit(): raise Problem('请求长度不正确')
 
-    def _raw_body(self):
+    def _raw_body(self, limit):
         try: length = int(self.headers.get('Content-Length') or 0)
         except ValueError: raise Problem('请求长度不正确') from None
-        if length < 0 or length > MAX_BODY: raise Problem('请求内容过大，单文件最多8MB')
+        if length < 0 or length > limit: raise Problem('请求内容超过接口大小限制')
         self.connection.settimeout(30)
         raw = self.rfile.read(length)
         if len(raw) != length: raise Problem('请求体未完整收到')
         return raw
 
-    def _body(self):
+    def _body(self, limit):
         if self.headers.get('Content-Type', '').split(';', 1)[0].strip().lower() != 'application/json':
             raise Problem('请求需使用application/json')
-        try: value = json.loads(self._raw_body().decode('utf-8'), parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+        raw = self._raw_body(limit)
+        try: value = json.loads(raw.decode('utf-8'), parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
         except (UnicodeError, ValueError): raise Problem('JSON需为完整的UTF-8内容') from None
         if not isinstance(value, dict): raise Problem('JSON请求体需为对象')
         return value
@@ -178,7 +185,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.static(path)
             if path.startswith(('/api/articles', '/api/plans', '/api/materials')):
                 raise Forbidden('请通过工作台稿件与版本接口修改内容')
-            return self.route_write(self.command, path, self._body())
+            limit = MAX_DOCUMENT_BODY if self.command == 'POST' and DOCUMENT_UPLOAD_ROUTE.fullmatch(path) else MAX_BODY
+            return self.route_write(self.command, path, self._body(limit))
         except Problem as exc:
             self._send(exc.status, json.dumps({'ok': False, 'error': str(exc)}, ensure_ascii=False).encode('utf-8'))
         except llm_errors() as exc:
@@ -193,6 +201,7 @@ class Handler(BaseHTTPRequestHandler):
     def static(self, path):
         if path in ('/workbench/zip', '/workbench/zip/'): relative = 'workbench/zip/index.html'
         elif path in ('/workbench/geo', '/workbench/geo/'): relative = 'workbench/geo/index.html'
+        elif path in ('/workbench/writing-lab', '/workbench/writing-lab/'): relative = 'workbench/writing-lab/index.html'
         else: relative = path.removeprefix('/static/').lstrip('/')
         file = (WEB / relative).resolve()
         if not file.is_relative_to(WEB.resolve()) or any(s.startswith('.') for s in Path(relative).parts): raise Forbidden('路径不正确')
@@ -210,6 +219,20 @@ class Handler(BaseHTTPRequestHandler):
 
     def route_get(self, path, query):
         s, ws = self.service, self.service.ws
+        if path == '/api/workbench/writing-lab':
+            return self._json({'batches': s.writing_lab.batches(), 'clients': [
+                {'id': row['id'], 'name': row['name']} for row in ws.clients()],
+                'platforms': [{'id': p['id'], 'name': p['name']} for p in s.store.list_platforms()
+                              if p['enabled'] and '图文' in p['formats']]})
+        if match := WRITING_LAB_ROUTE.fullmatch(path):
+            batch, action, extra = match.groups()
+            if not action: return self._json({'batch': s.writing_lab.summary(batch)})
+            if extra: raise Missing('训练台接口不存在')
+            if action == 'next': return self._json({'pair': s.writing_lab.next_pair(batch, query.get('kind', ['fragment'])[0],
+                                                                                 query.get('prefer', [None])[0])})
+            if action == 'report': return self._json({'results': s.writing_lab.report(batch), 'analysis': s.writing_lab.analysis.report(batch)})
+            if action == 'events': return self.writing_lab_events(batch)
+            raise Missing('训练台接口不存在')
         if path == '/api/workbench/geo/connection':
             return self._json({'provider': s.geo.provider.info()})
         geo = GEO_ROUTE.fullmatch(path)
@@ -251,11 +274,21 @@ class Handler(BaseHTTPRequestHandler):
             if action == 'revisions': return self._json({'documents': ws.files.revisions(cid, did)})
             body, ctype, name = ws.files.download(cid, did, action == 'original')
             return self._send(200, body, ctype, {'Content-Disposition': "attachment; filename*=UTF-8''" + urllib.parse.quote(name)})
+        match = re.fullmatch(r'/api/workbench/clients/([^/]+)/documents/([^/]+)/recognition(?:/(pages|images)/([0-9-]+))?', path)
+        if match:
+            cid, did, kind, image_id = match.groups()
+            if not kind:
+                return self._json({'recognition': ws.files.recognition(cid, did)})
+            body, ctype, name = ws.files.recognition_image(cid, did, kind, image_id)
+            headers = {'X-Content-Type-Options': 'nosniff'}
+            if query.get('download') == ['1']:
+                headers['Content-Disposition'] = "attachment; filename*=UTF-8''" + urllib.parse.quote(name)
+            return self._send(200, body, ctype, headers)
         if path == '/api/workbench/provider-models': return self._json({'provider_models': s.refresh_models()})
         if path in ('/api/models', '/api/platforms', '/api/risks', '/api/prefs'):
             key = path.rsplit('/', 1)[-1]
             return self._json({key: {'models': s.store.list_models, 'platforms': s.store.list_platforms, 'risks': s.store.list_risks, 'prefs': s.store.get_prefs}[key]()})
-        match = re.fullmatch(r'/api/workbench/clients/([^/]+)/documents', path)
+        match = DOCUMENT_UPLOAD_ROUTE.fullmatch(path)
         if match: return self._json({'documents': ws.files.list(match[1], removed=query.get('removed') == ['1'])})
         match = re.fullmatch(r'/api/workbench/conversations/([^/]+)', path)
         if match: return self._json(s.view(match[1]))
@@ -299,6 +332,20 @@ class Handler(BaseHTTPRequestHandler):
 
     def route_write(self, method, path, body):
         s, ws = self.service, self.service.ws
+        if path == '/api/workbench/writing-lab' and method == 'POST':
+            return self._json(s.writing_lab.start(body), 202)
+        if method == 'POST' and (match := WRITING_LAB_ROUTE.fullmatch(path)):
+            batch, action, extra = match.groups()
+            reply = {}
+            if action == 'vote' and extra: s.writing_lab.vote(batch, extra, body)
+            elif action == 'undo' and not extra: reply['pair_id'] = s.writing_lab.undo(batch, body.get('kind'))
+            elif action == 'pause' and not extra: s.writing_lab.pause(batch)
+            elif action == 'resume' and not extra: s.writing_lab.resume(batch)
+            elif action == 'analysis' and not extra:
+                if set(body) - {'retry'} or type(body.get('retry', False)) is not bool: raise Problem('分析请求格式不正确')
+                reply['analysis_id'] = s.writing_lab.analysis.request(batch, retry=body.get('retry', False))
+            else: raise Missing('训练台接口不存在')
+            return self._json({'batch': s.writing_lab.summary(batch), **reply})
         if path == '/api/workbench/geo/connection' and method == 'PUT':
             return self._json({'provider': s.geo.provider.configure(body)})
         geo = GEO_ROUTE.fullmatch(path)
@@ -334,6 +381,12 @@ class Handler(BaseHTTPRequestHandler):
             if set(body) - {'id', 'name'}: raise Problem('导入草稿包含未知字段')
             with s.guard:
                 return self._json({'client': ws.start_import(body.get('id'), body.get('name', ''))})
+        match = re.fullmatch(r'/api/workbench/import-drafts/([^/]+)/finalize', path)
+        if match and method == 'POST':
+            if set(body) != {'name'}:
+                raise Problem('仅需提交客户名称')
+            with s.guard:
+                return self._json({'client': ws.files.finalize_asset_draft(match[1], body['name'])})
         match = re.fullmatch(r'/api/workbench/clients/([^/]+)/(archive|restore)', path)
         if match and method == 'POST':
             if body: raise Problem('归档或恢复客户无需额外字段')
@@ -347,12 +400,14 @@ class Handler(BaseHTTPRequestHandler):
         if match and method == 'POST':
             if set(body) - {'filename', 'sha256', 'text_digest'}: raise Problem('资料检查含未知字段')
             return self._json(ws.files.check(match[1], body.get('filename'), body.get('sha256', ''), body.get('text_digest', '')))
-        match = re.fullmatch(r'/api/workbench/clients/([^/]+)/documents', path)
+        match = DOCUMENT_UPLOAD_ROUTE.fullmatch(path)
         if match and method == 'POST':
             with s.guard:
                 return self._json(ws.files.import_document(match[1], body))
         match = re.fullmatch(r'/api/workbench/clients/([^/]+)/documents/([^/]+)/(restore|retry)', path)
         if match and method == 'POST':
+            if match[3] == 'retry' and set(body) == {'retry_pages'}:
+                return self._json(ws.files.retry_import(match[1], match[2], body))
             with s.guard:
                 if match[3] == 'retry': return self._json(ws.files.retry_import(match[1], match[2], body))
                 add = body.get('add_to_defaults', False)
@@ -366,6 +421,21 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/api/workbench/batches/preflight' and method == 'POST':
             if set(body) != {'items'}: raise Problem('预检需包含items')
             return self._json(s.batches.preflight(body['items']))
+        if path == '/api/workbench/batches/topics' and method == 'POST':
+            return self._json(s.batches.topics(body))
+        if path == '/api/workbench/video-topics' and method == 'POST':
+            if set(body) - {'count'} != {'source', 'template', 'seen'} or body['template'] not in ('process', 'intro', 'qa', 'daily', 'typography'):
+                raise Problem('请选择短视频来源和模板')
+            source = body['source']
+            fields = {'client_id', 'conversation_id', 'article_id', 'version_id', 'document_ids'}
+            if not isinstance(source, dict) or not source.get('client_id') or set(source) - fields or not all(
+                    isinstance(value, str) for value in source.values()):
+                raise Problem('短视频来源格式不正确')
+            context = self.video_context({name: [value] for name, value in source.items()})
+            if not context.get('source_article') and not any(doc['text'].strip() for doc in context['documents']):
+                raise Problem('请先选择本次使用的资料')
+            slots = [{'id': '1', 'kind': 'video', 'template': body['template']}]
+            return self._json({'topics': recommend(s, context, slots, body['seen'], count=body.get('count', 1))})
         if path == '/api/workbench/batches' and method == 'POST': return self._json({'batch': s.batches.submit(body)})
         match = re.fullmatch(r'/api/workbench/batches/([^/]+)/videos/([^/]+)/retry', path)
         if match and method == 'POST':
@@ -378,7 +448,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({'batch': s.batches.resume(match[1], body)})
         if path == '/api/workbench/conversations' and method == 'POST':
             return self._json({'conversation': s.create_conversation(body.get('client_id'),
-                document_ids=body.get('document_ids'), creation_id=body.get('creation_id'))})
+                document_ids=body.get('document_ids'), creation_id=body.get('creation_id'),
+                mode=body.get('mode', 'chat'))})
         match = re.fullmatch(r'/api/workbench/conversations/([^/]+)/task-state', path)
         if match and method == 'PUT':
             return self._json({'task': s.set_task_state(match[1], body)})
@@ -399,13 +470,30 @@ class Handler(BaseHTTPRequestHandler):
             except (parsers.Unsupported, parsers.ParseError) as exc: raise Problem(str(exc)) from None
             return self._json({**value, 'filename': name})
         if path == '/api/aliases' and method == 'POST': return self._json({'aliases': grouping.find_aliases(body.get('keywords') or [])})
-        match = re.fullmatch(r'/api/workbench/conversations/([^/]+)/(draft|chat|start|stop|write-one)', path)
+        match = re.fullmatch(r'/api/workbench/conversations/([^/]+)/(draft|chat|start|stop|write-one|topics)', path)
         if match:
             ident, action = match[1], match[2]
             if action == 'draft' and method == 'PUT': return self._json({'conversation': s.save_draft(ident, body.get('options'), body.get('document_ids'), body.get('mode'), body.get('followup'))})
             if action == 'chat' and method == 'POST': return self._json({'operation_id': s.chat(ident, body.get('text'), body.get('document_ids'), body.get('followup'), body.get('options'))})
             if action == 'start' and method == 'POST': return self._json(s.start(ident, body.get('options')))
             if action == 'write-one' and method == 'POST': return self._json(s.start(ident, body.get('options'), one=True))
+            if action == 'topics' and method == 'POST':
+                if set(body) - {'count', 'direction'} != {'seen'}: raise Problem('请提供已看过的选题')
+                direction = text_value(body.get('direction', ''), '选题方向', 20000).strip()
+                with s.guard:
+                    conv = ws.conversation(ident)
+                    dialogue = conv['mode'] == 'chat'
+                    brief = s.normalize_options({}, conv['brief'])
+                    if direction and not dialogue:
+                        brief['note'] = '\n'.join(filter(None, (direction, brief.get('note'))))
+                    platforms = s.store.list_platforms()
+                    selected = {entry['platform_id'] for entry in brief.get('selections', []) if entry['count']}
+                    context = s.freeze_creation_context(conv['client_id'], {
+                        'brief': brief, 'documents': ws.selected_documents(conv), 'platforms': platforms})
+                slots = [{'id': '1', 'kind': 'article',
+                          'platforms': [p['name'] for p in platforms if p['enabled'] and p['id'] in selected]}]
+                return self._json({'topics': recommend(s, context, slots, body['seen'],
+                                                       count=body.get('count', 1), dialogue=dialogue)})
             if action == 'stop' and method == 'POST': return self._json(s.stop(ident))
         match = re.fullmatch(r'/api/workbench/operations/([^/]+)/stop', path)
         if match and method == 'POST': return self._json(s.cancel_operation(match[1]))
@@ -509,6 +597,36 @@ class Handler(BaseHTTPRequestHandler):
             context = s.freeze_creation_context(cid, {'brief': brief, 'documents': docs, 'platforms': s.store.list_platforms()})
             result.update(video_projection(context))
         return result
+
+    def writing_lab_events(self, batch):
+        lab = self.service.writing_lab
+        lab.summary(batch)
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/event-stream; charset=utf-8')
+        self.send_header('Cache-Control', 'no-cache')
+        self.send_header('Connection', 'close')
+        self.end_headers()
+        if self.command == 'HEAD': return
+        revision, previous = -1, None
+        try:
+            while not self.service.closed:
+                with lab.changed:
+                    changed = lab.changed.wait_for(lambda: lab.revision != revision or self.service.closed, timeout=15)
+                    revision = lab.revision
+                    state = lab.summary(batch) if changed else None
+                if state is not None and state != previous:
+                    frame = 'data: ' + json.dumps(state, ensure_ascii=False) + '\n\n'
+                    previous = state
+                else:
+                    frame = ': heartbeat\n\n'
+                self.wfile.write(frame.encode('utf-8'))
+                self.wfile.flush()
+                if (state is not None and state['status'] != 'running' and
+                        (state['analysis'] or {}).get('status') not in ('queued', 'running')): break
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            self.close_connection = True
 
     def interview_sse(self, ident):
         service = self.service
