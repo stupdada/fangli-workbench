@@ -4,148 +4,256 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#ffffff">
-  <meta name="description" content="方立 GEO 内部使用指南：准备客户资料、确定内容问题、创作、审阅和交付。">
-  <title>从这里开始 · 方立 GEO 使用指南</title>
+  <meta name="description" content="从新建内容开始，用分步演示写完并导出第一篇稿件。">
+  <title>方立 GEO 工作台使用指南</title>
+  <link rel="stylesheet" href="/workbench/palette.css">
   <link rel="stylesheet" href="./guide.css">
-  <script src="/assets/gsap.min.js" defer></script>
-  <script src="/assets/ScrollTrigger.min.js" defer></script>
   <script type="module" src="./guide.js"></script>
 </head>
 <body>
 <a class="skip" href="#customers">跳到使用步骤</a>
 <svg class="svg-library" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><defs>
-  <symbol id="mark" viewBox="0 0 40 40"><circle cx="20" cy="20" r="17"/><path d="M14 30V10h15M14 19h11M23 29h5"/></symbol>
   <symbol id="arrow" viewBox="0 0 24 24"><path d="M4 12h16m-6-6 6 6-6 6"/></symbol>
-  <symbol id="check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
   <symbol id="file" viewBox="0 0 24 24"><path d="M14 3H5v18h14V8zM14 3v5h5M9 12h6M9 16h6"/></symbol>
-  <symbol id="plus" viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/></symbol>
-  <symbol id="send" viewBox="0 0 24 24"><path d="M12 20V4m-6 6 6-6 6 6"/></symbol>
 </defs></svg>
 <header class="site-nav">
-  <a class="brand" href="#top" aria-label="方立 GEO 使用指南首页"><svg><use href="#mark"/></svg><b>方立</b><span>GEO · 使用指南</span></a>
-  <nav aria-label="指南章节"><a href="#customers">准备资料</a><a href="#writing">开始创作</a><a href="#review">修改交付</a></nav>
+  <a class="brand" href="#top" aria-label="方立 GEO 使用指南首页"><img src="/assets/ferlytech-logo.svg" width="418" height="77" alt="方立科技"></a>
   <a class="button small" href="/workbench/zip/index.html">进入工作台 <svg><use href="#arrow"/></svg></a>
   <div class="reading-progress" aria-hidden="true"></div>
 </header>
 <main>
   <section class="hero" id="top">
     <div class="hero-copy">
-      <p class="eyebrow">给接单后真正动手的人</p>
-      <h1>接到客户，<br>从这里开始。</h1>
-      <p class="hero-description">客户资料放哪里？今天写什么？稿子怎么改？<br>跟着一个例子走一遍，就知道了。</p>
-      <div class="actions"><a class="button" href="#customers">从第一步看起 <svg><use href="#arrow"/></svg></a><a class="text-link" href="/workbench/zip/index.html?entry=tasks">继续上次的任务 <span>↗</span></a></div>
+      <p class="eyebrow">方立 GEO 工作台使用指南</p>
+      <h1>从客户资料<br>到第一篇稿件</h1>
+      <p class="hero-description">从「新建内容」开始，用一家咖啡店的例子练习选客户、写稿、改稿和导出。</p>
+      <div class="actions"><a class="button" href="#customers">跟着写第一篇 <svg><use href="#arrow"/></svg></a><a class="text-link" href="/workbench/zip/index.html?entry=tasks">查找任务 <span aria-hidden="true">↗</span></a></div>
     </div>
-    <div class="hero-stage" aria-label="示例：青栈面包咖啡的资料、目标问题与内容稿件">
+    <div class="hero-stage" role="group" aria-label="青栈面包咖啡的资料、选题和稿件">
       <div class="orbit orbit-one" aria-hidden="true"></div><div class="orbit orbit-two" aria-hidden="true"></div>
-      <article class="hero-sheet sheet-source"><span class="sheet-kicker">01 / 客户资料</span><svg class="document-icon"><use href="#file"/></svg><h3>青栈面包咖啡</h3><p>门店介绍<br>产品与服务<br>实际供应范围</p><span class="sheet-foot">把事实准备好。</span></article>
-      <article class="hero-sheet sheet-question"><span class="sheet-kicker">02 / 目标问题</span><span class="question-glyph" aria-hidden="true">?</span><h3>企业下午茶，<br>怎么选？</h3><div class="mini-tags"><span>配送范围</span><span>人数安排</span></div><span class="sheet-foot">从客户业务里找问题。</span></article>
-      <article class="hero-sheet sheet-draft"><span class="sheet-kicker">03 / 内容稿件</span><span class="draft-status"><i></i> 示例稿</span><h3>订下午茶前，<br>先确认三件事。</h3><p>先问配送能不能到，再确认人数和时间，最后看餐食搭配。</p><span class="sheet-foot">写清楚，再交付。</span></article>
-      <span class="example-note">示例客户 · 页面演示不创建真实任务</span>
+      <article class="hero-sheet sheet-source"><span class="sheet-kicker">01 / 客户资料</span><h3>青栈面包咖啡</h3><p>门店介绍<br>下午茶菜单<br>订购与配送说明</p></article>
+      <article class="hero-sheet sheet-question"><span class="sheet-kicker">02 / 文章选题</span><h3>公司下午茶怎么订？</h3><span class="question-glyph" aria-hidden="true">?</span></article>
+      <article class="hero-sheet sheet-draft"><span class="sheet-kicker">03 / 稿件</span><span class="draft-status"><i></i> 示例稿</span><h3>公司下午茶<br>订购清单</h3><p>把公司地址、人数和希望送达的时间发给门店，请店员确认能否配送，再选餐食。</p></article>
+      <span class="example-note">青栈面包咖啡为教程示例</span>
     </div>
-    <a class="scroll-hint" href="#customers"><span>往下看，开始第一步</span><span aria-hidden="true">↓</span></a>
   </section>
 
-  <div class="chapter-bar" aria-label="阅读进度"><span>方立怎么用</span><nav><a href="#customers" data-chapter="customers">01 资料</a><a href="#questions" data-chapter="questions">02 问题</a><a href="#writing" data-chapter="writing">03 创作</a><a href="#review" data-chapter="review">04 修改</a><a href="#reuse" data-chapter="reuse">05 交付与复用</a></nav></div>
+  <div class="chapter-bar">
+    <span>使用指南</span>
+    <nav aria-label="指南章节">
+      <a href="#customers" data-chapter="customers" aria-current="location">新建内容</a>
+      <a href="#writing" data-chapter="writing">分步演示</a>
+      <a href="#chat" data-chapter="chat">对话创作</a>
+      <a href="#reference" data-chapter="reference">常用操作</a>
+    </nav>
+  </div>
 
   <section class="chapter customer-chapter" id="customers" aria-labelledby="customers-heading">
-    <div class="chapter-copy reveal"><p class="eyebrow">01 / 第一次接手客户</p><h2 id="customers-heading">资料放好，<br>以后都能用。</h2><p>新建客户时上传或粘贴产品介绍和服务说明，核对识别结果后保存。后面创建任务，可以继续用这些资料。</p><p class="secondary">资料有更新就保存新修订，旧任务仍能追溯原来的内容。</p><a class="text-link" href="/workbench/zip/index.html?area=customers">去整理客户资料 <svg><use href="#arrow"/></svg></a></div>
-    <div class="customer-stage stage reveal">
-      <div class="stage-heading"><span>客户资料</span><span class="demo-label">操作示意</span></div>
-      <div class="customer-identity"><span class="avatar">青</span><div><h3>青栈面包咖啡</h3><p>社区门店 · 面包、咖啡与下午茶</p></div><span class="check-disc"><svg><use href="#check"/></svg></span></div>
-      <div class="document-stack"><div class="document-row"><svg><use href="#file"/></svg><div><strong>门店与服务介绍.md</strong><span>服务内容与适用范围</span></div><i>已关联</i></div><div class="document-row"><svg><use href="#file"/></svg><div><strong>下午茶订购说明.pdf</strong><span>以客户确认的资料为准</span></div><i>已关联</i></div></div>
-      <div class="material-route"><span>上传文件</span><span>粘贴资料</span><span>从库中选择</span></div>
-      <div class="stage-caption"><span class="caption-dot"></span>客户档案、资料、常用方案，集中放在客户页。</div>
+    <div class="chapter-copy">
+      <p class="eyebrow">进入创作</p>
+      <h2 id="customers-heading">从新建内容开始</h2>
+      <p>在工作台开始页点「新建内容」。先确定给谁写，页面顶部的创作方式选「分步」。第一次进入时会默认选中它。</p>
+      <div class="actions">
+        <a class="button" href="#writing">开始分步演示 <svg aria-hidden="true"><use href="#arrow"/></svg></a>
+        <a class="text-link" href="/workbench/zip/index.html?area=new">打开「新建内容」</a>
+      </div>
     </div>
-  </section>
-
-  <section class="question-chapter" id="questions" aria-labelledby="questions-heading">
-    <div class="question-heading reveal"><p class="eyebrow">02 / 写之前，先想清楚</p><h2 id="questions-heading">用户会怎么问？<br><span>内容就从这里展开。</span></h2><p>做 GEO，先把客户业务对应到具体问题。<br>把问题讲清楚，也把品牌、产品和服务之间的关系讲清楚。</p></div>
-    <div class="question-lab">
-      <div class="business-node"><span class="avatar">青</span><div><strong>青栈面包咖啡</strong><span>实际业务：企业下午茶</span></div></div>
-      <div class="branch-lines" aria-hidden="true"><i></i><i></i><i></i></div>
-      <div class="question-choices" role="group" aria-label="选择示例问题"><button type="button" class="question-choice active" aria-pressed="true" data-question="0">企业下午茶，怎么选？<span>先讲清楚选择依据</span></button><button type="button" class="question-choice" aria-pressed="false" data-question="1">附近门店能送到公司吗？<span>说清服务范围与条件</span></button><button type="button" class="question-choice" aria-pressed="false" data-question="2">团队人数多，怎么安排？<span>回答实际订购问题</span></button></div>
-      <div class="question-answer" aria-live="polite"><span>写作方向</span><p id="question-direction">围绕人数、送达时间和餐食搭配，介绍企业下午茶的选择方法。</p><div class="keyword-chips" id="question-keywords"><span>企业下午茶</span><span>下午茶搭配</span></div></div>
+    <div class="customer-stage stage">
+      <div class="stage-heading"><span>新建内容</span><span class="demo-label">两种情况</span></div>
+      <div class="customer-path">
+        <h3>客户已经建档</h3>
+        <p>在「给谁写」里选客户，例如青栈面包咖啡，然后点「继续创作」。进了任务，再核对这次要用的资料和平台安排。</p>
+      </div>
+      <div class="customer-path">
+        <h3>客户还没建档</h3>
+        <p>点「新建客户」，上传文件或粘贴资料，再点「识别资料」。PDF 和图片可以对着原页校对，最后一份点「确认并继续」，工作台就会接着整理档案。整理完点「确认并继续创作」，新任务会带上确认过的资料和关键词。</p>
+        <p class="demo-helper">手头还没资料时，可以先填客户名称，点「保存并继续创作」，之后再补。</p>
+      </div>
     </div>
-    <p class="question-foot">点击问题，看看写作方向怎么变化。选定主题后，把核心词填入“目标关键词”。</p>
   </section>
 
   <section class="writing-chapter" id="writing" aria-labelledby="writing-heading">
-    <div class="writing-intro reveal"><p class="eyebrow">03 / 每次创作</p><h2 id="writing-heading">今天写什么，<br>直接告诉它。</h2><p>选客户，说要求，确认平台与篇数。<br>常用安排沿用客户配置，这次有变化再调整。</p></div>
-    <div class="writing-layout">
-      <div class="writing-instructions">
-        <article class="instruction"><span class="instruction-number">1</span><h3>说清这次的要求</h3><p>例如：“给青栈写一篇企业下午茶介绍，讲清订购前要确认什么。”点“本次安排”，可以调整关键词、平台和篇数。</p></article>
-        <article class="instruction"><span class="instruction-number">2</span><h3>两种方式，按习惯选</h3><p>对话创作适合边聊边补充；分步创作把资料、关键词和平台安排依次列开。切换时保留同一个任务。</p></article>
-        <article class="instruction"><span class="instruction-number">3</span><h3>需要讨论，就打开“追问”</h3><p>要求已经明确，可以直接开始写作。生成过程中可以看进展、阅读稿件，也能继续补充要求。</p></article>
-        <div class="actions vertical"><a class="text-link" href="/workbench/index.html">打开对话创作 <svg><use href="#arrow"/></svg></a><a class="text-link" href="/workbench/zip/index.html">打开分步创作 <svg><use href="#arrow"/></svg></a></div>
+    <div class="writing-intro">
+      <h2 id="writing-heading">跟着分步写完第一篇</h2>
+      <p>给青栈面包咖啡写一篇知乎图文。按每一步底部的按钮往下走，也可以点步骤名回看。</p>
+    </div>
+    <div class="demo-workbench stage" id="writing-demo">
+      <div class="stage-heading">
+        <span><svg viewBox="94 43.5 68 45" aria-hidden="true"><use href="/assets/ferly-mark.svg#mark"/></svg> 青栈面包咖啡</span>
+        <span class="demo-label">教程演示</span>
       </div>
-      <div class="demo-workbench stage" id="writing-demo">
-        <div class="stage-heading"><span><svg><use href="#mark"/></svg> 青栈 · 企业下午茶</span><span class="demo-label">可点击演示</span></div>
-        <div class="demo-tabs" role="tablist" aria-label="演示创作方式"><button type="button" role="tab" aria-selected="true" aria-controls="demo-chat" id="tab-chat" data-demo-mode="chat" tabindex="0">对话创作</button><button type="button" role="tab" aria-selected="false" aria-controls="demo-steps" id="tab-steps" data-demo-mode="steps" tabindex="-1">分步创作</button></div>
-        <div id="demo-chat" role="tabpanel" aria-labelledby="tab-chat"><div class="demo-conversation"><p class="demo-user">写一篇企业下午茶介绍，讲清订购前要确认什么。</p><div class="demo-response"><span class="response-mark">方立</span><p>可以围绕人数、配送范围和送达时间来写。具体条件以已选资料为准。</p></div></div><div class="demo-composer"><svg><use href="#plus"/></svg><span>补充你的想法…</span><span class="demo-plan">公众号 · 官方 1 篇</span><span class="demo-send"><svg><use href="#send"/></svg></span></div><div class="demo-composer-foot"><span>☑ 追问</span><span>Shift + Enter 换行</span></div></div>
-        <div id="demo-steps" role="tabpanel" aria-labelledby="tab-steps" hidden><ol class="demo-stepper"><li class="active">1 资料与关键词</li><li>2 平台与表达</li><li>3 生成确认</li><li>4 稿件编辑</li></ol><div class="demo-step-columns"><div><span class="field-name">客户资料</span><p><svg><use href="#file"/></svg> 下午茶订购说明.pdf</p></div><div><span class="field-name">目标关键词</span><div class="keyword-chips"><span>企业下午茶</span><span>下午茶搭配</span></div></div></div><div class="demo-note"><span class="field-name">本次要求</span><p>面向公司行政人员，介绍订购前需要确认的事项。</p></div><p class="demo-step-note">这里展示分步布局；真实工作台中可继续配置和生成。</p></div>
-        <div class="demo-playbar"><span id="play-status" role="status">看看生成后怎么阅读稿件</span><button type="button" class="button small" id="play-writing">播放写作演示 <span aria-hidden="true">↗</span></button></div>
-        <div class="demo-output" id="demo-output" hidden><div class="output-status"><i></i><span id="output-status">示例稿 · 已生成</span><button type="button" id="close-output" aria-label="收起演示稿件">×</button></div>
-          <svg id="demo-paper-scene" hidden viewBox="0 0 480 154" role="img" aria-label="资料整理成稿，审阅后形成公众号和知乎示例稿">
-            <rect x=".5" y=".5" width="479" height="153" rx="13" fill="#f6f7fa" stroke="#e6e8ef"/>
-            <path d="M115 73h52m126 0h49" stroke="#9aaacb" stroke-width="1.5" stroke-dasharray="3 4"/>
-            <g data-paper-part="source-back">
-              <rect x="44" y="31" width="56" height="69" rx="5" fill="#e8edf7" stroke="#a1aac0"/>
-            </g>
-            <g data-paper-part="source">
-              <path d="M42 37h42l13 13v54a4 4 0 0 1-4 4H42a4 4 0 0 1-4-4V41a4 4 0 0 1 4-4Z" fill="white" stroke="#929cb1"/>
-              <path d="M84 38v12h12M50 65h34m-34 10h28m-28 10h31" fill="none" stroke="#66718a" stroke-linecap="round"/>
-            </g>
-            <g data-paper-part="draft">
-              <rect x="177" y="22" width="103" height="94" rx="6" fill="white" stroke="#929cb1"/>
-              <path d="M192 43h48m-48 12h70m-70 12h58m-58 21h63m-63 10h41" stroke="#66718a" stroke-width="1.3" stroke-linecap="round"/>
-              <path data-paper-part="mark" d="M191 72q33 2 66-1" fill="none" stroke="#315dc0" stroke-width="2" stroke-linecap="round"/>
-            </g>
-            <g data-paper-part="output-back">
-              <rect x="378" y="32" width="65" height="75" rx="5" fill="#e8edf7" stroke="#a1aac0"/>
-              <path d="M386 49h48" stroke="#a1aac0"/>
-              <text x="410" y="45" fill="#374761" text-anchor="middle" font-size="11">知乎</text>
-            </g>
-            <g data-paper-part="output-front">
-              <rect x="354" y="51" width="68" height="67" rx="5" fill="white" stroke="#929cb1"/>
-              <text x="388" y="72" fill="#315dc0" text-anchor="middle" font-size="11" font-weight="600">公众号</text>
-              <path d="M367 86h42m-42 9h34m-34 9h38" stroke="#66718a" stroke-linecap="round"/>
-            </g>
-            <g fill="#475267" font-size="13" text-anchor="middle">
-              <text x="68" y="137">选取资料</text><text x="228" y="137">整理与审阅</text><text x="397" y="137">多平台示例</text>
-            </g>
-          </svg>
-          <h3>订下午茶前，<br>先确认这三件事。</h3><p>先确认配送范围，再沟通人数与送达时间，最后根据团队口味搭配餐食。</p><h4>先问能不能送到，再挑餐食。</h4><p>不同门店的配送条件可能不同，订购前应向门店确认公司地址是否在服务范围内。</p><p class="output-note">示例内容 · 实际稿件生成后可人工编辑，或提出修改要求。</p></div>
+      <div class="demo-tabs" role="tablist" aria-label="分步演示">
+        <button type="button" role="tab" aria-selected="true" aria-controls="demo-preparation" id="tab-preparation" data-demo-step="preparation"><span>1</span>资料与关键词</button>
+        <button type="button" role="tab" aria-selected="false" aria-controls="demo-platform" id="tab-platform" data-demo-step="platform" tabindex="-1"><span>2</span>平台安排</button>
+        <button type="button" role="tab" aria-selected="false" aria-controls="demo-generation" id="tab-generation" data-demo-step="generation" tabindex="-1"><span>3</span>生成</button>
+        <button type="button" role="tab" aria-selected="false" aria-controls="demo-editor" id="tab-editor" data-demo-step="editor" tabindex="-1"><span>4</span>编辑与导出</button>
       </div>
+
+      <div class="demo-panels">
+        <section class="demo-panel" id="demo-preparation" role="tabpanel" aria-labelledby="tab-preparation">
+          <div class="demo-panel-intro">
+            <h3 class="demo-heading" tabindex="-1">选资料，写清这篇要回答什么</h3>
+            <p>工作台会带入客户已有的资料和关键词。先检查选中的文件，按这篇文章的需要增减。</p>
+          </div>
+          <dl class="demo-fields">
+            <div><dt>本次选用资料</dt><dd><svg aria-hidden="true"><use href="#file"/></svg> 下午茶订购说明.pdf</dd></div>
+            <div><dt>目标搜索关键词</dt><dd>企业下午茶</dd></div>
+            <div><dt>本次方向与补充要求</dt><dd>写给负责订餐的公司行政。讲清订下午茶前，要把哪些信息发给门店。</dd></div>
+          </dl>
+          <p class="demo-helper">关键词填业务词，例如「企业下午茶」。文章题目可以到生成时再选。</p>
+          <div class="demo-actions"><button type="button" class="button" data-next-step="platform">下一步：平台安排 <svg aria-hidden="true"><use href="#arrow"/></svg></button></div>
+        </section>
+
+        <section class="demo-panel" id="demo-platform" role="tabpanel" aria-labelledby="tab-platform" hidden>
+          <div class="demo-panel-intro">
+            <h3 class="demo-heading" tabindex="-1">核对发到哪里、写几篇</h3>
+            <p>客户有「常用方案」时，这里会带出已有安排。要调整，就点「选择平台」，再按平台核对账号、篇数和发布形态。</p>
+          </div>
+          <dl class="demo-fields demo-platform-fields" aria-label="本次平台安排">
+            <div><dt>平台</dt><dd>知乎</dd></div>
+            <div><dt>账号</dt><dd>官方号</dd></div>
+            <div><dt>篇数</dt><dd>1 篇</dd></div>
+            <div><dt>发布形态</dt><dd>图文</dd></div>
+          </dl>
+          <p class="demo-helper">这里改的是本次任务。以后也要沿用的安排，在客户页的「常用方案」里改。</p>
+          <div class="demo-actions">
+            <button type="button" class="text-link" data-next-step="preparation">上一步</button>
+            <button type="button" class="button" data-next-step="generation"><span id="demo-start-label">开始写作</span> <svg aria-hidden="true"><use href="#arrow"/></svg></button>
+          </div>
+        </section>
+
+        <section class="demo-panel" id="demo-generation" role="tabpanel" aria-labelledby="tab-generation" hidden>
+          <div class="demo-panel-intro">
+            <h3 class="demo-heading" tabindex="-1">确认选题，查看生成进度</h3>
+            <p>点「开始写作」时，如果还没选题，工作台会先推荐选题。可以「看备选」或「换一批」，选好再开始。</p>
+          </div>
+          <div class="demo-inset" id="demo-topic">
+            <fieldset class="demo-topics">
+              <legend>选择本次文章选题</legend>
+              <p>关键词都是「企业下午茶」。选题决定这篇先回答哪个问题。</p>
+              <label><input type="radio" name="demo-topic" value="ordering" checked><span><strong>公司下午茶怎么订？</strong><small>给第一次订餐的人一份清单。</small></span></label>
+              <label><input type="radio" name="demo-topic" value="delivery"><span><strong>下午茶能送到我们公司吗？</strong><small>先问能否配送，再确认怎么交接。</small></span></label>
+            </fieldset>
+            <div class="demo-actions"><button type="button" class="button" id="demo-confirm-topic">按此选题写作 <svg aria-hidden="true"><use href="#arrow"/></svg></button></div>
+          </div>
+          <div id="demo-generated" hidden>
+            <div class="demo-progress"><strong id="demo-generation-result" tabindex="-1" role="status">稿件已就绪</strong><span id="demo-generation-count">已保存 1 / 1 篇</span></div>
+            <ol class="paper-flow" aria-label="从资料到稿件开头">
+              <li>
+                <span class="flow-caption">01　资料摘录</span>
+                <div class="flow-sheet" id="demo-flow-source">
+                  <h4>下午茶订购说明</h4>
+                  <ul class="flow-facts" id="demo-flow-facts"></ul>
+                </div>
+              </li>
+              <li>
+                <span class="flow-caption">02　选题</span>
+                <div class="flow-sheet flow-topic" id="demo-flow-question">
+                  <span>企业下午茶</span>
+                  <h4 id="demo-flow-topic"></h4>
+                </div>
+              </li>
+              <li>
+                <span class="flow-caption">03　稿件开头</span>
+                <div class="flow-sheet flow-output" id="demo-flow-draft">
+                  <span>知乎 · 图文</span>
+                  <h4 id="demo-flow-title"></h4>
+                  <p id="demo-flow-opening"><span id="demo-flow-cut"></span><span id="demo-flow-lead"></span></p>
+                </div>
+              </li>
+            </ol>
+            <p>工作台生成时会显示进度和正文预览。安排多篇时，可以点「暂停后续」，正在写的那篇会继续收尾。</p>
+            <div class="demo-actions">
+              <button type="button" class="text-link replay" id="replay-generation">重看成稿演示</button>
+              <button type="button" class="button" data-next-step="editor">编辑与导出 <svg aria-hidden="true"><use href="#arrow"/></svg></button>
+            </div>
+          </div>
+        </section>
+
+        <section class="demo-panel" id="demo-editor" role="tabpanel" aria-labelledby="tab-editor" hidden>
+          <div class="demo-panel-intro">
+            <h3 class="demo-heading" tabindex="-1">改好稿件，再导出</h3>
+            <p>自己改可以点「编辑正文」。让 AI 改时，先提交修改要求，再到「审阅与版本」看候选。导出会使用当前采用版。</p>
+          </div>
+          <div class="demo-editor-tools" aria-label="示例稿件操作">
+            <button type="button" class="text-link" id="demo-edit-button" aria-controls="demo-edit-form" aria-expanded="false">编辑正文</button>
+            <button type="button" class="text-link" id="demo-review-button" aria-controls="demo-review" aria-expanded="false">审阅与版本</button>
+            <button type="button" class="button small" id="demo-open-export">导出</button>
+          </div>
+          <article class="demo-inset demo-article" id="demo-article">
+            <p class="field-name" id="demo-draft-status">当前采用版 · 示例成稿</p>
+            <h4 id="demo-article-title"></h4>
+            <p id="demo-article-body"></p>
+          </article>
+          <form class="demo-inset demo-editor-form" id="demo-edit-form" hidden>
+            <label for="demo-edit-body">正文</label>
+            <textarea id="demo-edit-body" rows="5" maxlength="2000" required></textarea>
+            <div class="demo-actions">
+              <button type="button" class="text-link" id="demo-close-editor">结束编辑</button>
+              <button type="submit" class="button small">保存新版本</button>
+            </div>
+          </form>
+          <div class="demo-inset" id="demo-review" hidden>
+            <p class="field-name">修改候选 · 开头直接回答选题</p>
+            <div class="demo-compare">
+              <div><h4>当前采用版</h4><p><del class="review-cut" id="demo-review-cut" hidden><span></span><i aria-hidden="true"></i></del><span id="demo-compare-base"></span></p></div>
+              <div class="review-after"><h4>修改候选</h4><p id="demo-candidate-body"></p></div>
+            </div>
+            <p class="review-note" id="demo-review-note"></p>
+            <div class="demo-actions">
+              <button type="button" class="text-link replay" id="replay-review">重看修改</button>
+              <button type="button" class="button small" id="demo-adopt">采用此版并用于导出</button>
+            </div>
+          </div>
+          <p class="demo-receipt" id="demo-receipt" role="status"></p>
+        </section>
+      </div>
+
+      <dialog class="demo-export" id="demo-export" aria-labelledby="demo-export-title">
+        <form id="demo-export-form">
+          <h3 id="demo-export-title">导出</h3>
+          <p class="field-name">下载内容</p>
+          <p>正文 Markdown</p>
+          <label class="demo-export-item">
+            <input type="checkbox" id="demo-export-selection" required checked>
+            <span><span id="demo-export-name"></span><small id="demo-export-version"></small></span>
+          </label>
+          <div class="demo-actions">
+            <button type="button" class="text-link" id="demo-close-export">取消</button>
+            <button type="submit" class="button small">导出文件</button>
+          </div>
+        </form>
+      </dialog>
     </div>
   </section>
 
-  <section class="review-chapter" id="review" aria-labelledby="review-heading">
-    <div class="review-heading reveal"><p class="eyebrow">04 / 生成之后</p><h2 id="review-heading">你来决定，<br>这稿怎么改。</h2><p>正文可以直接编辑，也可以让 Agent 按你的要求修改。<br>审阅建议先看再选，候选稿满意后，明确采用。</p><a class="text-link" href="/workbench/zip/index.html?entry=review">选一份稿件，打开审阅 <svg><use href="#arrow"/></svg></a></div>
-    <div class="review-stage stage reveal">
-      <div class="stage-heading"><span>一段话，改清楚一点。</span><span class="demo-label">修改示意</span></div>
-      <div class="review-example"><p class="review-before">在当今快节奏的工作环境中，<br>一份精心准备的下午茶至关重要。</p><p class="review-after">订下午茶前，先确认人数、<br>配送范围和送达时间。</p></div>
-      <div class="review-explanation"><span class="check-disc"><svg><use href="#check"/></svg></span><p>删掉空泛铺垫，把读者要知道的事放到前面。</p></div>
-      <div class="review-bottom"><span id="review-state" role="status">当前采用稿保持原样，先看候选。</span><button type="button" class="replay" id="replay-review">重看修改 <span aria-hidden="true">↻</span></button></div>
+  <section class="chapter chat-chapter" id="chat" aria-labelledby="chat-heading">
+    <div class="chapter-copy">
+      <h2 id="chat-heading">用对话写稿</h2>
+      <p>想先聊聊写什么，在「新建内容」顶部选「对话」。输入写作要求，需要方立先提问题时打开「追问」。</p>
+      <p>点「本次安排」核对整理后的要求和关键词，再核对平台与篇数。确认后点「开始写作」。同一任务可以切换回「分步」，继续用已有的资料、安排和稿件。</p>
     </div>
-    <div class="review-principles"><div><b>看事实</b><span>数字、效果、案例，资料里有依据吗？</span></div><div><b>看表达</b><span>有没有空话，读者能不能看懂？</span></div><div><b>看采用版本</b><span>候选稿需要明确采用，才成为默认导出稿。</span></div></div>
+    <div class="chat-sample stage">
+      <div class="stage-heading"><span>青栈面包咖啡</span><span class="demo-label">对话示例</span></div>
+      <p class="demo-user">给公司行政写一篇下午茶订购指南。先讲要发给门店哪些信息。</p>
+      <div class="demo-response"><span class="response-mark">方立</span><p>我会先写地址、人数和送达时间。你想加一段怎么选餐食吗？</p></div>
+    </div>
   </section>
 
-  <section class="reuse-chapter" id="reuse" aria-labelledby="reuse-heading">
-    <div class="reuse-intro reveal"><p class="eyebrow">05 / 交付，以及下一次</p><h2 id="reuse-heading">这次确认好。<br><span>下次少填一点。</span></h2><p>选好采用版本，导出交付。客户资料和常用方案留下，<br>下一次只需要说这次要写什么。</p></div>
-    <div class="reuse-strip reveal"><div><span class="reuse-check"><svg><use href="#check"/></svg></span><b>客户资料</b><p>从客户资料库继续选用</p></div><span class="strip-plus" aria-hidden="true">+</span><div><span class="reuse-check"><svg><use href="#check"/></svg></span><b>常用方案</b><p>平台、篇数和长期要求</p></div><span class="strip-plus" aria-hidden="true">+</span><div class="fresh-requirement"><span class="fresh-label">每次补充</span><b>今天的要求</b><p>换个主题，或加一条说明</p></div></div>
-    <div class="delivery-links"><a href="/workbench/zip/index.html?entry=export"><span>确认好了</span><h3>导出采用稿 <svg><use href="#arrow"/></svg></h3><p>Word、Markdown、纯文本或 JSON。</p></a><a href="/workbench/zip/index.html?area=customers"><span>继续做这个客户</span><h3>管理常用方案 <svg><use href="#arrow"/></svg></h3><p>长期安排在客户页保存，本次改动留在任务里。</p></a><a href="/workbench/zip/index.html?area=quick"><span>一位或多位客户</span><h3>打开快速创作 <svg><use href="#arrow"/></svg></h3><p>选择客户，沿用各自安排或在本页调整，再提交生成。</p></a></div>
+  <section class="quick-reference" id="reference" aria-labelledby="reference-heading">
+    <h2 id="reference-heading">常用操作</h2>
+    <div class="faq-list">
+      <details><summary>怎么更新客户资料和常用方案？<span aria-hidden="true">+</span></summary><p>在「客户」里打开档案。「资料」用来补充文件，「常用方案」用来调整以后带入的发布安排。要查某篇旧稿当时用了什么，在稿件的「审阅与版本」里打开「本版详情」。</p></details>
+      <details><summary>怎么沿用上一次的安排？<span aria-hidden="true">+</span></summary><p>在客户档案的「历史」里找到任务，点「更多」里的「沿用安排新建」。新任务打开后，可以换资料或改篇数。</p></details>
+      <details><summary>怎么找出稿件里的套话？<span aria-hidden="true">+</span></summary><p>在「审阅与版本」里点「开始文风审阅」。看完建议，勾选想改的地方。候选出来后，先对照原稿，再决定是否采用。<a href="/workbench/zip/index.html?entry=review">选择要审阅的任务</a></p></details>
+      <details><summary>怎么一次给多个客户写稿？<span aria-hidden="true">+</span></summary><p>打开「快速创作」，选客户，核对每位客户的文章和视频安排，提交后在同一页看进度。提交后的批次按当时的安排执行。需要改篇数，可以新建一批。</p></details>
+      <details><summary>怎么用稿件做短视频？<span aria-hidden="true">+</span></summary><p>在稿件的「导出」窗口点「用当前采用稿制作视频」。还没写稿时，也可以在任务资料区点「用本次资料制作视频」。</p></details>
+      <details><summary>稿件可以导出哪些格式？<span aria-hidden="true">+</span></summary><p>工作台可以导出 Word、Markdown、TXT 或任务资料 JSON。要一起留存本次安排、稿件版本和核查记录，选「下载任务记录 ZIP」。<a href="/workbench/zip/index.html?entry=export">选择要导出的任务</a></p></details>
+    </div>
   </section>
 
-  <section class="quick-reference" id="reference" aria-labelledby="reference-heading"><div><p class="eyebrow">随用随查</p><h2 id="reference-heading">操作时，<br>可能会用到。</h2></div><div class="faq-list">
-    <details><summary>客户配置和本次安排，有什么区别？<span>+</span></summary><p>客户页保存长期资料和常用方案，供后续新任务使用。任务里调整的要求、关键词和平台安排只影响本次；需要长期沿用时，再明确保存到客户常用方案。</p></details>
-    <details><summary>对话和分步，会各生成一遍吗？<span>+</span></summary><p>两者是同一任务的两个操作入口。切换会保留草稿，不会自动再生成；只有明确开始写作才执行。</p></details>
-    <details><summary>“追问”什么时候开？<span>+</span></summary><p>想先讨论方向、补充要求时打开。要求明确时可以直接开始写作。输入中按 Shift + Enter 换行，按 Enter 发送。</p></details>
-    <details><summary>候选稿需要再做什么？<span>+</span></summary><p>先对照原稿，检查修改和事实依据。确定使用后点击采用；候选未采用时，默认导出仍使用原采用版本。</p></details>
-    <details><summary>批量任务提交后，还能改安排吗？<span>+</span></summary><p>已提交批次按当时冻结的资料与配置执行。需要变更时，复用为新任务调整；已经完成的稿件仍可按实际状态编辑、采用和导出。</p></details>
-  </div></section>
-
-  <section class="closing"><svg class="closing-mark"><use href="#mark"/></svg><h2>现在，做你的客户。</h2><p>准备好资料，从一句具体要求开始。</p><a class="button" href="/workbench/zip/index.html">进入工作台 <svg><use href="#arrow"/></svg></a><div class="shortcut-links"><a href="/workbench/zip/index.html?area=customers">客户资料</a><a href="/workbench/zip/index.html?entry=tasks">查找任务</a><a href="/workbench/zip/index.html?entry=settings">工作台设置</a><a href="/video/">视频工作区</a></div></section>
+  <section class="closing"><img class="closing-mark" src="/assets/ferlytech-logo.svg" width="418" height="77" alt="方立科技" loading="lazy"><h2>工作台快捷入口</h2><a class="button" href="/workbench/zip/index.html">进入工作台 <svg><use href="#arrow"/></svg></a><div class="shortcut-links"><a href="/workbench/zip/index.html?area=customers">客户资料</a><a href="/workbench/zip/index.html?area=quick">快速创作</a><a href="/workbench/zip/index.html?entry=tasks">查找任务</a><a href="/workbench/zip/index.html?entry=settings">工作台设置</a><a href="/video/narrated/">短视频工作区</a></div></section>
 </main>
-<footer><span>方立 GEO · 内部使用指南</span><a href="/">查看原展示首页 <span aria-hidden="true">↗</span></a><a href="#top">回到顶部 ↑</a></footer>
+<footer><span>方立 GEO · 内部使用指南</span><a href="/index.html">查看产品介绍 <span aria-hidden="true">↗</span></a><a href="#top">回到顶部 ↑</a></footer>
 </body>
 </html>

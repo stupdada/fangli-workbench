@@ -1,4 +1,5 @@
-'use strict';
+import { createTopicHistory, TopicChoice } from '/video/topic-recommendation.mjs';
+
 (() => {
   const base='/api/video/narrated';
   const $=id=>document.getElementById(`short-${id}`);
@@ -8,13 +9,18 @@
   let conversationId=params.get('conversation_id')||'';
   let record=null,context=null,health=null,busy=false,dirty=false,page=1,render=null;
   let libraryClient='',library=[],selectedAssets=[],removed=[],showRemoved=false,showArchived=false;
+  let topicRequest=0, topicLoading=false;
+  let topicHistory=createTopicHistory(), topicChoice=new TopicChoice();
   const shotNotes=new Map();
   const mediaTypes={png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',webp:'image/webp',mp4:'video/mp4',
     mov:'video/quicktime',webm:'video/webm',mkv:'video/x-matroska'};
   const pendingKey='fangli.short-video.operation';
   const isDaily=()=>record?.current.template==='daily';
-  const dailySource=()=>$('template').value==='daily';
-  const audioLabel=take=>take.audio?.kind==='music'?'背景音乐':take.audioStreams?'普通话配音':'图文播放';
+  const isTypography=()=>record?.current.template==='typography';
+  const hasNarration=()=>!isDaily()&&!isTypography();
+  const sourceTemplate=()=>$('template').value==='auto' ? (selectedAssets.length?'process':'typography') : $('template').value;
+  const dailySource=()=>sourceTemplate()==='daily';
+  const audioLabel=take=>take.audio?.kind==='music'?'背景音乐':take.audioStreams?'普通话配音':isTypography()?'静音':'图文播放';
   function el(tag,text,css){const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(css)node.className=css;return node;}
   async function api(url,method='GET',body,type='application/json'){
     const response=await fetch(url,{method,...(body===undefined?{}:{headers:{'Content-Type':type},body:type==='application/json'?JSON.stringify(body):body})});
@@ -27,11 +33,14 @@
     const readOnly=busy||Boolean(record?.archived_at);
     $('client').disabled=busy||dirty;
     $('new').disabled=busy||dirty||!client||!record;
-    $('generate').disabled=busy||!client||!context||!$('topic').value.trim();
+    $('generate').disabled=busy||topicLoading||!client||!context||!$('topic').value.trim();
     $('topic').readOnly=busy;
+    $('topic-refresh').disabled=busy||topicLoading||!context;
+    $('topic-more').disabled=busy||topicLoading||!context;
+    for(const button of $('topic-options').querySelectorAll('button'))button.disabled=busy||topicLoading;
     $('upload').disabled=busy||!client;
     $('template').disabled=busy;
-    $('draft-template').disabled=readOnly||isDaily();
+    $('draft-template').disabled=readOnly||!hasNarration();
     $('archived').disabled=busy||dirty||!client;
     $('removed').disabled=busy||!client;
     for(const e of $('library').querySelectorAll('[data-lifecycle]'))e.disabled=busy||dirty;
@@ -41,8 +50,8 @@
     for(const button of $('history').querySelectorAll('button'))button.disabled=busy||dirty;
     $('save').disabled=readOnly||!dirty;
     $('revert').disabled=busy||!dirty;
-    $('render').disabled=readOnly||dirty||!record||!health?.ready||!isDaily()&&$('narration').checked&&!health.narrationReady;
-    $('narration').disabled=readOnly||isDaily();
+    $('render').disabled=readOnly||dirty||!record||!health?.ready||hasNarration()&&$('narration').checked&&!health.narrationReady;
+    $('narration').disabled=readOnly||!hasNarration();
     for(const e of [$('title'),$('publish-title'),$('publish-description'),$('publish-tags'),...$('pages').querySelectorAll('input,textarea')])e.readOnly=readOnly;
     for(const e of $('pages').querySelectorAll('select'))e.disabled=readOnly;
   }
@@ -50,6 +59,67 @@
     if(busy)return;busy=true;status(message);updateActions();
     try{await action();}catch(error){status(error.message,true);}
     finally{busy=false;updateActions();}
+  }
+  function resetTopics(){
+    topicRequest++;
+    topicLoading=false;
+    if($('topic').value===topicChoice.recommended&&!topicChoice.manual)$('topic').value='';
+    topicChoice=new TopicChoice();
+    topicChoice.manual=$('topic').value.trim();
+    topicHistory=createTopicHistory();
+    $('topic-status').textContent='';
+    $('topic-picker').hidden=!context;
+    showTopics();
+  }
+  function showTopics(){
+    $('topic-refresh').textContent=topicChoice.recommended?'换一批':'推荐选题';
+    $('topic-more').hidden=!topicChoice.recommended;
+    $('topic-more').setAttribute('aria-expanded',String(topicChoice.expanded));
+    $('topic-more').textContent=topicChoice.expanded?'收起备选':'看备选';
+    $('topic-options').hidden=!topicChoice.expanded;
+    $('topic-options').replaceChildren(...topicChoice.options.map(topic=>{
+      const button=el('button',topic,'secondary');
+      button.type='button';
+      button.setAttribute('aria-pressed',String(topicChoice.topic===topic));
+      button.onclick=()=>{
+        topicChoice.select(topic);
+        $('topic').value=topic;
+        for(const option of $('topic-options').querySelectorAll('button'))option.setAttribute('aria-pressed',String(option===button));
+        updateActions();
+      };
+      return button;
+    }));
+    updateActions();
+  }
+  async function recommendTopics(count=3){
+    if(topicLoading||!context)return;
+    const selected = {client_id:$('client').value};
+    if(source)for(const [name,value] of Object.entries(source))selected[name]=String(value);
+    else{
+      const ids=[...$('document-list').querySelectorAll('input:checked')].map(input=>input.value);
+      if(!ids.length){$('topic-status').textContent='请先选择本次使用的资料。';return;}
+      selected.document_ids=ids.join(',');
+      if(conversationId)selected.conversation_id=conversationId;
+    }
+    const request=++topicRequest;
+    topicLoading=true;
+    $('topic-status').textContent='正在推荐选题…';
+    updateActions();
+    try{
+      const template=sourceTemplate();
+      const topics=await topicHistory(async (seen,n)=>(await api('/api/workbench/video-topics','POST',{
+        source:selected,template,seen,count:n
+      })).topics,['1'],count,[topicChoice.topic]);
+      if(request!==topicRequest)return;
+      if(count===3)topicChoice.setRecommended(topics['1']);
+      else topicChoice.setAlternatives(topics['1']);
+      $('topic').value=topicChoice.topic;
+      $('topic-status').textContent='';
+    }catch(error){
+      if(request===topicRequest)$('topic-status').textContent=error.message;
+    }finally{
+      if(request===topicRequest){topicLoading=false;showTopics();}
+    }
   }
   function viewLocation(){
     const next=new URL(location.href);
@@ -83,7 +153,7 @@
     }
     updateActions();
   }
-  function templateOptions(){return Object.entries(health?.template_labels||{process:'流程说明',intro:'图文介绍',qa:'问题解答'});}
+  function templateOptions(){return Object.entries(health?.template_labels||{typography:'大字讲解',process:'流程说明',intro:'图文介绍',qa:'问题解答'});}
   function setOptions(select,pairs,value){
     select.replaceChildren();
     for(const [id,name] of pairs){const option=el('option',name);option.value=id;select.append(option);}
@@ -112,11 +182,14 @@
     $('media-preview').hidden=false;
   }
   function showSelection(){
-    const daily=dailySource();
+    const template=sourceTemplate(),daily=template==='daily',typography=template==='typography';
     $('library-note').textContent=!$('client').value?'选择客户后查看素材。':!library.length?'此客户还没有素材。':
       record?`${library.length} 份素材，可在各页选择。`:`${library.length} 份素材 · 已选 ${selectedAssets.length} / ${daily?5:6}`;
-    $('format').textContent=daily?'9:16 · 22 秒 · 5 张实拍图':'9:16 · 30—45 秒';
-    $('generate').textContent=daily?'生成字幕和发布文案':'生成短脚本';
+    $('format').textContent=daily?'9:16 · 22 秒 · 5 张实拍图':typography?'9:16 · 22 秒 · 5 幕大字':'9:16 · 30—45 秒';
+    $('template-note').textContent=typography
+      ? (selectedAssets.length?'大字讲解只用文字。取消素材勾选，或换一个模板。':'本次用大字讲解。每幕一句大字、一句说明，静音也能看懂。')
+      : daily?'每幕一张实拍图，配字幕和背景音乐。':($('template').value==='auto'?'已选素材，本次用流程说明。':'');
+    $('generate').textContent=daily?'生成字幕和发布文案':typography?'生成五幕文案':'生成短脚本';
     $('shot-settings').hidden=!daily;
     const notes=$('shot-notes');notes.replaceChildren();
     if(!daily)return;
@@ -147,7 +220,9 @@
         check.setAttribute('aria-label',`选择素材 ${asset.name}`);
         check.addEventListener('change',()=>{
           if(check.checked&&selectedAssets.length>=limit){check.checked=false;status(daily?'门店日常需要 5 张图片。':'每条视频最多选择 6 份素材。',true);return;}
+          const previous=sourceTemplate();
           selectedAssets=check.checked?[...selectedAssets,asset.id]:selectedAssets.filter(id=>id!==asset.id);
+          if(previous!==sourceTemplate())resetTopics();
           showSelection();
         });
         row.append(check);
@@ -158,7 +233,11 @@
       action.addEventListener('click',()=>run(async()=>{
         const clientId=$('client').value;
         const meta=await api(`/api/video/assets/${encodeURIComponent(asset.id)}/lifecycle`,'PUT',{clientId,removed:!showRemoved});
-        if(meta.removed_at){library=library.filter(a=>a.id!==asset.id);selectedAssets=selectedAssets.filter(id=>id!==asset.id);shotNotes.delete(asset.id);}
+        if(meta.removed_at){
+          const previous=sourceTemplate();
+          library=library.filter(a=>a.id!==asset.id);selectedAssets=selectedAssets.filter(id=>id!==asset.id);shotNotes.delete(asset.id);
+          if(previous!==sourceTemplate())resetTopics();
+        }
         else{removed=removed.filter(a=>a.id!==asset.id);library.unshift(meta);}
         for(const p of record?.current.pages||[]){
           const select=$(`asset-${p.id}`);if(select)setOptions(select,assetChoices(),select.value);
@@ -182,6 +261,7 @@
     if(!client){status('请先选择客户。',true);return;}
     return run(async()=>{
       let uploaded=0;
+      const previous=sourceTemplate();
       let firstAsset;
       const errors=[];
       for(const file of files){
@@ -195,6 +275,7 @@
           if(!record&&(!dailySource()||type.startsWith('image/'))&&selectedAssets.length<(dailySource()?5:6))selectedAssets.push(asset.id);
         }catch(error){errors.push(`${file.name} ${error.message}`);}
       }
+      if(previous!==sourceTemplate())resetTopics();
       showLibrary();
       if(firstAsset)previewMedia(firstAsset);
       for(const p of record?.current.pages||[]){const select=$(`asset-${p.id}`);setOptions(select,assetChoices(),select.value);}
@@ -203,11 +284,12 @@
   }
   async function sourceForm({reset=false}={}){
     record=null;render=null;dirty=false;context=null;
+    resetTopics();
     clearPlayer();
     $('source').hidden=false;$('draft').hidden=true;$('preview').hidden=true;
     $('document-list').replaceChildren();$('documents').hidden=true;
     $('source-name').textContent='客户资料';
-    if(reset){$('topic').value='';$('template').value='process';shotNotes.clear();selectedAssets=[];}
+    if(reset){$('topic').value='';topicChoice.manual='';$('template').value='auto';shotNotes.clear();selectedAssets=[];}
     const clientId=$('client').value;
     await loadLibrary(clientId);
     if(clientId){
@@ -218,7 +300,6 @@
       if(source){
         const title=context.article.title;
         $('source-name').textContent=`采用的文章 · ${title} · 版本 ${source.version_id}`;
-        if(!$('topic').value)$('topic').value=title;
       }else{
         $('documents').hidden=false;
         if(!context.documents.length)$('document-list').append(el('p','请先在文案工作台添加客户资料。','muted'));
@@ -229,7 +310,10 @@
         }
       }
     }
-    viewLocation();await showHistory();updateActions();
+    viewLocation();await showHistory();
+    $('topic-picker').hidden=!context;
+    updateActions();
+    if(context&&(source||context.documents.length)&&!sessionStorage.getItem(pendingKey))void recommendTopics();
   }
   function field(parent,label,value,id,{multi=false,max}={}){
     const l=el('label',label);l.htmlFor=id;
@@ -246,11 +330,17 @@
   function edited(){if(!record)return;const refresh=!dirty||render;dirty=true;render=null;characters();if(refresh){updatePreview();status('有未保存的修改。');}updateActions();}
   const voiceLength=text=>Array.from(text.replace(/\s/gu,'')).length;
   function characters(){
+    if(isTypography()){$('character-count').textContent='5 幕 · 每幕 4.4 秒';return;}
     const total=record.current.pages.reduce((n,p)=>n+voiceLength($(`voice-${p.id}`).value),0);
     $('character-count').textContent=isDaily()?`字幕 ${total} 字 · 5 屏，每屏最多 24 字`:
       `口播 ${total} 字 / 100—160 字 · ${record.current.pages.length} 页`;
   }
   function editingPayload(){
+    if(isTypography()){
+      const pages=record.current.pages.map(p=>({id:p.id,heading:$(`heading-${p.id}`).value,points:[$(`points-${p.id}`).value]}));
+      return {expected_version:record.version,title:$('title').value,template:'typography',pages,
+        publish:{title:$('publish-title').value,description:$('publish-description').value}};
+    }
     const current=record.current,daily=isDaily(),maxCaption=daily?24:36;
     const max=record.point_max_characters;
     const pages=current.pages.map((p,i)=>{
@@ -277,7 +367,7 @@
     if(record.documents.length)target.append(el('p',`本次资料：${record.documents.map(d=>d.filename).join('、')}`));
     if(record.current.assets?.length)target.append(el('p',`画面素材：${record.current.assets.map(asset=>asset.name).join('、')}`));
     const editorial=record.current.editorial;
-    const sourceLabel=id=>id==='publish'?'发布简介':`第 ${id.slice(1)} ${isDaily()?'屏':'页'}`;
+    const sourceLabel=id=>id==='publish'?'发布简介':`第 ${id.slice(1)} ${isTypography()?'幕':isDaily()?'屏':'页'}`;
     for(const c of editorial?.claims||[])target.append(el('p',`${sourceLabel(c.page_id)} · ${c.text} — ${c.source_id==='article'?record.source?.title:names.get(c.source_id)}：「${c.quote}」`));
     for(const c of editorial?.unresolved||[])target.append(el('p',`${sourceLabel(c.page_id)} · ${c.reason}：${c.text}`));
     for(const issue of editorial?.issues||[])target.append(el('p',issue));
@@ -288,7 +378,8 @@
   }
   function updatePreview(){
     if(!record)return;
-    const player=$('player'),image=$('preview-image'),downloads=$('downloads');
+    const player=$('player'),image=$('preview-image'),motion=$('preview-motion'),downloads=$('downloads');
+    motion.hidden=true;motion.replaceChildren();
     downloads.replaceChildren();
     const release=$('release');release.replaceChildren();release.hidden=true;
     for(const button of $('preview-tabs').querySelectorAll('button'))button.setAttribute('aria-pressed',String(!render&&Number(button.dataset.page)===page));
@@ -297,7 +388,7 @@
       image.hidden=true;player.hidden=false;
       if(player.getAttribute('src')!==path+'video.mp4'){player.src=path+'video.mp4';player.poster=path+'cover.png';}
       $('preview-label').textContent=`第 ${render.version} 版成片 · ${render.duration.toFixed(2)} 秒 · ${audioLabel(render)}`;
-      const files=[['video.mp4?download=1','MP4'],['captions.srt','SRT'],['cover.png','封面'],['script.json',isDaily()?'字幕':'口播'],['pages.json','页面']];
+      const files=[['video.mp4?download=1','MP4'],['captions.srt','SRT'],['cover.png','封面'],['script.json',hasNarration()?'口播':'字幕'],['pages.json','页面']];
       if(render.publish){
         release.append(el('h3',render.publish.title),el('p',render.publish.description));release.hidden=false;
         if(render.publish.tags?.length)release.append(el('p',render.publish.tags.map(tag=>'#'+tag).join(' ')));
@@ -307,24 +398,36 @@
       for(const [file,label] of files){const link=el('a',label);link.href=path+file;link.download='';downloads.append(link);}
     }else{
       clearPlayer();
-      image.src=`${base}/productions/${record.id}/versions/${record.version}/page-${page}.png`;
-      image.alt=`第 ${page} 页：${record.current.pages[page-1].heading}`;image.hidden=false;
+      const scene=`${base}/productions/${record.id}/versions/${record.version}/page-${page}`;
+      image.src=scene+'.png';
+      const current=record.current.pages[page-1];
+      image.alt=isTypography()?`${current.heading} ${current.points[0]}`:`第 ${page} 页：${current.heading}`;
+      image.hidden=false;
       $('preview-label').textContent=dirty?`第 ${record.version} 版页面 · 保存后更新`:`第 ${record.version} 版页面 · ${page} / ${record.current.pages.length}`;
+      if(isTypography()&&!dirty&&!matchMedia('(prefers-reduced-motion: reduce)').matches){
+        const layers=['title','detail'].map(part=>{const img=el('img');img.alt='';img.src=`${scene}-${part}.png`;return img;});
+        const key=String(Number(motion.dataset.sequence||0)+1);
+        motion.dataset.sequence=key;
+        Promise.all(layers.map(layer=>layer.decode())).then(()=>{
+          if(motion.dataset.sequence!==key||render||dirty||image.getAttribute('src')!==scene+'.png')return;
+          motion.replaceChildren(...layers);motion.hidden=false;
+        }).catch(()=>{});
+      }
     }
   }
   function showDraft(value,{focusRender=false}={}){
     record=value;source=value.source?{article_id:value.source.article_id,version_id:value.source.version_id}:null;
-    const daily=isDaily(),layouts=templateOptions().filter(([id])=>id!=='daily');
+    const daily=isDaily(),typography=isTypography(),layouts=templateOptions().filter(([id])=>!['daily','typography'].includes(id));
     $('source').hidden=true;$('draft').hidden=false;$('preview').hidden=false;
     $('origin-label').textContent=value.source?`采用的文章 · 版本 ${value.source.version_id}`:'客户资料';
     $('revision').textContent=`第 ${value.version} 版${value.archived_at?' · 已归档':''}`;
     $('title').value=value.current.title;dirty=false;page=1;
-    $('draft-heading').textContent=daily?'字幕与画面':'口播与画面';
-    $('size').textContent=daily?'1080 × 1920':'720 × 1280';
-    $('draft-template').hidden=daily;$('draft-template-label').hidden=daily;
+    $('draft-heading').textContent=daily?'字幕与画面':typography?'五幕讲解':'口播与画面';
+    $('size').textContent=hasNarration()?'720 × 1280':'1080 × 1920';
+    $('draft-template').hidden=!hasNarration();$('draft-template-label').hidden=!hasNarration();
     setOptions($('draft-template'),layouts,value.current.template);
-    $('narration-label').hidden=daily;
-    $('voice').textContent=daily?'背景音乐 · 每屏 4.4 秒':health?.narrationReady?'Microsoft Huihui Desktop · 本机音色':health?.ready?'本机普通话音色不可用':'本机视频引擎未就绪';
+    $('narration-label').hidden=!hasNarration();
+    $('voice').textContent=typography?'大字讲解 · 22 秒 · 静音':daily?'背景音乐 · 每屏 4.4 秒':health?.narrationReady?'Microsoft Huihui Desktop · 本机音色':health?.ready?'本机普通话音色不可用':'本机视频引擎未就绪';
     const publication=value.current.publish||{title:value.current.title,description:value.current.script.paragraphs[0].text};
     $('publish-title').value=publication.title;$('publish-description').value=publication.description;
     $('tag-field').hidden=!daily;
@@ -334,8 +437,12 @@
     $('pages').replaceChildren();$('preview-tabs').replaceChildren();$('renders').replaceChildren();
     for(let i=0;i<value.current.pages.length;i++){
       const p=value.current.pages[i],section=el('section',undefined,'short-page');
-      section.append(el('h3',`第 ${i+1} ${daily?'屏':'页'}`));
-      field(section,daily?'字幕（最多 24 字）':'口播（最多 36 个有效字符，空白不计）',value.current.script.paragraphs[i].text,`short-voice-${p.id}`,{multi:true});
+      section.append(el('h3',`第 ${i+1} ${typography?'幕':daily?'屏':'页'}`));
+      if(typography){
+        field(section,'大字',p.heading,`short-heading-${p.id}`,{max:16});
+        field(section,'小字说明',p.points[0],`short-points-${p.id}`,{max:28});
+      }else{
+      field(section,daily?'字幕（最多 24 字）':'口播（最多 36 字，英文字母和数字按半字计）',value.current.script.paragraphs[i].text,`short-voice-${p.id}`,{multi:true});
       const settings=el('div',undefined,'short-page-settings');
       if(!daily){
         field(section,'画面标题',p.heading,`short-heading-${p.id}`,{max:16});
@@ -349,8 +456,9 @@
         if(asset)previewMedia(asset);
       });
       section.append(settings);
+      }
       $('pages').append(section);
-      const button=el('button',`${i+1}`);button.type='button';button.dataset.page=i+1;button.setAttribute('aria-label',`第 ${i+1} 页`);
+      const button=el('button',`${i+1}`);button.type='button';button.dataset.page=i+1;button.setAttribute('aria-label',`第 ${i+1} ${typography?'幕':'页'}`);
       button.addEventListener('click',()=>{render=null;page=i+1;updatePreview();});$('preview-tabs').append(button);
     }
     if(value.renders.length){
@@ -383,9 +491,10 @@
   }
   $('source').addEventListener('submit',event=>{
     event.preventDefault();if($('generate').disabled)return;
-    const body={clientId:$('client').value,topic:$('topic').value,template:$('template').value};
+    const body={clientId:$('client').value,topic:$('topic').value,template:sourceTemplate()};
     const daily=dailySource();
     if(selectedAssets.length)body.asset_ids=[...selectedAssets];
+    if(body.template==='typography'&&selectedAssets.length){status('大字讲解只用文字，请取消素材勾选或换一个模板。',true);return;}
     if(daily){
       body.shot_notes=selectedAssets.map(id=>shotNotes.get(id)?.trim()||'');
       if(selectedAssets.length!==5||body.shot_notes.some(note=>!note||Array.from(note).length>80)){
@@ -408,8 +517,23 @@
     showRemoved=!showRemoved;showLibrary();status();
   },'正在读取素材库…'));
   $('new').addEventListener('click',()=>run(async()=>{source=null;conversationId='';await sourceForm({reset:true});status();$('topic').focus();},'正在打开新建短视频…'));
-  $('topic').addEventListener('input',updateActions);
+  $('topic-refresh').addEventListener('click',()=>{
+    const keepManual=Boolean(topicChoice.recommended&&topicChoice.manual);
+    if(keepManual)topicChoice.expanded=true;
+    showTopics();
+    void recommendTopics(keepManual?2:3);
+  });
+  $('topic-more').addEventListener('click',()=>{
+    topicChoice.expanded=!topicChoice.expanded;
+    showTopics();
+  });
+  $('document-list').addEventListener('change',resetTopics);
+  $('topic').addEventListener('input',()=>{
+    topicChoice.manual=$('topic').value.trim();
+    showTopics();
+  });
   $('template').addEventListener('change',()=>{
+    resetTopics();
     if(dailySource())selectedAssets=selectedAssets.filter(id=>library.find(asset=>asset.id===id)?.type.startsWith('image/')).slice(0,5);
     showLibrary();
   });
@@ -428,13 +552,13 @@
     showDraft(await api(`${base}/productions/${record.id}`,'PUT',editingPayload()));await showHistory();status('新版本已保存，可以重新制作。');
   },'正在保存新版本…'));
   $('render').addEventListener('click',()=>run(async()=>finish(await api(`${base}/productions/${record.id}/renders`,'POST',{
-    expected_version:record.version,narration:!isDaily()&&$('narration').checked
-  })), isDaily()?'正在加配乐并合成视频…':$('narration').checked?'正在配音并合成视频…':'正在合成图文视频…'));
+    expected_version:record.version,narration:hasNarration()&&$('narration').checked
+  })), isTypography()?'正在合成五幕讲解…':isDaily()?'正在加配乐并合成视频…':$('narration').checked?'正在配音并合成视频…':'正在合成图文视频…'));
   window.addEventListener('beforeunload',event=>{if(dirty){event.preventDefault();event.returnValue='';}});
   return run(async()=>{
     const [{clients},ready]=await Promise.all([api('/api/video/clients'),api(`${base}/health`).catch(()=>null)]);
     health=ready;
-    setOptions($('template'),templateOptions(),'process');
+    setOptions($('template'),[['auto','自动选择'],...templateOptions()],'auto');
     $('voice').textContent=health?.narrationReady?'Microsoft Huihui Desktop · 本机音色':health?.ready?'本机普通话音色不可用':'本机视频引擎未就绪';
     for(const c of clients){const option=el('option',c.name);option.value=c.id;$('client').append(option);}
     const requestedClient=params.get('client_id')||'';

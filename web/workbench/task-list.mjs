@@ -11,13 +11,33 @@ export function recentTasks(tasks) {
     .sort((a,b) => (b.pinned_at || '').localeCompare(a.pinned_at || ''));
 }
 
+export function taskDisplayTitle(task, {brief = task.brief, topic = '', customerName = ''} = {}) {
+  const name = brief?.client?.trim() || customerName;
+  const savedTitle = task.title?.trim();
+  if (topic && name) return `${name} · ${topic}`;
+  if (savedTitle && !/^(?:新建内容|未命名内容)(?: · 复用)*$/.test(savedTitle)) return savedTitle;
+  const keyword = brief?.keywords?.[0]?.trim();
+  return name ? `${name} · ${keyword || '创作草稿'}` : '创作草稿';
+}
+
+export function compactTaskTitle(title, customerName, brand) {
+  const prefix = `${customerName} · `;
+  if (!customerName || !title.startsWith(prefix)) return title;
+
+  const shortBrand = brand?.trim();
+  const companyStem = customerName.replace(/(?:股份有限公司|有限责任公司|有限公司)$/, '').trim();
+  const name = shortBrand && shortBrand.length < customerName.length ? shortBrand : companyStem || customerName;
+  const subject = title.slice(prefix.length);
+  return `${name} · ${subject === '创作草稿' ? '草稿' : subject}`;
+}
+
 export function taskStateButton(task, field, compact = false) {
   const label = field === 'pinned' ? (task.pinned_at ? '取消置顶' : '置顶') : (task.archived_at ? '恢复任务' : '归档');
   return `<button type="button" class="${compact ? 'task-row-icon' : 'button quiet sm'}" data-task-state="${field}" data-task-id="${e(task.id)}"${compact ? ` aria-label="${label}" title="${label}"` : ''}>${compact ? icon(field) : label}</button>`;
 }
 
-export function recentTaskMarkup(task, active) {
-  return `<div class="recent-task" data-recent-task="${e(task.id)}"><button type="button" class="task-row ${active ? 'active' : ''}" data-task="${e(task.id)}" aria-describedby="task-tooltip">${task.pinned_at ? icon('pinned') : ''}<span>${e(task.title || '未命名内容')}</span></button><div class="task-row-actions">${taskStateButton(task,'pinned',true)}${taskStateButton(task,'archived',true)}</div></div>`;
+export function recentTaskMarkup(task, active, title) {
+  return `<div class="recent-task" data-recent-task="${e(task.id)}"><button type="button" class="task-row ${active ? 'active' : ''}" data-task="${e(task.id)}" aria-describedby="task-tooltip">${task.pinned_at ? icon('pinned') : ''}<span class="task-row-title">${e(title)}</span></button><div class="task-row-actions">${taskStateButton(task,'pinned',true)}${taskStateButton(task,'archived',true)}</div></div>`;
 }
 
 export function installTaskContext(getTasks, beforeOpen) {

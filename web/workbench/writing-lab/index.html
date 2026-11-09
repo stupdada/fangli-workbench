@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>文案训练台 · 方立</title>
+  <link rel="stylesheet" href="/workbench/workbench.css">
+  <link rel="stylesheet" href="/workbench/workspace-rail.css">
+  <link rel="stylesheet" href="/workbench/palette.css">
+  <link rel="stylesheet" href="/workbench/writing-lab/lab.css">
+</head>
+<body>
+  <a class="skip-link" href="#lab-main">跳到文案训练台</a>
+  <div class="lab-layout">
+    <div id="lab-navigation"></div>
+    <main id="lab-main" class="lab-main">
+      <header class="lab-header">
+        <div><h1>文案训练台</h1><p>同题盲选，为方立首稿挑出更好的写法。</p></div>
+        <button type="button" class="button outline" id="lab-create">新建训练批次</button>
+      </header>
+      <div class="lab-batch" id="lab-batch" hidden>
+        <div class="lab-batch-name"><label for="lab-batches">训练批次</label><select class="input" id="lab-batches"></select></div>
+        <div id="lab-status" class="lab-status"></div>
+      </div>
+      <p id="lab-error" class="error-text" role="alert" hidden></p>
+      <div id="lab-modes" class="lab-modes" role="group" aria-label="盲选类型" hidden>
+        <button type="button" data-kind="fragment" aria-pressed="true">片段盲选</button>
+        <button type="button" data-kind="full" aria-pressed="false">全文盲选</button>
+        <button type="button" data-kind="report" aria-pressed="false">本轮结果</button>
+      </div>
+      <section id="lab-review" aria-label="盲选题"><p class="lab-empty">正在读取训练批次…</p></section>
+    </main>
+  </div>
+  <dialog id="lab-dialog" aria-labelledby="lab-dialog-title">
+    <form id="lab-form">
+      <header class="dialog-head"><h2 id="lab-dialog-title">新建训练批次</h2><button type="button" class="icon-button" data-close aria-label="关闭">×</button></header>
+      <div class="lab-form-fields">
+        <p class="lab-help" id="lab-next-round" hidden></p>
+        <label class="field"><span>批次名称</span><input class="input" name="name" maxlength="100" required></label>
+        <label class="field"><span>使用哪个客户的资料</span><select class="input" name="client" required></select></label>
+        <div class="lab-form-row">
+          <label class="field"><span>图文平台</span><select class="input" name="platform" required></select></label>
+          <label class="field"><span>账号身份</span><select class="input" name="account"><option value="personal">个人号</option><option value="official">官方号</option></select></label>
+        </div>
+        <label class="field"><span>选题，每行一道</span><textarea class="input" name="topics" rows="5" required placeholder="例：第一次带猫洗护要准备什么？ | 猫咪洗护"></textarea></label>
+        <p class="lab-help">可用「题目 | 搜索词」指定关键词。每批最多 40 道题。</p>
+        <p class="lab-receipt" id="lab-receipt"></p>
+        <p id="lab-form-error" class="error-text" role="alert"></p>
+      </div>
+      <footer class="dialog-actions"><button type="button" class="button quiet" data-close>取消</button><button type="submit" class="button primary">开始真实出稿</button></footer>
+    </form>
+  </dialog>
+  <script type="module" src="/workbench/writing-lab/lab.mjs"></script>
+</body>
+</html>

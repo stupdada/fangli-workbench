@@ -128,8 +128,12 @@ export function installAppearance(doc = document) {
     const article = root.querySelector('.article-tab.active')?.id;
     if (previous) {
       if (task !== previous.task) stopMotion();
-      if (view && previous.view && view !== previous.view && task === previous.task && view !== 'customers' && previous.view !== 'customers') {
-        const direction = view === 'chat' ? -1 : previous.view === 'chat' ? 1 : Number(view.slice(4)) > Number(previous.view.slice(4)) ? -1 : 1;
+      const enteringNewTask = previous.view === 'new' && task && (view === 'chat' || view === 'zip-1');
+      if (view && previous.view && view !== previous.view && (enteringNewTask || task === previous.task) &&
+          view !== 'customers' && previous.view !== 'customers') {
+        const enteringCreation = previous.view === 'start' && view === 'new';
+        const nextStep = Number(view.slice(4)) > Number(previous.view.slice(4));
+        const direction = enteringNewTask || enteringCreation || view === 'chat' || previous.view !== 'chat' && nextStep ? -1 : 1;
         const distance = Math.min(64, Math.max(28, workspace.clientWidth * .06));
         viewAnimation?.cancel();
         viewAnimation = animate(workspace, [

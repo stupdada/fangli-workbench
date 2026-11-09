@@ -20,6 +20,9 @@ ROOT = Path(__file__).resolve().parent
 VOICE = 'Microsoft Huihui Desktop'
 DAILY_SIZE = (1080, 1920)
 DAILY_SECONDS = 22
+TYPE_SIZE = (1080, 1920)
+TYPE_SECONDS = 22
+TYPE_PAPER = '#fbfbfa'
 
 
 def write_json(path, value):
@@ -46,8 +49,8 @@ def run(command, directory, name, timeout=None):
     return log.read_text(encoding='utf-8').lstrip('\ufeff').strip()
 
 
-def font_path():
-    for candidate in [os.environ.get('FANGLI_VIDEO_FONT'), 'C:/Windows/Fonts/msyh.ttc',
+def font_path(bold=False):
+    for candidate in [os.environ.get('FANGLI_VIDEO_FONT'), 'C:/Windows/Fonts/msyhbd.ttc' if bold else None, 'C:/Windows/Fonts/msyh.ttc',
                       'C:/Windows/Fonts/simhei.ttf', '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc']:
         if candidate and Path(candidate).is_file():
             return candidate
@@ -131,6 +134,88 @@ def daily_image(draft, index, target, show_caption, media):
             draw.text((540, y), row, font=font, anchor='mm', fill='#fffdf8',
                       stroke_width=5, stroke_fill='#302822')
     image.save(target)
+
+
+def typography_heading(draw, text, font_pathname, maximum, width):
+    for size in range(maximum, 87, -4):
+        font = ImageFont.truetype(font_pathname, size)
+        if draw.textlength(text, font=font) <= width:
+            return font, [text]
+    for size in range(maximum, 77, -4):
+        font = ImageFont.truetype(font_pathname, size)
+        pairs = [(text[:i].rstrip(), text[i:].lstrip()) for i in range(1, len(text))]
+        fits = []
+        for first, second in pairs:
+            if second[0] in '，。；：？！、）】》' or first[-1] in '（【《':
+                continue
+            a, b = draw.textlength(first, font=font), draw.textlength(second, font=font)
+            if max(a, b) <= width:
+                fits.append((abs(a - b), first, second))
+        if fits:
+            _, first, second = min(fits)
+            return font, [first, second]
+    return font, lines(draw, text, font, width)
+
+
+def typography_page(draft, index, client, directory):
+    page = draft['pages'][index]
+    width, height = TYPE_SIZE
+    left, right = 104, 914
+    ink, muted, blue = '#202126', '#555c69', '#315dc0'
+    title_layer = Image.new('RGBA', TYPE_SIZE)
+    detail_layer = Image.new('RGBA', TYPE_SIZE)
+    title_draw, detail_draw = ImageDraw.Draw(title_layer), ImageDraw.Draw(detail_layer)
+    regular, bold = font_path(), font_path(bold=True)
+    label_font = ImageFont.truetype(regular, 32)
+    brand = str(client.get('profile', {}).get('brand') or client['name']).strip()
+    if brand:
+        title_draw.text((left, 244), lines(title_draw, brand, label_font, 600)[0], font=label_font, fill=muted, anchor='lt')
+    title_draw.text((right, 244), f'{index + 1:02d} / {len(draft["pages"]):02d}', font=label_font, fill=muted, anchor='rt')
+
+    y = 616 if index == 0 else 572
+    title_draw.rounded_rectangle((left, y - 62, left + 56, y - 54), 4, fill=blue)
+    heading_font, heading_rows = typography_heading(title_draw, page['heading'], bold, 116 if index == 0 else 108, right - left)
+    for row in heading_rows:
+        title_draw.text((left, y), row, font=heading_font, fill=ink, anchor='lt')
+        y += round(heading_font.size * 1.22)
+
+    detail_font = ImageFont.truetype(regular, 46)
+    y += 35
+    for row in lines(detail_draw, page['points'][0], detail_font, right - left):
+        detail_draw.text((left, y), row, font=detail_font, fill=muted, anchor='lt')
+        y += 68
+    progress = round((right - left) * (index + 1) / len(draft['pages']))
+    title_draw.line((left, 1616, right, 1616), fill='#e0e3e9', width=2)
+    title_draw.line((left, 1616, left + progress, 1616), fill=blue, width=3)
+
+    stem = f'page-{index+1}'
+    title_layer.save(directory / f'{stem}-title.png')
+    detail_layer.save(directory / f'{stem}-detail.png')
+    plate = Image.new('RGBA', (width, height), TYPE_PAPER)
+    plate.alpha_composite(title_layer)
+    plate.alpha_composite(detail_layer)
+    plate.convert('RGB').save(directory / f'{stem}.png')
+
+
+def typography_command(directory, durations):
+    command = ['ffmpeg', '-hide_banner', '-loglevel', 'warning', '-y', '-filter_complex_threads', '1']
+    filters, scenes = [], []
+    for index, duration in enumerate(durations):
+        for part in ('title', 'detail'):
+            command.extend(['-threads', '1', '-loop', '1', '-framerate', '25', '-t', str(duration),
+                            '-i', str(directory / f'page-{index+1}-{part}.png')])
+        paper, title, detail, stage, scene = (f'{name}{index}' for name in ('paper', 'title', 'detail', 'stage', 'scene'))
+        w, h = TYPE_SIZE
+        filters.extend([
+            f'color=c=0x{TYPE_PAPER[1:]}:s={w}x{h}:r=25:d={duration},format=rgba[{paper}]',
+            f'[{index*2}:v]format=rgba,fade=t=in:st=0:d=0.32:alpha=1[{title}]',
+            f'[{index*2+1}:v]format=rgba,fade=t=in:st=0.16:d=0.32:alpha=1[{detail}]',
+            f"[{paper}][{title}]overlay=x=0:y='max(0,18*(1-t/0.32))':shortest=1:format=auto[{stage}]",
+            f"[{stage}][{detail}]overlay=x=0:y='max(0,18*(1-max(t-0.16,0)/0.32))':shortest=1:format=auto,format=yuv420p[{scene}]",
+        ])
+        scenes.append(f'[{scene}]')
+    filters.append(''.join(scenes) + f'concat=n={len(scenes)}:v=1:a=0[out]')
+    return command + ['-filter_complex', ';'.join(filters), '-map', '[out]']
 
 
 def page_image(draft, index, client, target, show_caption=True, media=None):
@@ -358,18 +443,27 @@ def execute(request):
         return {'width': frame.width, 'height': frame.height}
     draft = request['draft']
     daily = draft.get('template') == 'daily'
-    size = DAILY_SIZE if daily else (720, 1280)
+    typography = draft.get('template') == 'typography'
+    size = TYPE_SIZE if typography else DAILY_SIZE if daily else (720, 1280)
     ids = dict.fromkeys(page['asset_id'] for page in draft['pages'] if page.get('asset_id'))
     media = {ident: representative_frame(request['media'][ident], directory, index, size if daily else (720, 720))
              for index, ident in enumerate(ids, 1)}
-    for i in range(len(draft['pages'])):
-        page_image(draft, i, request['client'], directory / f'page-{i+1}.png', media=media)
-    page_image(draft, 0, request['client'], directory / 'cover.png', show_caption=False, media=media)
+    if typography:
+        for i in range(len(draft['pages'])):
+            typography_page(draft, i, request['client'], directory)
+        shutil.copyfile(directory / 'page-1.png', directory / 'cover.png')
+    else:
+        for i in range(len(draft['pages'])):
+            page_image(draft, i, request['client'], directory / f'page-{i+1}.png', media=media)
+        page_image(draft, 0, request['client'], directory / 'cover.png', show_caption=False, media=media)
     if request['operation'] == 'preview':
         return {'pages': len(draft['pages']), 'width': size[0], 'height': size[1]}
-    with_voice = not daily and request.get('narration', True)
+    with_voice = not (daily or typography) and request.get('narration', True)
     audio_file = None
-    if daily:
+    if typography:
+        durations = [TYPE_SECONDS / len(draft['pages'])] * len(draft['pages'])
+        audio = {'provider': None, 'voice': None, 'actualTtsSegments': 0, 'duration': TYPE_SECONDS}
+    elif daily:
         durations = [DAILY_SECONDS / 5] * 5
         audio_file = daily_music(directory)
         audio = {'kind': 'music', 'provider': 'local', 'voice': None, 'actualTtsSegments': 0, 'duration': DAILY_SECONDS}
@@ -385,15 +479,19 @@ def execute(request):
     write_json(directory / 'pages.json', draft['pages'])
     srt = '\n\n'.join(f'{i+1}\n{stamp(c["start"])} --> {stamp(c["end"])}\n{c["text"]}' for i, c in enumerate(captions)) + '\n'
     (directory / 'captions.srt').write_text(srt, encoding='utf-8')
-    # Use relative image names so paths containing Chinese characters need no filter escaping.
-    concat = 'ffconcat version 1.0\n' + ''.join(f"file 'page-{i+1}.png'\nduration {duration:.9f}\n" for i, duration in enumerate(durations))
-    concat += f"file 'page-{len(durations)}.png'\n"
-    (directory / 'pages.ffconcat').write_text(concat, encoding='utf-8')
-    command = ['ffmpeg', '-hide_banner', '-loglevel', 'warning', '-y', '-threads', '2',
-               '-f', 'concat', '-safe', '0', '-i', str(directory / 'pages.ffconcat')]
-    if audio_file:
-        command += ['-i', str(audio_file)]
-    command += ['-vf', 'fps=25,format=yuv420p', '-c:v', 'libx264', '-preset', 'veryfast', '-threads', '2', '-crf', '22']
+    if typography:
+        command = typography_command(directory, durations)
+    else:
+        # Relative image names also work when the data directory contains Chinese characters.
+        concat = 'ffconcat version 1.0\n' + ''.join(f"file 'page-{i+1}.png'\nduration {duration:.9f}\n" for i, duration in enumerate(durations))
+        concat += f"file 'page-{len(durations)}.png'\n"
+        (directory / 'pages.ffconcat').write_text(concat, encoding='utf-8')
+        command = ['ffmpeg', '-hide_banner', '-loglevel', 'warning', '-y', '-threads', '2',
+                   '-f', 'concat', '-safe', '0', '-i', str(directory / 'pages.ffconcat')]
+        if audio_file:
+            command += ['-i', str(audio_file)]
+        command += ['-vf', 'fps=25,format=yuv420p']
+    command += ['-c:v', 'libx264', '-preset', 'veryfast', '-threads', '2', '-crf', '22']
     command += ['-c:a', 'aac', '-b:a', '128k'] if audio_file else ['-an']
     command += ['-t', f'{sum(durations):.9f}', '-movflags', '+faststart', str(directory / 'video.mp4')]
     run(command, directory, 'ffmpeg')
@@ -402,7 +500,8 @@ def execute(request):
     video = next(s for s in probe['streams'] if s['codec_type'] == 'video')
     audio_streams = [s for s in probe['streams'] if s['codec_type'] == 'audio']
     duration = float(probe['format']['duration'])
-    duration_ok = abs(duration - DAILY_SECONDS) <= .05 if daily else 30 <= duration <= 45.1
+    fixed_duration = TYPE_SECONDS if typography else DAILY_SECONDS if daily else None
+    duration_ok = abs(duration - fixed_duration) <= .05 if fixed_duration else 30 <= duration <= 45.1
     if (video['width'], video['height']) != size or not duration_ok or bool(audio_file) != bool(audio_streams):
         raise RuntimeError('成片未通过画幅、时长或音轨检查')
     return {'duration': duration, 'audio': audio, 'captions': captions, 'actualTtsSegments': audio['actualTtsSegments'],

@@ -13,6 +13,7 @@ function runtime({failCompile=false,failStart=false}={}){
     const body=request.body?JSON.parse(request.body):null;calls.push({path,body});
     let value;
     if(path.endsWith('/draft')){current={...current,brief:body.options??current.brief,document_ids:body.document_ids??current.document_ids,followup:body.followup};value={conversation:current};}
+    else if(path.endsWith('/topics'))value={topics:{'1':['第一题','第二题','第三题']}};
     else if(path.endsWith('/chat')){compileCount++;assert.equal(body.followup,false);assert.equal(body.options.note,options.note);if(failCompile)return new Response(JSON.stringify({ok:false,error:'整理失败'}),{status:400});current={...current,brief:{...current.brief,note:body.options.note+'\n'+body.text,keywords:['新方向']}};value={operation_id:'compile'};}
     else if(path.includes('/operations/'))value={operation:{id:'compile',kind:'interview',status:'done',result:{ready:true,stale:false}}};
     else if(path.endsWith('/start')){startCount++;if(failStart&&startCount===1)return new Response(JSON.stringify({ok:false,error:'启动暂不可用'}),{status:409});assert.match(body.options.note,/本次讲选型/);assert.deepEqual(body.options.keywords,['新方向']);value={job_id:'job',planned:1,total:1};}
@@ -33,6 +34,21 @@ test('消息默认空，与有效说明独立；草稿按任务隔离并跨实�
 test('未发送消息直接开始：只整理一次，继承当前条件，恢复追问偏好，成功后清空',async()=>{
   const run=runtime();run.client.setMessageDraft('本次讲选型');await run.client.submitMessage({start:true});
   assert.deepEqual(run.counts,{compileCount:1,startCount:1});assert.equal(run.client.state.ui.followup,true);assert.equal(run.client.messageDraft(),'');assert.match(run.client.state.options.note,/已撤销价格要求/);assert.equal(run.calls.some(c=>c.path.includes('generation-plan')),false);run.client.dispose();
+});
+
+test('推荐只使用已整理要求，整理出新范围后重新选题',async()=>{
+  const run=runtime(),{client}=run;
+  client.setMessageDraft('本次讲选型');
+  const topic=await client.pickWritingTopic(async recommend=>(await recommend([],3))['1'][1]);
+  client.setWritingTopic(topic);
+  assert.deepEqual(run.counts,{compileCount:0,startCount:0});
+  assert.equal(client.messageDraft(),'本次讲选型');
+  assert.deepEqual(run.calls.find(c=>c.path.endsWith('/topics')).body,{seen:[],count:3});
+  await client.submitMessage({start:true,chooseTopic:async recommend=>(await recommend([],3))['1'][2]});
+  assert.equal(run.calls.filter(c=>c.path.endsWith('/topics')).length,2);
+  assert.equal(run.calls.find(c=>c.path.endsWith('/start')).body.options.topic,'第三题');
+  assert.equal(client.writingTopic(),'');
+  client.dispose();
 });
 
 test('整理失败保留消息并阻止启动；启动失败后显式重试复用已整理要求',async()=>{

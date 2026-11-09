@@ -2,40 +2,43 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { CustomerClient } from '../../web/workbench/customers-client.mjs';
 import { CustomersWorkspace } from '../../web/workbench/customers.mjs';
-import { assertBatchVideoLimit, batchConfirmation, collectBatchVideos } from '../../web/workbench/customer-batch-video.mjs';
+import { assertBatchVideoLimit } from '../../web/workbench/customer-batch-video.mjs';
+import { createTopicHistory, TopicChoice } from '../../web/workbench/topic-recommendation.mjs';
 
-function formRows(...rows) {
-  return {querySelectorAll:() => rows.map(({topic, source, index = '', narration = true}) => ({
-    querySelector:selector => ({
-      '[data-batch-video-topic]':{value:topic},
-      '[data-batch-video-source]':{value:source},
-      '[data-batch-video-index]':{value:index},
-      '[data-batch-video-narration]':{checked:narration},
-    })[selector],
-  }))};
-}
-
-test('资料视频可单独安排，文章来源只接受本客户本批次的有效篇序', () => {
-  const documents = {topic:' 预约流程 ', source:'documents', index:'4', narration:false};
-  const article = {topic:'样件流程', source:'article', index:'2'};
-  assert.deepEqual(collectBatchVideos(formRows(documents),0), [{topic:'预约流程',source:'documents',narration:false}]);
-  assert.deepEqual(collectBatchVideos(formRows(documents,article),2)[1], {topic:'样件流程',source:'article',article_index:2,narration:true});
-  assert.throws(() => collectBatchVideos(formRows(article),0), /需要本批文章/);
-  assert.throws(() => collectBatchVideos(formRows(article),1), /第 1 到第 1 篇文章/);
-  assert.throws(() => collectBatchVideos(formRows({...article,index:''}),2), /请选择/);
-  assert.throws(() => assertBatchVideoLimit([{videos:[documents,article]},{videos:[documents,article]}]), /最多安排 3 条/);
+test('资料视频的主题推荐在提交之外进行，批次条数限制照常生效', async () => {
+  const item = {client_id:'客户', videos:[{source:'documents'}]};
+  const calls = [];
+  const service = new CustomerClient(async (path, method, body) => {
+    calls.push({path, method, body});
+    return {topics:{'video:1':['推荐题一','推荐题二']}};
+  }, {storage:null});
+  const seen = ['上一批题目'];
+  const topics = await service.batchTopics(item,'revision',['video:1'],seen,2);
+  assert.deepEqual(calls,[{path:'/api/workbench/batches/topics',method:'POST',
+    body:{item,revision:'revision',rows:['video:1'],seen,count:2}}]);
+  assert.deepEqual(topics.topics['video:1'],['推荐题一','推荐题二']);
+  assert.equal(service.pending,null);
+  assert.throws(() => assertBatchVideoLimit([item,item,item,item]), /最多安排 3 条/);
 });
 
-test('从预检回执确认两类数量与视频来源，旧版文章回执仍可确认', () => {
-  const item = {name:'客户', planned:2, videos:[
-    {topic:'<预约流程>',source:'documents',narration:false},
-    {topic:'试用准备',source:'article',article_index:2,narration:true},
-  ]};
-  const check = {ready:true,total:2,video_total:2,items:[item]};
-  const result = batchConfirmation(check,() => '客户',[]);
-  for (const text of ['2 篇文章、2 条视频','&lt;预约流程&gt;','客户资料直出 · 无配音','本批第 2 篇文章 · 普通话配音']) assert.ok(result.includes(text));
-  const old = batchConfirmation({ready:true,total:2,items:[{name:'原客户',planned:2}]},() => '',[]);
-  assert.match(old,/2 篇文章、0 条视频/);
+test('推荐历史拒绝重复题目，更新推荐保留手选和取消状态', async () => {
+  const history = createTopicHistory(), choice = new TopicChoice();
+  const first = await history(async (seen,count) => {
+    assert.deepEqual([seen,count],[[],3]);
+    return {'1':['默认题','备选甲','备选乙']};
+  },['1'],3);
+  choice.setRecommended(first['1']);
+  assert.deepEqual([choice.topic,choice.options],['默认题',['默认题','备选甲','备选乙']]);
+  choice.select(choice.options[1]);
+  const more = await history(async (seen,count) => {
+    assert.deepEqual([seen,count],[['默认题','备选乙','备选甲'],2]);
+    return {'1':['新备选甲','新备选乙']};
+  },['1'],2,[choice.topic]);
+  choice.setAlternatives(more['1']);
+  assert.deepEqual(choice.options,['备选甲','新备选甲','新备选乙']);
+  choice.excluded = true;
+  assert.deepEqual([choice.topic,choice.excluded],['备选甲',true]);
+  await assert.rejects(history(async () => ({'1':'默认题？'}),['1'],1),/已看过/);
 });
 
 test('批次详情分开显示进度，已完成视频可下载，单条失败和中断分别重试', async () => {

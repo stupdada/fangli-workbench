@@ -1,16 +1,19 @@
-"""ZIP call signatures over the WorkBuddy SDK. No implicit retry or model switch."""
+"""ZIP call signatures over WorkBuddy or a locally configured API."""
 import json
 import os
 import queue
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
 from app import llm
+from . import local_api
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MODEL = 'deepseek-v4.1-flash'
+WORKBUDDY = 'workbuddy'
 local = threading.local()
 
 
@@ -23,7 +26,11 @@ def public_error(error):
     return '本地处理未完成，已保存内容保留；请查看服务状态后明确重试'
 
 
-def failure(kind='uncertain', status=None):
+def name(transport):
+    return 'WorkBuddy' if transport == WORKBUDDY else local_api.PROVIDERS[transport][0]
+
+
+def failure(kind='uncertain', status=None, transport=WORKBUDDY):
     # These kinds intentionally cannot trigger ZIP's network/bad_request fallback.
     messages = {
         'auth': 'WorkBuddy 连接未获授权，请检查本机连接配置',
@@ -34,14 +41,24 @@ def failure(kind='uncertain', status=None):
         'cancelled': '已停止本地处理；云端是否已停止无法确认，未自动重复请求',
         'uncertain': 'WorkBuddy 返回不完整、超时或连接中断；执行状态不确定，未自动重复调用',
     }
+    if transport != WORKBUDDY:
+        messages = {key: message.replace('WorkBuddy', name(transport)) for key, message in messages.items()}
+        messages['configuration'] = f'{name(transport)} 的本机配置缺失或无效，请检查环境变量'
     return llm.LLMError(messages.get(kind, messages['uncertain']), kind, status)
 
 
 def events(payload):
-    node = shutil.which(os.environ.get('GEO_NODE', 'node'))
-    if not node:
-        raise failure('configuration')
-    proc = subprocess.Popen([node, str(ROOT / 'bridge/workbuddy.cjs')], stdin=subprocess.PIPE,
+    transport = payload.get('transport', WORKBUDDY)
+    if transport == WORKBUDDY:
+        node = shutil.which(os.environ.get('GEO_NODE', 'node'))
+        if not node:
+            raise failure('configuration')
+        command = [node, str(ROOT / 'bridge/workbuddy.cjs')]
+    else:
+        # The stdlib-only worker can bypass the Windows venv launcher so cancellation reaps it directly.
+        python = getattr(sys, '_base_executable', sys.executable)
+        command = [python, '-X', 'utf8', '-m', 'bridge.local_api']
+    proc = subprocess.Popen(command, cwd=ROOT, stdin=subprocess.PIPE,
                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding='utf-8',
                             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     inbox = queue.Queue(maxsize=256)
@@ -60,7 +77,7 @@ def events(payload):
             if not closing.is_set():
                 inbox.put(None)
 
-    reader = threading.Thread(target=read, name='workbuddy-stdout', daemon=True)
+    reader = threading.Thread(target=read, name='writing-model-stdout', daemon=True)
     reader.start()
     ended = False
     deadline = time.monotonic() + payload.get('timeout', 300) + 5
@@ -70,12 +87,12 @@ def events(payload):
         while True:
             cancelled = getattr(local, 'cancel', None)
             if cancelled and cancelled.is_set():
-                raise failure('cancelled')
+                    raise failure('cancelled', transport=transport)
             try:
                 line = inbox.get(timeout=.2)
             except queue.Empty:
                 if time.monotonic() >= deadline:
-                    raise failure()
+                    raise failure(transport=transport)
                 continue
             if line is None:
                 break
@@ -83,26 +100,26 @@ def events(payload):
             try:
                 item = json.loads(line)
             except (ValueError, TypeError):
-                raise failure() from None
+                raise failure(transport=transport) from None
             if not isinstance(item, dict):
-                raise failure()
+                raise failure(transport=transport)
             kind = item.get('type')
             if kind == 'error':
                 trace = getattr(local, 'trace', None)
                 if trace:
                     trace('provider_error', {'kind': item.get('kind'), 'status': item.get('status'),
                         'diagnostic': item.get('diagnostic', {})})
-                raise failure(item.get('kind') or 'uncertain', item.get('status'))
+                raise failure(item.get('kind') or 'uncertain', item.get('status'), transport)
             if kind in ('done', 'models'):
                 ended = True
             if ended and kind not in ('done', 'models'):
-                raise failure()
+                raise failure(transport=transport)
             yield item
         proc.wait(timeout=3)
         if not ended or proc.returncode:
-            raise failure()
+            raise failure(transport=transport)
     except (OSError, subprocess.SubprocessError, UnicodeError):
-        raise failure() from None
+        raise failure(transport=transport) from None
     finally:
         closing.set()
         if proc.poll() is None:
@@ -119,15 +136,22 @@ def events(payload):
 
 
 def stream(messages, settings, temperature=None, max_tokens=None, force_json=False, timeout=300, **_):
-    # Native regeneration has its own fallback loop. A failed WorkBuddy operation
-    # must never dispatch another request through that loop without a new user action.
+    # Native regeneration has its own fallback loop. Keep a failed request stopped.
+    transport = settings.get('transport', WORKBUDDY)
     previous = getattr(local, 'failure', None)
-    if previous: raise failure(previous['kind'], previous.get('status'))
-    payload = {'model': settings.get('model') or DEFAULT_MODEL, 'messages': messages,
+    if previous: raise llm.LLMError(previous['message'], previous['kind'], previous.get('status'))
+    model = settings.get('model') or (DEFAULT_MODEL if transport == WORKBUDDY else '')
+    payload = {'model': model, 'messages': messages,
                'temperature': settings.get('temperature', .8) if temperature is None else temperature,
                'max_tokens': max_tokens or settings.get('max_tokens', 4000),
                'force_json': force_json, 'timeout': timeout}
-    if settings.get('disable_thinking', True) and llm._is_thinking_model(payload['model'], settings.get('api_base', '')):
+    if transport != WORKBUDDY:
+        payload['transport'] = transport
+    disable_thinking = settings.get('disable_thinking', True)
+    if transport == 'deepseek':
+        payload['thinking'] = {'type': 'disabled' if disable_thinking else 'enabled'}
+    elif disable_thinking and transport in (WORKBUDDY, 'dashscope') and llm._is_thinking_model(
+            model, 'dashscope' if transport == 'dashscope' else settings.get('api_base', '')):
         payload['enable_thinking'] = False
     trace = getattr(local, 'trace', None)
     pieces, error, done = [], None, False
@@ -143,13 +167,14 @@ def stream(messages, settings, temperature=None, max_tokens=None, force_json=Fal
             elif item.get('type') == 'done':
                 finish = item.get('finish_reason')
                 if finish != 'stop':
-                    raise failure('truncated' if finish == 'length' else 'uncertain')
+                    raise failure('truncated' if finish == 'length' else 'uncertain', transport=transport)
                 done = True
         if not done or not ''.join(pieces).strip():
-            raise failure()
+            raise failure(transport=transport)
     except llm.LLMError as exc:
         error = {'kind': exc.kind, 'status': exc.status, 'message': public_error(exc)}
-        local.failure = error
+        if trace or getattr(local, 'cancel', None) is not None:
+            local.failure = error
         halt = getattr(local, 'halt', None)
         if halt:
             halt()

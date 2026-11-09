@@ -1,13 +1,17 @@
 import { clone } from './model.mjs';
 import { parseFile } from './files.mjs';
+import { randomUUID, sha256Hex } from './browser-crypto.mjs';
 
 const enc = encodeURIComponent;
 export const activeBatch = batch => ['queued', 'running'].includes(batch?.status);
 export const canonical = value => JSON.stringify(value, (_, v) => v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.keys(v).sort().map(k => [k, v[k]])) : v);
 const pendingKey = 'fangli.batch.pending.v1';
+export const OCR_PDF_MAX_MB = 50;
+export const ORIGINAL_MAX_MB = 8;
+const bytesPerMB = 1024 * 1024;
 
 export class CustomerClient {
-  constructor(api, { storage = globalThis.localStorage, uuid = () => crypto.randomUUID() } = {}) {
+  constructor(api, { storage = globalThis.localStorage, uuid = randomUUID } = {}) {
     this.api = api; this.storage = storage; this.uuid = uuid;
     try { this.pending = JSON.parse(storage?.getItem(pendingKey) || 'null'); } catch { this.pending = null; }
   }
@@ -18,6 +22,7 @@ export class CustomerClient {
   restoreClient(id) { return this.api(this.path(id, '/restore'), 'POST', {}); }
   async importDrafts() { return (await this.api('/api/workbench/import-drafts')).drafts; }
   startImport(id, name) { return this.api('/api/workbench/import-drafts', 'POST', {id,name}); }
+  async finalizeImport(id, name) { return (await this.api(`/api/workbench/import-drafts/${enc(id)}/finalize`, 'POST', {name})).client; }
   async saveClient(id, name, profile, creationId) { return (await this.api(id ? this.path(id) : '/api/workbench/clients', id ? 'PUT' : 'POST', { name, profile, ...(!id && creationId ? {creation_id:creationId} : {}) })).client; }
   plan(id) { return this.api(this.path(id, '/generation-plan')); }
   savePlan(id, payload) { return this.api(this.path(id, '/generation-plan'), 'PUT', payload); }
@@ -25,8 +30,13 @@ export class CustomerClient {
   removeDocument(id, documentId) { return this.api(this.path(id, `/documents/${enc(documentId)}`), 'DELETE', {}); }
   restoreDocument(id, documentId, add_to_defaults) { return this.api(this.path(id, `/documents/${enc(documentId)}/restore`), 'POST', {add_to_defaults}); }
   retryDocument(id, documentId, payload = {}) { return this.api(this.path(id, `/documents/${enc(documentId)}/retry`), 'POST', payload); }
+  async recognition(id, documentId) { return (await this.api(this.path(id, `/documents/${enc(documentId)}/recognition`))).recognition; }
   checkDocument(id, payload) { return this.api(this.path(id, '/documents/check'), 'POST', payload); }
-  addDocument(id, payload) { return this.api(this.path(id, '/documents'), 'POST', payload); }
+  addDocument(id, payload) {
+    const largePDF = payload.recognize && /\.pdf$/i.test(payload.filename) &&
+      payload.content_b64?.length > 4 * Math.ceil(ORIGINAL_MAX_MB * bytesPerMB / 3);
+    return this.api(this.path(id, '/documents'), 'POST', payload, largePDF ? {timeoutMs:180000} : undefined);
+  }
   async revisions(id, documentId) { return (await this.api(this.path(id, `/documents/${enc(documentId)}/revisions`))).documents; }
   history(id) { return this.api(this.path(id, '/history')); }
   startIntake(id, payload) { return this.api(this.path(id, '/intakes'), 'POST', payload); }
@@ -50,6 +60,9 @@ export class CustomerClient {
   }
   batchVideoDownload(batchId) { return this.batchPath(batchId, '/video-download'); }
   preflight(items) { return this.api('/api/workbench/batches/preflight', 'POST', { items: clone(items) }); }
+  batchTopics(item, revision, rows, seen, count = 1) {
+    return this.api('/api/workbench/batches/topics', 'POST', {item, revision, rows, seen, count});
+  }
   async submit(items) {
     const snapshot = clone(items);
     if (this.pending && canonical(this.pending.items) !== canonical(snapshot)) throw new Error('上一批提交结果尚未确认，请先重发同一次请求并恢复结果，再提交新安排');
@@ -70,17 +83,21 @@ export class CustomerClient {
   retrySubmission() { if (!this.pending) throw new Error('没有待恢复的提交'); return this.submit(this.pending.items); }
 }
 
-export async function originalPayload(file) {
-  if (file.size > 8 * 1024 * 1024) throw new Error(`${file.name} 超过 8 MB，请拆分后添加`);
+export async function originalPayload(file, {recognize = false} = {}) {
+  const limit = recognize && /\.pdf$/i.test(file.name) ? OCR_PDF_MAX_MB : ORIGINAL_MAX_MB;
+  if (file.size > limit * bytesPerMB) throw new Error(`${file.name} 超过 ${limit} MB，请压缩或拆分后添加`);
   const bytes = new Uint8Array(await file.arrayBuffer());
-  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+  const digest = sha256Hex(bytes);
   let binary = '';
   for (let offset = 0; offset < bytes.length; offset += 8192) binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
-  return { filename: file.name, sha256: [...digest].map(v => v.toString(16).padStart(2, '0')).join(''), content_b64: btoa(binary) };
+  return { filename: file.name, sha256: digest, content_b64: btoa(binary) };
 }
 
-export async function importCustomerFile(service, clientId, file, resolve) {
-  const original = await originalPayload(file);
+export const recognitionExtensions = ['.pdf','.jpg','.jpeg','.png','.webp','.bmp','.tif','.tiff','.heic','.heif'];
+export const recognizesFile = filename => recognitionExtensions.includes(filename.slice(filename.lastIndexOf('.')).toLowerCase());
+
+export async function importCustomerFile(service, clientId, file, resolve, {recognize = false} = {}) {
+  const original = await originalPayload(file,{recognize});
   const check = await service.checkDocument(clientId, { filename: file.name, sha256: original.sha256 });
   if (check.duplicate) return { outcome: 'duplicate', document: check.duplicate, is_current: check.is_current ?? check.duplicate.is_current };
   let choice = {};
@@ -89,7 +106,8 @@ export async function importCustomerFile(service, clientId, file, resolve) {
     if (!choice) return { outcome: 'cancelled' };
   }
   const payload = { filename: file.name, content_b64: original.content_b64, ...choice };
-  if (/\.pdf$/i.test(file.name)) payload.text = (await parseFile(file, service.api)).text;
+  if (recognize && recognizesFile(file.name)) payload.recognize = true;
+  else if (/\.pdf$/i.test(file.name)) payload.text = (await parseFile(file, service.api)).text;
   let result = await service.addDocument(clientId, payload);
   // The server rechecks after upload; a concurrent import may introduce a new candidate.
   if (result.outcome === 'needs_resolution') {

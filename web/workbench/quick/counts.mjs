@@ -1,9 +1,11 @@
 const MAX_ACCOUNT_COUNT = 20;
 
+export const accountCapacity = selections => selections.length * MAX_ACCOUNT_COUNT;
+
 export function distributeCount(selections, count) {
   const total = selections.reduce((sum, item) => sum + item.count, 0);
   if (count == null || count === total || !selections.length) return selections;
-  if (count > selections.length * MAX_ACCOUNT_COUNT) {
+  if (count > accountCapacity(selections)) {
     throw new Error('现有账号篇数不足，请添加账号或减少每客户篇数');
   }
   const increasing = count > total;

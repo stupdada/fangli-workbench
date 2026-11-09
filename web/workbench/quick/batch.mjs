@@ -1,19 +1,21 @@
 
-import { BatchMonitor, activeBatch } from '../customers-client.mjs';
+import { BatchMonitor, activeBatch, canonical } from '../customers-client.mjs';
+import { readBrowserDraft, writeBrowserDraft } from '../browser-draft.mjs';
 import { planOptions } from '../customer-platforms.mjs';
-import { addBatchVideo, assertBatchVideoLimit, collectBatchVideos, installBatchVideoStyles, updateVideoLimit, updateVideoSource, videoPlanner } from '../customer-batch-video.mjs';
-import { articleBody, enabled, escapeHTML as e, markdown, optionIssues, planSummary, splitWords } from '../model.mjs';
-import { distributeCount } from './counts.mjs';
+import { MAX_BATCH_VIDEOS, assertBatchVideoLimit, batchVideoResults, installBatchVideoStyles } from '../customer-batch-video.mjs';
+import { articleBody, enabled, escapeHTML as e, markdown, optionIssues, splitWords } from '../model.mjs';
+import { accountCapacity, distributeCount } from './counts.mjs';
 import { articleLengthHint } from './article-length.mjs';
 import { createBatchPreview } from './preview.mjs';
 
 const statuses = {queued:'排队中', running:'生成中', done:'已完成', partial:'部分完成', error:'失败', stopped:'已停止', interrupted:'中断待确认'};
 const accountTypes = {official:'官方号', personal:'个人号'};
 const workspace = '/workbench/zip/index.html';
+const draftKey = 'fangli.quick-creation.draft.v1';
 const accountKey = item => `${item.platform_id}:${item.account_type}`;
 const chevron = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
-export function createQuickCreation(client, service, { onBatch }) {
+export function createQuickCreation(client, service, { onBatch, openDocuments, newCustomer }) {
   const root = document.createElement('section');
   root.className = 'quick-main';
   root.innerHTML = `
@@ -29,14 +31,20 @@ export function createQuickCreation(client, service, { onBatch }) {
           </details>
           <button class="quick-select-all" type="button" data-select-all>全选</button>
         </div>
-        <label class="quick-count"><span>每客户篇数</span><input type="number" min="1" max="2000" step="1" inputmode="numeric" name="count" placeholder="沿用"></label>
+        <label class="quick-count"><span>每客户篇数</span><input type="number" min="1" max="2000" step="1" inputmode="numeric" name="count" placeholder="沿用" aria-describedby="quick-count-limit"></label>
         <div class="quick-length quick-bulk-length" role="group" aria-label="统一文章篇幅">
           <span>文章篇幅</span><button type="button" data-length="长篇" aria-pressed="false">长</button><button type="button" data-length="短篇" aria-pressed="false">短</button>
           <span class="quick-mixed" data-mixed hidden>各客户设置</span>
         </div>
+        <details class="quick-customer-picker quick-video-picker" data-video-picker>
+          <summary><span data-video-label>＋ 添加视频</span>${chevron}</summary>
+          <div class="quick-picker-pop"><p class="muted">设置每位客户的视频条数</p><div data-video-options></div></div>
+        </details>
         <button class="button primary quick-submit" type="submit">开始生成</button>
       </div>
       <p class="quick-batch-totals" data-batch-totals role="status" hidden></p>
+      <p class="quick-batch-totals" data-draft-status role="status" hidden></p>
+      <p class="error-text quick-error" id="quick-count-limit" role="status" hidden></p>
       <p class="error-text quick-error" data-quick-error role="alert" hidden></p>
       <div id="quick-details" class="quick-detail-shell" inert><div class="quick-detail-clip"><div class="quick-details">
         <aside class="quick-clients" aria-label="本批客户">
@@ -49,7 +57,7 @@ export function createQuickCreation(client, service, { onBatch }) {
           </div>
           <div class="quick-client-heading" hidden>
             <h2></h2>
-            <div class="quick-view-switch" hidden><button type="button" data-quick-view="plan">安排</button><button type="button" data-quick-view="result">稿件</button></div>
+            <div class="quick-view-switch" hidden><button type="button" data-quick-view="plan">安排</button><button type="button" data-quick-view="result">生成结果</button></div>
           </div>
           <p class="quick-empty" data-no-client>请选择客户。</p>
           <fieldset class="quick-plans"></fieldset>
@@ -59,27 +67,65 @@ export function createQuickCreation(client, service, { onBatch }) {
     </form>`;
   const $ = selector => root.querySelector(selector);
   const form = $('form'), button = $('[type=submit]'), all = $('[data-select-all]');
-  const preview = createBatchPreview(root);
+  const preview = createBatchPreview(root, (...args)=>service.batchTopics(...args));
   const expand = $('[data-expand]'), details = $('.quick-detail-shell'), plansRoot = $('.quick-plans');
   const customerPicker = $('.quick-customer-picker'), pickerSearch = $('[data-picker-search]'), pickerList = $('.quick-picker-list');
+  const videoPicker = $('[data-video-picker]'), videoOptions = $('[data-video-options]');
   const lifetime = new AbortController();
   const choices = $('.quick-client-list'), search = $('.quick-search input'), countField = form.elements.count;
   const heading = $('.quick-client-heading'), viewSwitch = $('.quick-view-switch');
   const errorBox = $('[data-quick-error]'), result = $('.quick-result');
   const progress = $('.quick-batch-progress'), status = $('[data-batch-status]'), batchLink = $('[data-action="open-quick-batch"]');
   const selected = new Set(), plans = new Map(), articles = new Map(), issues = new Map();
+  const videoSettings = new Map();
+  const edits = new Map();
   let batch = null, submitting = false, initialized = false, currentId = null, view = 'plan', length = '', resultKey = '';
+  let repairAfterSubmit = null;
+  let draftSaved = false, documentsToRefresh = null;
   let itemsByClient = new Map();
 
   function idName(id) { return client.state.clients.find(customer => customer.id === id)?.name || itemsByClient.get(id)?.name || '客户'; }
   function platformName(id) { return client.platforms.find(platform => String(platform.id) === String(id))?.name || `平台 ${id}`; }
   function setError(message) { errorBox.textContent = message; errorBox.hidden = !message; }
+  function draftStatus(message) {
+    $('[data-draft-status]').textContent = message;
+    $('[data-draft-status]').hidden = !message;
+  }
+  function rememberDraft(entry) {
+    if (entry?.options) {
+      const draft = {};
+      for (const key of ['selections','format_overrides']) {
+        if (canonical(entry.options[key]) !== canonical(entry.base[key])) draft[key] = entry.options[key];
+      }
+      const keywords = entry.words.filter(word=>entry.keywords.has(word));
+      if (canonical(keywords) !== canonical(entry.base.keywords)) draft.keywords = keywords;
+      const note = entry.row.querySelector('textarea').value;
+      const keywordInput = entry.row.querySelector('[data-keyword-entry]').value;
+      if (note !== (entry.base.note || '')) draft.note = note;
+      if (keywordInput) draft.keywordInput = keywordInput;
+      if (entry.manual) draft.manual = true;
+      if (entry.length !== undefined) draft.length = entry.length;
+      if (entry.documentOverride !== undefined) draft.documentIds = entry.documentOverride;
+      const id = entry.row.dataset.clientId;
+      if (Object.keys(draft).length) edits.set(id,structuredClone(draft));
+      else edits.delete(id);
+    }
+    draftSaved = writeBrowserDraft(draftKey,{
+      selected: [...selected], count:countField.value, length, currentId, expanded:!details.inert,
+      clients:Object.fromEntries(edits), videos:Object.fromEntries(videoSettings),
+    });
+    if (!draftSaved) draftStatus('当前浏览器未能保存本批安排。');
+  }
   function batchCount() {
     if (!countField.validity.valid) throw new Error('每客户篇数须为 1 至 2000 的整数，留空沿用方案');
     return countField.value ? countField.valueAsNumber : null;
   }
   function selectionsFor(entry) {
     return entry.manual ? entry.options.selections : distributeCount(entry.options.selections,batchCount());
+  }
+  function capacityGap(entry) {
+    const capacity = accountCapacity(entry.options.selections);
+    return !entry.manual && capacity > 0 && countField.valueAsNumber > capacity ? capacity : 0;
   }
   function accountRows(entry) {
     try { return selectionsFor(entry); }
@@ -90,11 +136,14 @@ export function createQuickCreation(client, service, { onBatch }) {
     if (!entry || entry.loading) return '';
     if (entry.error) return entry.error;
     if (issues.has(id)) return issues.get(id);
+    const capacity = capacityGap(entry);
+    if (capacity) return capacityMessage(capacity);
     try {
       const options = readOptions(entry);
       const problems = optionIssues(options,client.platforms,client.targets);
-      if (!options.selections.length && !entry.row.querySelector('[data-batch-video-row]')) problems.push('请选择平台和账号');
+      if (!options.selections.length && !videoSettings.get(id)?.count) problems.push('请选择平台和账号，或添加视频');
       if (options.selections.length && !options.keywords.length) problems.push('请填写目标关键词');
+      if (videoSettings.get(id)?.count && !documentIdsFor(entry).length) problems.push('制作视频需要客户资料');
       return problems.join('；');
     } catch (error) { return error.message; }
   }
@@ -197,6 +246,7 @@ export function createQuickCreation(client, service, { onBatch }) {
     renderKeywords(entry);
     issues.delete(entry.row.dataset.clientId);
     setError('');
+    rememberDraft(entry);
     refresh();
   }
   function lengthFor(entry) { return entry?.length ?? length; }
@@ -234,9 +284,15 @@ export function createQuickCreation(client, service, { onBatch }) {
     plansRoot.append(row);
     try {
       const {plan,available_keywords = []} = await service.plan(id);
-      entry.options = planOptions(plan.options);
+      const draft = edits.get(id) || {};
+      entry.base = planOptions(plan.options);
+      entry.options = planOptions({...entry.base,...draft});
+      entry.manual = Boolean(draft.manual);
+      entry.length = draft.length;
+      entry.documentIds = plan.document_ids || [];
+      entry.documentOverride = draft.documentIds;
       entry.keywords = new Set(entry.options.keywords);
-      entry.words = [...new Set([...entry.keywords,...available_keywords])];
+      entry.words = [...new Set([...entry.keywords,...(entry.base.keywords || []),...available_keywords])];
       row.innerHTML = `<div class="quick-platform-head"><h3>发布安排</h3>
         <details class="quick-add" data-add-picker><summary>添加平台</summary><div class="quick-account-choices"></div></details>
       </div>
@@ -249,15 +305,22 @@ export function createQuickCreation(client, service, { onBatch }) {
         <div class="quick-keyword-add"><input data-keyword-entry maxlength="500" aria-label="添加本批关键词" placeholder="输入关键词，回车添加"><button type="button" class="quick-text-button" data-add-keywords>添加</button></div>
       </div>
       <details class="quick-extra" data-client-note><summary>补充要求</summary><label class="quick-field"><span class="sr-only">${e(idName(id))}的补充要求</span><textarea rows="3" maxlength="20000" placeholder="填写该客户本次的写作要求"></textarea></label></details>
-      <details class="quick-extra" data-quick-formats hidden><summary>发布形态</summary><div class="quick-formats"></div></details>
-      <details class="quick-extra"><summary>视频安排 <span class="quick-video-time">成片 30—45 秒</span></summary>
-        <p class="quick-video-limit" data-batch-video-limit></p>${videoPlanner()}
+      <details class="quick-extra" data-quick-documents>
+        <summary><span data-document-summary>本批资料</span></summary>
+        <div data-document-options></div>
+        <div class="inline-actions">
+          <button type="button" class="quick-text-button" data-reset-documents hidden>沿用常用资料</button>
+          <button type="button" class="button quiet sm" data-open-documents>去客户资料补录</button>
+        </div>
       </details>
+      <details class="quick-extra" data-quick-formats hidden><summary>发布形态</summary><div class="quick-formats"></div></details>
       <p class="error-text quick-error" data-client-error hidden></p>`;
-      row.querySelector('textarea').value = entry.options.note || '';
-      if (entry.options.note) row.querySelector('[data-client-note] summary').textContent = '补充要求 · 已填写';
+      row.querySelector('textarea').value = draft.note ?? entry.base.note ?? '';
+      row.querySelector('[data-keyword-entry]').value = draft.keywordInput || '';
+      if (row.querySelector('textarea').value.trim()) row.querySelector('[data-client-note] summary').textContent = '补充要求 · 已填写';
       renderAccounts(entry);
       renderKeywords(entry);
+      syncDocumentSummary(entry);
     } catch (error) {
       entry.error = error.message;
       row.innerHTML = `<p class="error-text">${e(error.message)}</p><button class="button quiet" type="button" data-reload-plan>重新读取</button>`;
@@ -279,6 +342,39 @@ export function createQuickCreation(client, service, { onBatch }) {
     return options;
   }
 
+  function documentIdsFor(entry) { return entry.documentOverride ?? entry.documentIds; }
+  function syncDocumentSummary(entry) {
+    const count = documentIdsFor(entry).length;
+    entry.row.querySelector('[data-document-summary]').textContent = count ? `本批资料 · ${count} 份` : '本批资料';
+    entry.row.querySelector('[data-reset-documents]').hidden = entry.documentOverride === undefined;
+  }
+  function renderDocumentOptions(entry) {
+    const target = entry.row.querySelector('[data-document-options]');
+    const selectedIds = new Set(documentIdsFor(entry));
+    const documents = entry.availableDocuments || [];
+    const missing = [...selectedIds].some(id=>!documents.some(doc=>doc.id === id));
+    target.innerHTML = entry.documentError ? `<p class="error-text" role="status">${e(entry.documentError)}</p>` :
+      (missing ? '<p class="quick-empty">部分已选资料已移出或有新修订，可重新选择。</p>' : '') +
+      (documents.length ? documents.map(doc=>`<label class="quick-document-choice">
+        <input type="checkbox" data-quick-document value="${e(doc.id)}" ${selectedIds.has(doc.id)?'checked':''}>
+        <span>${e(doc.filename)} <small>修订 ${e(doc.revision)}</small></span>
+      </label>`).join('') : '<p class="quick-empty">暂无可用的正文资料。</p>');
+  }
+  function loadDocuments(entry) {
+    if (entry.documentRequest) return entry.documentRequest;
+    if (entry.availableDocuments) return Promise.resolve();
+    const target = entry.row.querySelector('[data-document-options]');
+    target.innerHTML = '<p class="quick-empty" role="status">正在读取客户资料…</p>';
+    entry.documentRequest = service.documents(entry.row.dataset.clientId).then(documents=>{
+      entry.documentError = '';
+      entry.availableDocuments = documents.filter(doc=>doc.is_current && doc.status === 'ready' && doc.text?.trim());
+    }).catch(error=>{ entry.documentError = error.message; }).finally(()=>{
+      entry.documentRequest = null;
+      renderDocumentOptions(entry);
+    });
+    return entry.documentRequest;
+  }
+
   function changeAccountMembership(entry, key, adding) {
     const [id,type] = key.split(':');
     const visible = accountRows(entry);
@@ -292,18 +388,39 @@ export function createQuickCreation(client, service, { onBatch }) {
       }
     }
   }
-  function videoPlans() {
-    return [...new Set([...selected, currentId])].map(id=>plans.get(id)?.row).filter(Boolean);
+  function showVideoOptions() {
+    const active = document.activeElement;
+    const videoClient = active?.dataset.videoCount || active?.dataset.videoNarration;
+    const total = [...selected].reduce((sum,id)=>sum + (videoSettings.get(id)?.count || 0),0);
+    videoOptions.innerHTML = [...selected].map(id=>{
+      const {count = 0, narration = true} = videoSettings.get(id) || {};
+      const maximum = Math.max(count, MAX_BATCH_VIDEOS - total + count);
+      return `<div class="quick-video-option">
+        <label><span>${e(idName(id))}</span><select data-video-count="${e(id)}" aria-label="${e(idName(id))}视频条数">
+          ${Array.from({length:maximum + 1},(_,n)=>`<option value="${n}" ${n === count ? 'selected' : ''}>${n} 条</option>`).join('')}
+        </select></label>
+        ${count ? `<label class="check-label"><input type="checkbox" data-video-narration="${e(id)}" ${narration ? 'checked' : ''}>普通话配音</label>` : ''}
+      </div>`;
+    }).join('') || '<p class="muted">请先选择客户</p>';
+    if (videoClient) {
+      const attribute = active.dataset.videoCount ? 'data-video-count' : 'data-video-narration';
+      videoOptions.querySelector(`[${attribute}="${CSS.escape(videoClient)}"]`)?.focus();
+    }
   }
   function refresh() {
     const pending = Boolean(service.pending), active = activeBatch(batch), locked = submitting || active || pending;
     const ids = [...selected];
-    const chosen = ids.map(id=>plans.get(id));
+    const chosen = ids.map(id=>plans.get(id)).filter(Boolean);
     const loading = chosen.some(entry=>entry.loading);
     const total = chosen.reduce((sum,entry)=>sum + (entry.options ? accountRows(entry).reduce((n,item)=>n+item.count,0) : 0),0);
-    const videoTotal = chosen.reduce((sum,entry)=>sum + entry.row.querySelectorAll('[data-batch-video-row]').length,0);
+    const videoTotal = ids.reduce((sum,id)=>sum + (videoSettings.get(id)?.count || 0),0);
+    const next = pending || active || loading || submitting ? null : nextAction();
+    const limited = !active && !pending && chosen.find(entry=>entry.options && capacityGap(entry));
+    const countLimit = $('#quick-count-limit');
+    countLimit.hidden = !limited;
+    countLimit.textContent = limited ? `${idName(limited.row.dataset.clientId)}：${capacityMessage(capacityGap(limited))}` : '';
     const totals = $('[data-batch-totals]');
-    totals.hidden = !ids.length || loading || pending;
+    totals.hidden = !ids.length || loading || pending || (!active && (!countField.validity.valid || limited));
     totals.textContent = active ? `文章 ${batch.total} 篇 · 视频 ${batch.video_total || 0} 条` : `文章 ${total} 篇 · 视频 ${videoTotal} 条`;
     const allSelected = ids.length > 0 && ids.length === client.state.clients.length;
     all.disabled = !client.state.clients.length || locked;
@@ -311,14 +428,17 @@ export function createQuickCreation(client, service, { onBatch }) {
     all.setAttribute('aria-label',allSelected ? '清空客户选择' : '全选客户');
     $('[data-picked-count]').textContent = ids.length ? `已选 ${ids.length} 位` : '选择客户';
     customerPicker.inert = locked;
+    videoPicker.inert = locked;
+    $('[data-video-label]').textContent = videoTotal ? `视频 ${videoTotal} 条` : '＋ 添加视频';
+    if (videoPicker.open) showVideoOptions();
     countField.disabled = locked;
     for (const control of root.querySelectorAll('[data-length]')) control.disabled = locked;
     refreshLength();
     plansRoot.disabled = locked;
-    button.disabled = submitting || active || !pending && (!ids.length || loading);
-    const action = details.inert ? '开始生成' : '预览安排';
-    button.textContent = submitting ? '正在提交…' : active ? '生成中…' : pending ? '恢复本次提交' :
-      loading ? '读取安排…' : action;
+    button.disabled = submitting || active || !pending && loading;
+    button.textContent = submitting ? '正在准备…' : active ? '生成中…' : pending ? '恢复本次提交' :
+      loading ? '读取安排…' : next?.label || (details.inert ? generateLabel(total,videoTotal) : '预览安排');
+    expand.disabled = submitting;
     for (const [id, entry] of plans) {
       entry.row.hidden = id !== currentId || view !== 'plan';
       const error = entry.row.querySelector('[data-client-error]');
@@ -329,7 +449,6 @@ export function createQuickCreation(client, service, { onBatch }) {
       }
       if (!entry.row.hidden && entry.options && !entry.error) showLength(entry);
     }
-    updateVideoLimit(plansRoot,videoPlans());
     refreshChoices();
   }
 
@@ -345,14 +464,68 @@ export function createQuickCreation(client, service, { onBatch }) {
     refreshSelection();
     renderResult();
   }
-  function fixClient(id) {
+  function generateLabel(articles,videos) {
+    const quantities = [articles && `${articles} 篇文章`,videos && `${videos} 条视频`].filter(Boolean);
+    return quantities.length ? '生成 ' + quantities.join('和 ') : '开始生成';
+  }
+  function capacityMessage(maximum) {
+    return `现有账号最多安排 ${maximum} 篇，请减少每客户篇数或添加账号。`;
+  }
+  function clientGap(id) {
+    const entry = plans.get(id);
+    if (!entry || entry.loading) return null;
+    if (entry.error) return {id, field:'[data-reload-plan]', label:'重新读取客户安排'};
+    const capacity = capacityGap(entry);
+    if (capacity) return {id, field:'[data-add-picker]', label:'调整每客户篇数'};
+    const options = readOptions(entry);
+    const videos = videoSettings.get(id)?.count;
+    const invalid = optionIssues(options,client.platforms,client.targets);
+    if (!options.selections.length && !videos) return {id, field:'[data-add-picker]', label:'先安排创作内容'};
+    if (options.selections.length && !options.keywords.length) return {id, field:'[data-keyword-entry]', label:'先补充关键词'};
+    if (invalid.some(message=>message.startsWith('平台 '))) return {id, field:'[data-remove-account]', label:'调整发布平台'};
+    if (invalid.some(message=>message.includes('发布形态'))) return {id, field:'[data-quick-formats]', label:'调整发布形态'};
+    const documentError = issues.get(id);
+    if (videos && (!documentIdsFor(entry).length || documentError?.includes('需要选择本次客户资料'))) {
+      return {id, field:'[data-quick-documents]', label:'补充视频资料'};
+    }
+    if (documentError && /选定资料|常用资料|视频资料每份/.test(documentError)) {
+      return {id, field:'[data-quick-documents]', label:'调整本批资料'};
+    }
+    return null;
+  }
+  function nextAction() {
+    if (!client.state.clients.length) return {addCustomer:true,label:'新建客户'};
+    if (!selected.size) return {pick:true,label:'先选择客户'};
+    if (!countField.validity.valid) return {count:true,label:'修正每客户篇数'};
+    const gaps = [...selected].map(clientGap).filter(Boolean);
+    return gaps.length > 1 ? {...gaps[0],label:`补齐 ${gaps.length} 位客户的安排`} : gaps[0];
+  }
+  function fixClient(id, field) {
     setExpanded(true);
     if (id) {
       if (search.value) { search.value = ''; renderChoices(); }
       showClient(id,'plan');
-      heading.querySelector('h2').tabIndex = -1;
-      heading.querySelector('h2').focus({preventScroll:true});
+      let target = field && plans.get(id)?.row.querySelector(field);
+      if (target?.tagName === 'DETAILS') {
+        target.open = true;
+        target = target.querySelector('summary');
+      }
+      if (!target) {
+        target = heading.querySelector('h2');
+        target.tabIndex = -1;
+      }
+      target.focus();
     }
+  }
+  function guide(gap) {
+    if (gap.addCustomer) return newCustomer();
+    if (gap.pick) { customerPicker.open = true; return; }
+    if (gap.count) {
+      setError('每客户篇数须为 1 至 2000 的整数，留空沿用方案');
+      countField.focus();
+      return;
+    }
+    fixClient(gap.id,gap.field);
   }
   function itemsForSubmit() {
     batchCount();
@@ -363,17 +536,22 @@ export function createQuickCreation(client, service, { onBatch }) {
       try {
         if (entry.error) throw new Error(entry.error);
         const options = readOptions(entry);
-        const videos = collectBatchVideos(entry.row,planSummary(options,client.platforms).count);
-        items.push(videos.length ? {client_id:id,options,videos} : {client_id:id,options});
+        const {count = 0, narration = true} = videoSettings.get(id) || {};
+        const videos = Array.from({length:count},()=>({source:'documents',narration}));
+        const item = {client_id:id,options};
+        if (videos.length) item.videos = videos;
+        if (entry.documentOverride !== undefined) item.document_ids = entry.documentOverride;
+        items.push(item);
       } catch (error) {
         issues.set(id,error.message);
         invalid.push(id);
       }
     }
     if (invalid.length) {
-      fixClient(invalid[0]);
+      repairAfterSubmit = {id:invalid[0]};
       throw new Error(`请检查 ${invalid.length} 位客户的本次安排`);
     }
+    assertBatchVideoLimit(items);
     return items;
   }
 
@@ -381,15 +559,16 @@ export function createQuickCreation(client, service, { onBatch }) {
     const check = await service.preflight(items);
     if (check.ready) return check.items;
     for (const issue of check.issues) if (issue.client_id) issues.set(issue.client_id,issue.error);
-    fixClient(check.issues.find(issue=>issue.client_id)?.client_id);
+    const first = check.issues.find(issue=>issue.client_id);
+    if (first) repairAfterSubmit = clientGap(first.client_id) || {id:first.client_id};
     throw new Error(issues.size ? `请检查 ${issues.size} 位客户的本次安排` : check.issues.map(issue=>issue.error).join('\n'));
   }
 
-  async function reviewAndSubmit(items) {
+  async function arrangeAndSubmit(items, usePreview) {
     let notice = '';
     for (;;) {
       const planned = await checkBeforeSubmit(items);
-      const choices = await preview.review(planned, notice);
+      const choices = usePreview ? await preview.review(planned, items, notice) : await preview.useDefaults(planned, items);
       if (!choices) return null;
       const byClient = new Map(choices.map(({clientId,revision,rows})=>[clientId,{revision,rows}]));
       const confirmed = items.filter(item=>byClient.has(item.client_id))
@@ -397,7 +576,7 @@ export function createQuickCreation(client, service, { onBatch }) {
       try {
         return await service.submit(confirmed);
       } catch (error) {
-        if (error.status !== 400 || !error.message.includes('预览依据已更新')) throw error;
+        if (!usePreview || error.status !== 400 || !error.message.includes('预览依据已更新')) throw error;
         notice = '有客户的资料或安排已更新，请重新确认。其他客户的编辑已保留。';
       }
     }
@@ -420,11 +599,14 @@ export function createQuickCreation(client, service, { onBatch }) {
     resultKey = key;
     const href = item.conversation_id ? `${workspace}?conversation=${encodeURIComponent(item.conversation_id)}` : '';
     const opened = new Set([...result.querySelectorAll('details[open]')].map(disclosure=>disclosure.dataset.article));
-    result.innerHTML = `<div class="quick-result-status"><span>${statuses[item.status]} · ${item.completed} / ${item.planned} 篇</span>
+    const articlesProgress = item.planned ? `文章 ${item.completed} / ${item.planned} 篇` : '';
+    const videosProgress = item.videos?.length ? `视频 ${item.videos.filter(video=>video.status==='done').length} / ${item.videos.length} 条` : '';
+    result.innerHTML = `<div class="quick-result-status"><span>${[statuses[item.status],articlesProgress,videosProgress].filter(Boolean).join(' · ')}</span>
       ${href ? `<a href="${href}" data-task="${e(item.conversation_id)}">打开任务</a>` : ''}</div>
       ${item.error ? `<p class="error-text">${e(item.error)}</p>` : ''}
       ${entry?.error ? '<p class="error-text">稿件列表暂不可读取，可打开任务查看。</p>' : ''}
-      ${(entry?.items || []).map(article=>`<details data-article="${e(article.id)}" ${opened.has(article.id) ? 'open' : ''}><summary>${e(article.title)}</summary><article></article></details>`).join('')}`;
+      ${(entry?.items || []).map(article=>`<details data-article="${e(article.id)}" ${opened.has(article.id) ? 'open' : ''}><summary>${e(article.title)}</summary><article></article></details>`).join('')}
+      ${batchVideoResults({...batch,items:[item]},status=>statuses[status] || status,{retryInBatch:true})}`;
     result.querySelectorAll('details[open]').forEach(showArticle);
   }
 
@@ -455,6 +637,11 @@ export function createQuickCreation(client, service, { onBatch }) {
 
   const monitor = new BatchMonitor(service,updateBatch,error=>setError(`${error.message}。可打开批次管理继续查看。`));
   result.addEventListener('toggle',event=>{ if (event.target.matches('details[data-article][open]')) showArticle(event.target); },true);
+  plansRoot.addEventListener('toggle',event=>{
+    if (!event.target.matches('[data-quick-documents][open]')) return;
+    const entry = plans.get(event.target.closest('[data-client-id]')?.dataset.clientId);
+    if (entry?.options) void loadDocuments(entry);
+  },true);
   search.addEventListener('input',renderChoices);
   pickerSearch.addEventListener('input',renderPicker);
   customerPicker.addEventListener('toggle',()=>{
@@ -469,6 +656,7 @@ export function createQuickCreation(client, service, { onBatch }) {
   });
   document.addEventListener('pointerdown',event=>{
     if (customerPicker.open && !customerPicker.contains(event.target)) customerPicker.open = false;
+    if (videoPicker.open && !videoPicker.contains(event.target)) videoPicker.open = false;
   },{signal:lifetime.signal});
   form.addEventListener('change',event=>{
     const id = event.target.dataset.clientChoice;
@@ -476,15 +664,23 @@ export function createQuickCreation(client, service, { onBatch }) {
     if (event.target.checked) selected.add(id); else selected.delete(id);
     setError('');
     refreshSelection();
+    rememberDraft();
   });
   choices.addEventListener('click',event=>{
     const id = event.target.closest('[data-client-view]')?.dataset.clientView;
-    if (id) showClient(id);
+    if (id) {
+      showClient(id);
+      if (!activeBatch(batch) && view === 'plan' && draftSaved) rememberDraft();
+    }
   });
-  expand.addEventListener('click',()=>setExpanded(details.inert));
+  expand.addEventListener('click',()=>{
+    setExpanded(details.inert);
+    if (!activeBatch(batch) && view === 'plan' && draftSaved) rememberDraft();
+  });
   all.addEventListener('click',()=>{
     setError('');
     setSelection(selected.size === client.state.clients.length ? [] : client.state.clients.map(customer=>customer.id));
+    rememberDraft();
   });
   countField.addEventListener('input',()=>{
     issues.clear();
@@ -493,6 +689,8 @@ export function createQuickCreation(client, service, { onBatch }) {
       entry.manual = false;
       renderAccounts(entry);
     }
+    for (const draft of edits.values()) delete draft.manual;
+    rememberDraft();
     refresh();
   });
   viewSwitch.addEventListener('click',event=>{
@@ -508,9 +706,12 @@ export function createQuickCreation(client, service, { onBatch }) {
       for (const id of selected) {
         const entry = plans.get(id);
         if (entry) delete entry.length;
+        const draft = edits.get(id);
+        if (draft) delete draft.length;
         issues.delete(id);
       }
       setError('');
+      rememberDraft();
       refresh();
       return;
     }
@@ -518,6 +719,20 @@ export function createQuickCreation(client, service, { onBatch }) {
     if (!entry) return;
     const id = entry.row.dataset.clientId;
     setError('');
+    if (action.hasAttribute('data-open-documents')) {
+      documentsToRefresh = id;
+      Promise.resolve(openDocuments(id)).catch(error=>setError(error.message));
+      return;
+    }
+    if (action.hasAttribute('data-reset-documents')) {
+      delete entry.documentOverride;
+      syncDocumentSummary(entry);
+      renderDocumentOptions(entry);
+      issues.delete(id);
+      rememberDraft(entry);
+      refresh();
+      return;
+    }
     if (action.hasAttribute('data-client-length')) {
       entry.length = action.dataset.clientLength;
       issues.delete(id);
@@ -537,16 +752,7 @@ export function createQuickCreation(client, service, { onBatch }) {
       picker.querySelector('summary').focus();
       issues.delete(id);
     }
-    if (action.dataset.customerAction === 'batch-video-add') {
-      addBatchVideo(action.closest('.batch-video-planner'),videoPlans());
-      issues.delete(id);
-    }
-    if (action.dataset.customerAction === 'batch-video-remove') {
-      const planner = action.closest('.batch-video-planner');
-      action.closest('[data-batch-video-row]').remove();
-      planner.querySelector('[data-customer-action="batch-video-add"]').focus();
-      issues.delete(id);
-    }
+    if (action.hasAttribute('data-client-length') || action.dataset.addAccount || action.dataset.removeAccount) rememberDraft(entry);
     refresh();
   });
 
@@ -557,12 +763,21 @@ export function createQuickCreation(client, service, { onBatch }) {
   });
   plansRoot.addEventListener('input',event=>{
     const field = event.target;
-    if (field.matches('[data-account-count],[data-quick-format],[data-quick-keyword],[data-batch-video-source]')) return;
+    if (field.matches('[data-quick-format],[data-quick-keyword],[data-quick-document]')) return;
     const row = field.closest('[data-client-id]');
     if (!row) return;
+    const entry = plans.get(row.dataset.clientId);
+    if (field.matches('[data-account-count]')) {
+      if (field.validity.valid && Number.isInteger(field.valueAsNumber)) {
+        setAccountCount(entry,field.dataset.accountCount,field.valueAsNumber);
+        rememberDraft(entry);
+      }
+      return;
+    }
     issues.delete(row.dataset.clientId);
     setError('');
     if (field.matches('textarea')) row.querySelector('[data-client-note] summary').textContent = field.value.trim() ? '补充要求 · 已填写' : '补充要求';
+    rememberDraft(entry);
     refresh();
   });
   plansRoot.addEventListener('change',event=>{
@@ -572,19 +787,30 @@ export function createQuickCreation(client, service, { onBatch }) {
     const id = entry.row.dataset.clientId;
     issues.delete(id);
     setError('');
+    if (field.matches('[data-quick-document]')) {
+      const documents = [...entry.row.querySelectorAll('[data-quick-document]:checked')].map(input=>input.value);
+      if (documents.length > 100) {
+        field.checked = false;
+        setError('每位客户本批最多选择 100 份资料。');
+      } else {
+        entry.documentOverride = documents;
+        syncDocumentSummary(entry);
+        rememberDraft(entry);
+      }
+      refresh();
+      return;
+    }
     if (field.matches('[data-quick-keyword]')) {
       if (field.checked) entry.keywords.add(field.dataset.quickKeyword);
       else entry.keywords.delete(field.dataset.quickKeyword);
     }
-    if (field.matches('[data-batch-video-source]')) updateVideoSource(field);
     if (field.matches('[data-account-count]')) {
       const key = field.dataset.accountCount, value = field.valueAsNumber;
       if (!field.validity.valid || !Number.isInteger(value)) {
         field.value = accountRows(entry).find(item=>accountKey(item)===key).count;
         setError('每个账号的篇数须为 1 至 20 的整数');
       } else {
-        entry.options.selections = accountRows(entry).map(item=>accountKey(item) === key ? {...item,count:value} : item);
-        entry.manual = true;
+        setAccountCount(entry,key,value);
       }
     }
     if (field.matches('[data-quick-format]')) {
@@ -592,15 +818,44 @@ export function createQuickCreation(client, service, { onBatch }) {
       const formats = [...entry.row.querySelectorAll('[data-quick-format]:checked')].filter(input=>input.dataset.quickFormat===platformId).map(input=>input.value);
       entry.options.format_overrides = {...entry.options.format_overrides,[platformId]:formats};
     }
+    if (field.matches('[data-quick-keyword],[data-account-count],[data-quick-format]')) rememberDraft(entry);
+    refresh();
+  });
+  function setAccountCount(entry,key,count) {
+    entry.options.selections = accountRows(entry).map(item=>accountKey(item) === key ? {...item,count} : item);
+    entry.manual = true;
+  }
+
+  videoPicker.addEventListener('toggle',()=>{ if (videoPicker.open) showVideoOptions(); });
+  videoPicker.addEventListener('keydown',event=>{
+    if (event.key !== 'Escape' || !videoPicker.open) return;
+    event.preventDefault();
+    videoPicker.open = false;
+    videoPicker.querySelector('summary').focus();
+  });
+  videoOptions.addEventListener('change',event=>{
+    const field = event.target;
+    const id = field.dataset.videoCount || field.dataset.videoNarration;
+    const current = videoSettings.get(id) || {count:0,narration:true};
+    videoSettings.set(id,field.dataset.videoCount ? {...current,count:Number(field.value)} : {...current,narration:field.checked});
+    issues.delete(id);
+    setError('');
+    rememberDraft();
     refresh();
   });
 
   form.addEventListener('submit',async event=>{
     event.preventDefault();
     if (button.disabled || submitting || activeBatch(batch)) return;
-    const shouldReview = !details.inert;
+    const gap = service.pending ? null : nextAction();
+    if (gap) {
+      try { await guide(gap); }
+      catch (error) { setError(error.message); }
+      return;
+    }
     submitting = true;
     customerPicker.open = false;
+    videoPicker.open = false;
     setError('');
     issues.clear();
     refresh();
@@ -608,29 +863,50 @@ export function createQuickCreation(client, service, { onBatch }) {
       let submitted;
       if (service.pending) submitted = await service.retrySubmission();
       else {
-        const items = itemsForSubmit();
-        assertBatchVideoLimit(items);
-        if (shouldReview) submitted = await reviewAndSubmit(items);
-        else {
-          await checkBeforeSubmit(items);
-          submitted = await service.submit(items);
-        }
+        if (!details.inert) rememberDraft();
+        submitted = await arrangeAndSubmit(itemsForSubmit(), !details.inert);
       }
       if (!submitted) return;
+      writeBrowserDraft(draftKey,null);
+      draftSaved = false;
+      draftStatus('');
       preview.clear();
       updateBatch(submitted);
       monitor.start(submitted);
     } catch (error) { setError(error.message); }
-    finally { submitting = false; refresh(); }
+    finally {
+      submitting = false;
+      refresh();
+      if (repairAfterSubmit) {
+        fixClient(repairAfterSubmit.id,repairAfterSubmit.field);
+        repairAfterSubmit = null;
+      }
+    }
   });
   installBatchVideoStyles();
   return {
     root,
     get batchId() { return batch?.id; },
+    get returningFromDocuments() { return Boolean(documentsToRefresh); },
+    addCustomer(id) {
+      selected.add(id);
+      renderChoices();
+      refreshSelection();
+      rememberDraft();
+    },
     async enter({clientIds = [], batchId} = {}) {
       const first = !initialized;
       initialized = true;
-      if (first) setSelection(service.pending?.items.map(item=>item.client_id) || clientIds);
+      const draft = first ? readBrowserDraft(draftKey) : null;
+      if (draft) {
+        draftSaved = true;
+        const activeIds = new Set(client.state.clients.map(customer=>customer.id));
+        for (const [id,edit] of Object.entries(draft.clients || {})) if (activeIds.has(id)) edits.set(id,edit);
+        for (const [id,settings] of Object.entries(draft.videos || {})) if (activeIds.has(id)) videoSettings.set(id,settings);
+        countField.value = draft.count || '';
+        length = draft.length || '';
+      }
+      if (first) setSelection(service.pending?.items.map(item=>item.client_id) || draft?.selected || clientIds);
       else if (!activeBatch(batch) && !service.pending) {
         const activeIds = new Set(client.state.clients.map(customer => customer.id));
         if ([...selected].some(id => !activeIds.has(id))) setSelection([...selected]);
@@ -639,9 +915,23 @@ export function createQuickCreation(client, service, { onBatch }) {
       renderChoices();
       if (batchId && batch?.id !== batchId) {
         const initial = await service.batch(batchId);
-        if (first && !service.pending) setSelection(initial.items.map(item=>item.client_id));
+        if (first && !service.pending && (!draft || activeBatch(initial))) setSelection(initial.items.map(item=>item.client_id));
         updateBatch(initial);
         monitor.start(initial);
+      }
+      if (draft && !service.pending && !activeBatch(batch)) {
+        draftStatus('已恢复本批安排。');
+        showClient(selected.has(draft.currentId) ? draft.currentId : selected.values().next().value,'plan');
+        setExpanded(Boolean(draft.expanded));
+      }
+      if (documentsToRefresh) {
+        const id = documentsToRefresh;
+        documentsToRefresh = null;
+        issues.delete(id);
+        plans.get(id)?.row.remove();
+        await loadPlan(id);
+        fixClient(id,'[data-quick-documents]');
+        rememberDraft();
       }
     },
     dispose() { lifetime.abort(); monitor.dispose(); preview.close(); },

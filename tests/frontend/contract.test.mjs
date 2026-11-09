@@ -43,6 +43,38 @@ test('空工作区、8 项客户档案、原生解析、同任务切换模式与
   }finally{await f.close();}
 });
 
+test('普通入口跳过旧会话，新建草稿后仍能从历史恢复旧会话未同步的内容', async () => {
+  const f = await fixture();
+  try {
+    const {client: customer, doc} = await prepare(f);
+    const oldId = f.client.state.conversation.id;
+    f.storage.setItem(STORAGE_KEY, JSON.stringify({
+      activeId: oldId,
+      pending: {id:oldId, options:{...f.client.state.options,note:'未同步的旧稿'}, documentIds:[doc.id], followup:false},
+    }));
+    const restored = f.makeClient();
+    try {
+      const before = f.state.requests.length;
+      await restored.boot(null, {resumeCached:false});
+      assert.equal(restored.state.conversation, null);
+      assert.equal(f.state.requests.slice(before).some(r => r.path.endsWith(oldId)), false);
+      await restored.createConversation(customer.id, {}, {inheritUnassigned:false});
+      assert.notEqual(restored.state.conversation.id, oldId);
+      assert.equal(restored.state.options.note, '');
+      restored.setOptions({note:'新的草稿'});
+      await restored.saveDraft();
+      await restored.load(oldId);
+      assert.equal(restored.state.options.note, '未同步的旧稿');
+      assert.deepEqual(restored.state.documentIds, [doc.id]);
+      assert.equal(restored.state.dirty, true);
+    } finally {
+      restored.dispose();
+    }
+  } finally {
+    await f.close();
+  }
+});
+
 test('服务端未来平台、0—20 双身份、格式选择、目标 AI 与写作模型互相独立',async()=>{
   const f=await fixture();try{
     await f.client.api('/api/platforms','POST',{name:'未来平台',account_type:'personal',formats:['问答','图文'],enabled:true});

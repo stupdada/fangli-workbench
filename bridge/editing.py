@@ -69,7 +69,7 @@ documents是本版本写作时已提供的资料。只有方案需要新增这�
         data.update(base_version=expected, article_id=aid,
             recommended=[s['id'] for s in data['suggestions'] if s['tier'] in (1, 2)],
             default_mode='full', observations_default_selected=False,
-            reviewer='WorkBuddy 模型审阅', codex_review='')
+            reviewer=f"{provider.name(settings.get('transport', provider.WORKBUDDY))} 模型审阅", codex_review='')
         return data
     return service.background('style_review', ident, review, aid, expected)
 

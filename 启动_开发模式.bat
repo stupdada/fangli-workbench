@@ -6,8 +6,11 @@ cd /d "%~dp0"
 set "PYTHONUTF8=1"
 set "PYTHONIOENCODING=utf-8"
 set "FANGLI_PY="
-python -c "import sys;raise SystemExit(0 if sys.version_info>=(3,10) else 1)" >nul 2>nul
-if not errorlevel 1 set "FANGLI_PY=python"
+if exist ".venv\Scripts\python.exe" set "FANGLI_PY=.venv\Scripts\python.exe"
+if not defined FANGLI_PY (
+  python -c "import sys;raise SystemExit(0 if sys.version_info>=(3,10) else 1)" >nul 2>nul
+  if not errorlevel 1 set "FANGLI_PY=python"
+)
 if not defined FANGLI_PY (
   py -3 -c "import sys;raise SystemExit(0 if sys.version_info>=(3,10) else 1)" >nul 2>nul
   if not errorlevel 1 set "FANGLI_PY=py -3"

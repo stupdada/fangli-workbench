@@ -315,6 +315,18 @@ class WorkbenchTest(unittest.TestCase):
         EVIDENCE['locks_and_frozen_reference'] = {'completed_edit_allowed': True, 'processing_mutations_409': True,
             'duplicate_start_409': True, 'following_title_faq_unpolluted': True, 'inflight_config_frozen': True}
 
+    def test_task_title_is_stable_in_chat_and_uses_topic_at_start(self):
+        customer, _, task, _ = self.setup_task()
+        for message in ('写给第一次使用的读者', '加入施工前的准备步骤'):
+            self.finished(self.request(self.path + '/chat', 'POST', {'text': message, 'followup': False}))
+            self.assertEqual(self.request(self.path)['conversation']['title'], task['title'])
+
+        topic = '施工前要检查哪些条件'
+        started = self.request(self.path + '/start', 'POST', {'options': {'topic': topic}})
+        self.assertEqual(started['title'], customer['name'] + ' · ' + topic)
+        self.finished(started)
+        self.assertEqual(self.request(self.path)['conversation']['title'], started['title'])
+
     def test_interview_toggle_rounds_and_new_requirements_pause(self):
         _, doc, conv, options = self.setup_task(3)
         for index in range(5):

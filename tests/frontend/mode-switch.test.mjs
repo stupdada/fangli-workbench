@@ -13,7 +13,7 @@ function runtime() {
   const switcher = createModeSwitcher({getMode:()=>mode, getTaskId:()=>task,
     saveMode:next=>{const pending=deferred();saves.push({next,...pending});return pending.promise;},
     applyMode:next=>{mode=next;applied.push(next);}});
-  return {switcher,saves,applied,setTask:next=>task=next,get mode(){return mode;}};
+  return {switcher,saves,applied,setTask:next=>task=next,setMode:next=>mode=next,get mode(){return mode;}};
 }
 
 test('保存成功后切换；重复点击同一待选模式只写一次',async()=>{
@@ -54,4 +54,16 @@ test('任务状态重置使同任务中尚未完成的模式请求失效',async(
   const r=runtime(), pending=r.switcher.select('zip');
   r.switcher.reset();r.saves[0].resolve();
   assert.equal(await pending,false);assert.equal(r.mode,'chat');
+});
+
+test('沿用安排新建后，首次点对话会从分步切回',async()=>{
+  const r=runtime();
+  r.setTask('new-task');
+  r.switcher.reset();
+  r.setMode('zip');
+  const click=r.switcher.select('chat');
+  assert.equal(r.saves[0]?.next,'chat');
+  r.saves[0].resolve();
+  assert.equal(await click,true);
+  assert.equal(r.mode,'chat');
 });

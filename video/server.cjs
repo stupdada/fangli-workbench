@@ -56,6 +56,7 @@ async function start(options){
       const staticFiles={'/video/':['index.html','text/html; charset=utf-8'],'/video/index.html':['index.html','text/html; charset=utf-8'],'/video/video-ui.js':['video-ui.js','text/javascript; charset=utf-8'],'/video/content.js':['content.js','text/javascript; charset=utf-8'],'/video/authoring-view.js':['authoring-view.js','text/javascript; charset=utf-8'],'/video/video-ui.css':['video-ui.css','text/css; charset=utf-8'],
         '/video/narrated/':['narrated.html','text/html; charset=utf-8'],'/video/narrated.js':['narrated.js','text/javascript; charset=utf-8'],'/video/narrated.css':['narrated.css','text/css; charset=utf-8'],
         '/video/video-shell.mjs':['video-shell.mjs','text/javascript; charset=utf-8'],
+        '/video/topic-recommendation.mjs':['../../web/workbench/topic-recommendation.mjs','text/javascript; charset=utf-8'],
         '/video/workspace-rail.mjs':['../../web/workbench/workspace-rail.mjs','text/javascript; charset=utf-8'],
         '/video/workspace-rail.css':['../../web/workbench/workspace-rail.css','text/css; charset=utf-8'],
         '/video/palette.mjs':['../../web/workbench/palette.mjs','text/javascript; charset=utf-8'],

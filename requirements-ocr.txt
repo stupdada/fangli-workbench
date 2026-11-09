@@ -1,0 +1,5 @@
+# CPU-only customer document recognition. RapidOCR bundles its ONNX models.
+pypdfium2>=5.7,<6
+rapidocr-onnxruntime==1.4.4
+Pillow>=11.1
+pillow-heif>=1.1,<2

@@ -15,6 +15,7 @@
 *.sqlite
 *.sqlite3
 /output/
+/下载/
 **/test-output/
 **/.engine-request-*.json
 

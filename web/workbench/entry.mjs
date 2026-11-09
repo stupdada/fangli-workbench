@@ -2,7 +2,9 @@ import { classicEnabled, classicURL } from './classic-view.mjs';
 import { applyWorkbenchPalette } from './palette.mjs';
 
 const query = new URLSearchParams(location.search);
-if (classicEnabled() && !['customers', 'quick'].includes(query.get('area')) && query.get('entry') !== 'settings') {
+const opensClassic = (query.has('conversation') || ['tasks','review','export'].includes(query.get('entry')))
+  && !['customers','quick','new'].includes(query.get('area')) && query.get('entry') !== 'settings';
+if (classicEnabled() && opensClassic) {
   location.replace(classicURL(query.get('conversation'), query));
 } else {
   applyWorkbenchPalette();

@@ -1,134 +1,335 @@
 /* finesse · design-language=apple · apple-mode=editorial */
-import {canPlayPaperMotion, createPaperAnimations, observePaperMotion, paperMotionEnabled} from '../assets/paper-motion.mjs';
+import {canPlayPaperMotion, createPaperAnimations, observePaperMotion} from '../assets/paper-motion.mjs';
 
-(() => {
-  const $ = selector => document.querySelector(selector);
-  const $$ = selector => [...document.querySelectorAll(selector)];
-  const reduced = matchMedia('(prefers-reduced-motion: reduce)');
-  const directions = [
-    ['围绕人数、送达时间和餐食搭配，介绍企业下午茶的选择方法。', ['企业下午茶', '下午茶搭配']],
-    ['说明配送前需要确认的地址与时间，服务范围以客户资料为准。', ['下午茶配送', '配送范围']],
-    ['围绕人数、份量和提前沟通的事项，整理团队订购时要问的问题。', ['团队下午茶', '团体订购']]
+const $ = selector => document.querySelector(selector);
+const $$ = selector => [...document.querySelectorAll(selector)];
+const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+
+const examples = {
+  ordering: {
+    question: '公司下午茶怎么订？',
+    title: '公司下午茶订购清单',
+    facts: ['公司地址', '订餐人数', '送达时间'],
+    cut: '订餐前有不少事要安排。',
+    lead: '订下午茶前，把公司地址、人数和希望送达的时间发给门店。',
+    details: '确认能送到，再选餐食。如果只能送到大堂，提前约好交接位置。',
+    review: '把地址、人数和送达时间放在开头，负责订餐的人看完就知道要发什么给门店。',
+  },
+  delivery: {
+    question: '下午茶能送到我们公司吗？',
+    title: '公司下午茶配送怎么确认',
+    facts: ['公司地址', '送达时间', '交接位置'],
+    cut: '配送是订餐的重要一环。',
+    lead: '把公司地址和希望送达的时间发给门店，请店员确认能不能送到。',
+    details: '确认能送后，再问清送到楼层还是大堂，提前约好交接位置。',
+    review: '开头直接说怎么确认配送。示例资料没有给出覆盖区域，能否送达由门店确认。',
+  },
+};
+let example = examples.ordering;
+
+const stepTabs = $$('[data-demo-step]');
+const stepPanels = stepTabs.map(tab => document.getElementById(tab.getAttribute('aria-controls')));
+let activeStep = stepTabs.findIndex(tab => tab.getAttribute('aria-selected') === 'true');
+let stepMotion;
+
+function finishStepMotion() {
+  if (!stepMotion) return;
+  const {outgoing, animations} = stepMotion;
+  stepMotion = null;
+  outgoing.hidden = true;
+  outgoing.inert = false;
+  outgoing.classList.remove('demo-panel-leaving');
+  animations.forEach(animation => animation.cancel());
+}
+
+function showStep(index) {
+  if (index === activeStep) return;
+  finishStepMotion();
+  finishPaperScene();
+  reviewAnimations.stop();
+  const outgoing = stepPanels[activeStep];
+  const incoming = stepPanels[index];
+  const direction = Math.sign(index - activeStep);
+  activeStep = index;
+  stepTabs.forEach((tab, tabIndex) => {
+    const selected = tabIndex === index;
+    tab.setAttribute('aria-selected', String(selected));
+    tab.tabIndex = selected ? 0 : -1;
+    stepPanels[tabIndex].hidden = !selected;
+  });
+  if (reduced.matches || document.hidden) return;
+
+  outgoing.classList.add('demo-panel-leaving');
+  outgoing.inert = true;
+  outgoing.hidden = false;
+  const slide = (element, from, to, duration) => element.animate(
+    [from, to], {duration, easing: 'cubic-bezier(.22,.7,.24,1)', fill: 'both'},
+  );
+  const moving = (distance, opacity = 1) => ({
+    transform: `translateX(${direction * distance}px)`,
+    opacity,
+  });
+  const animations = [
+    slide(outgoing, moving(0), moving(-38, 0), 185),
+    slide(outgoing.querySelector('.demo-panel-intro'), moving(0), moving(18), 185),
+    slide(incoming.querySelector('.demo-panel-intro'), moving(-27), moving(0), 280),
+    slide(incoming, moving(56, .15), moving(0), 280),
   ];
-  $$('[data-question]').forEach(button => button.addEventListener('click', () => {
-    $$('[data-question]').forEach(item => { const active = item === button; item.classList.toggle('active', active); item.setAttribute('aria-pressed', String(active)); });
-    const [direction, keywords] = directions[Number(button.dataset.question)];
-    $('#question-direction').textContent = direction;
-    $('#question-keywords').replaceChildren(...keywords.map(text => { const tag = document.createElement('span'); tag.textContent = text; return tag; }));
-    if (window.gsap && !reduced.matches) gsap.fromTo('.question-answer', {y: 10, opacity: .35}, {y: 0, opacity: 1, duration: .38, overwrite: true});
+  const motion = {outgoing, animations};
+  stepMotion = motion;
+  animations.at(-1).finished.then(() => {
+    if (stepMotion === motion) finishStepMotion();
+  }, () => {});
+}
+reduced.addEventListener('change', finishStepMotion);
+
+function focusInView(element) {
+  element.focus({preventScroll: true});
+  element.scrollIntoView({behavior: 'instant', block: 'nearest'});
+}
+
+stepTabs.forEach((tab, index) => {
+  tab.addEventListener('click', () => showStep(index));
+  tab.addEventListener('keydown', event => {
+    const count = stepTabs.length;
+    const positions = {
+      ArrowLeft: (index - 1 + count) % count,
+      ArrowRight: (index + 1) % count,
+      Home: 0,
+      End: count - 1,
+    };
+    if (!Object.hasOwn(positions, event.key)) return;
+    event.preventDefault();
+    const next = positions[event.key];
+    showStep(next);
+    stepTabs[next].focus();
+  });
+});
+$$('[data-next-step]').forEach(button => button.addEventListener('click', () => {
+  const index = stepTabs.findIndex(tab => tab.dataset.demoStep === button.dataset.nextStep);
+  showStep(index);
+  focusInView(stepPanels[index].querySelector('.demo-heading'));
+}));
+
+const paperAnimations = createPaperAnimations();
+const generationResult = $('#demo-generation-result');
+const generationCount = $('#demo-generation-count');
+const replayGeneration = $('#replay-generation');
+function finishPaperScene() {
+  paperAnimations.stop();
+  if (generationResult.textContent === '稿件已就绪') return;
+  generationResult.textContent = '稿件已就绪';
+  generationCount.textContent = '已保存 1 / 1 篇';
+}
+
+function playPaperScene() {
+  finishPaperScene();
+  if (!canPlayPaperMotion()) return;
+  generationResult.textContent = '正在从资料里找信息';
+  generationCount.textContent = '成稿演示';
+  const arrive = (node, transform, delay, duration) => paperAnimations.play(
+    node,
+    [{transform, opacity: 0}, {transform: 'none', opacity: 1}],
+    {duration, delay, fill: 'backwards', easing: 'cubic-bezier(.16,1,.3,1)'},
+  );
+  arrive($('#demo-flow-source'), 'translateY(22px) rotate(-5deg)', 0, 420);
+  $$('#demo-flow-facts mark').forEach((fact, index) => {
+    arrive(fact, 'translateX(-9px)', 230 + index * 100, 280);
+  });
+  const question = arrive($('#demo-flow-question'), 'translateX(-20px) scale(.95)', 590, 410);
+  question?.finished.then(() => {
+    generationResult.textContent = '正在整理稿件开头';
+  }, () => {});
+  arrive($('#demo-flow-draft'), 'translateY(22px) rotate(3deg)', 970, 470);
+  const opening = arrive($('#demo-flow-opening'), 'translateY(10px)', 1220, 440);
+  if (opening) opening.finished.then(finishPaperScene, () => {});
+  else finishPaperScene();
+}
+function syncPaperMotion() {
+  const canPlay = canPlayPaperMotion();
+  replayGeneration.hidden = !canPlay;
+  $('#replay-review').hidden = !canPlay;
+  if (!canPlay) {
+    finishPaperScene();
+    reviewAnimations.stop();
+  }
+}
+replayGeneration.addEventListener('click', () => {
+  playPaperScene();
+  focusInView(generationResult);
+});
+
+$('#demo-confirm-topic').addEventListener('click', () => {
+  example = examples[$('input[name="demo-topic"]:checked').value];
+  renderExample();
+  $('#demo-topic').hidden = true;
+  $('#demo-generated').hidden = false;
+  $('#demo-start-label').textContent = '查看生成结果';
+  playPaperScene();
+  focusInView(generationResult);
+});
+
+const draft = $('#demo-article');
+const draftBody = $('#demo-article-body');
+const draftStatus = $('#demo-draft-status');
+const candidateBody = $('#demo-candidate-body');
+const editForm = $('#demo-edit-form');
+const editBody = $('#demo-edit-body');
+const editButton = $('#demo-edit-button');
+const review = $('#demo-review');
+const reviewButton = $('#demo-review-button');
+const adoptButton = $('#demo-adopt');
+const reviewCut = $('#demo-review-cut');
+const reviewNote = $('#demo-review-note');
+const reviewAnimations = createPaperAnimations();
+
+function setDraftPane(pane) {
+  draft.hidden = pane !== draft;
+  editForm.hidden = pane !== editForm;
+  review.hidden = pane !== review;
+  editButton.setAttribute('aria-expanded', String(pane === editForm));
+  reviewButton.setAttribute('aria-expanded', String(pane === review));
+  reviewAnimations.stop();
+}
+
+function replayReview() {
+  if (review.hidden) return;
+  reviewAnimations.stop();
+  if (!reviewCut.hidden) {
+    reviewAnimations.play(reviewCut.querySelector('i'), [
+      {transform: 'scaleX(0)'}, {transform: 'scaleX(1)'},
+    ], {duration: 360, fill: 'backwards', easing: 'ease-out'});
+  }
+  reviewAnimations.play(review.querySelector('.review-after'), [
+    {transform: 'translateY(14px)', opacity: .25}, {transform: 'none', opacity: 1},
+  ], {duration: 410, delay: 160, fill: 'backwards', easing: 'ease-out'});
+}
+$('#replay-review').addEventListener('click', replayReview);
+syncPaperMotion();
+observePaperMotion(syncPaperMotion);
+
+function setDraftVersion(text, label) {
+  draftBody.textContent = text;
+  draftStatus.textContent = `当前采用版 · ${label}`;
+  $('#demo-receipt').textContent = '';
+  setDraftPane(draft);
+}
+
+function renderExample() {
+  $('#demo-flow-topic').textContent = example.question;
+  $('#demo-flow-title').textContent = example.title;
+  $('#demo-flow-cut').textContent = example.cut;
+  $('#demo-flow-lead').textContent = example.lead;
+  $('#demo-flow-facts').replaceChildren(...example.facts.map(text => {
+    const row = document.createElement('li');
+    const mark = document.createElement('mark');
+    mark.textContent = text;
+    row.append(mark);
+    return row;
   }));
+  $('#demo-article-title').textContent = example.title;
+  candidateBody.textContent = example.lead + example.details;
+  setDraftVersion(example.cut + candidateBody.textContent, '示例成稿');
+}
+renderExample();
 
-  function selectMode(mode, focus = false) {
-    $$('[data-demo-mode]').forEach(button => {
-      const selected = button.dataset.demoMode === mode;
-      button.setAttribute('aria-selected', String(selected)); button.tabIndex = selected ? 0 : -1;
-      if (selected && focus) button.focus();
-    });
-    $('#demo-chat').hidden = mode !== 'chat'; $('#demo-steps').hidden = mode !== 'steps';
-    if (window.ScrollTrigger) ScrollTrigger.refresh();
+editButton.addEventListener('click', () => {
+  if (!editForm.hidden) {
+    setDraftPane(draft);
+    return;
   }
-  $$('[data-demo-mode]').forEach(button => {
-    button.addEventListener('click', () => selectMode(button.dataset.demoMode));
-    button.addEventListener('keydown', event => {
-      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
-      event.preventDefault(); selectMode(event.key === 'Home' ? 'chat' : event.key === 'End' ? 'steps' : button.dataset.demoMode === 'chat' ? 'steps' : 'chat', true);
-    });
+  editBody.value = draftBody.textContent;
+  editBody.setCustomValidity('');
+  setDraftPane(editForm);
+  focusInView(editBody);
+});
+$('#demo-close-editor').addEventListener('click', () => {
+  setDraftPane(draft);
+  focusInView(editButton);
+});
+editBody.addEventListener('input', () => editBody.setCustomValidity(''));
+editForm.addEventListener('submit', event => {
+  event.preventDefault();
+  const text = editBody.value.trim();
+  if (!text) {
+    editBody.setCustomValidity('请填写正文');
+    editBody.reportValidity();
+    return;
+  }
+  setDraftVersion(text, '人工编辑版');
+  focusInView(editButton);
+});
+
+reviewButton.addEventListener('click', () => {
+  if (!review.hidden) {
+    setDraftPane(draft);
+    return;
+  }
+  const current = draftBody.textContent;
+  const hasCut = current.startsWith(example.cut);
+  const alreadyAdopted = current === candidateBody.textContent;
+  reviewCut.hidden = !hasCut;
+  reviewCut.querySelector('span').textContent = hasCut ? example.cut : '';
+  $('#demo-compare-base').textContent = hasCut ? current.slice(example.cut.length) : current;
+  reviewNote.textContent = hasCut ? example.review : '采用前，核对候选稿是否保留了你需要的内容。';
+  reviewNote.hidden = alreadyAdopted;
+  adoptButton.disabled = alreadyAdopted;
+  adoptButton.textContent = alreadyAdopted ? '与当前采用版相同' : '采用此版并用于导出';
+  setDraftPane(review);
+  replayReview();
+});
+adoptButton.addEventListener('click', () => {
+  setDraftVersion(candidateBody.textContent, '已采用修改候选');
+  focusInView(reviewButton);
+});
+
+const exportDialog = $('#demo-export');
+const exportButton = $('#demo-open-export');
+const exportSelection = $('#demo-export-selection');
+exportButton.addEventListener('click', () => {
+  $('#demo-export-name').textContent = example.title;
+  $('#demo-export-version').textContent = draftStatus.textContent;
+  exportSelection.checked = true;
+  exportDialog.showModal();
+});
+$('#demo-close-export').addEventListener('click', () => exportDialog.close());
+$('#demo-export-form').addEventListener('submit', event => {
+  event.preventDefault();
+  const title = $('#demo-article-title').textContent;
+  const file = new Blob([`# ${title}\n\n${draftBody.textContent}\n`], {type: 'text/markdown;charset=utf-8'});
+  const url = URL.createObjectURL(file);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `示例-${title}.md`;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+  exportDialog.close();
+  $('#demo-receipt').textContent = '已发起下载。示例文件使用当前采用版。';
+});
+
+const sceneObserver = new IntersectionObserver(entries => {
+  for (const {target, isIntersecting} of entries) {
+    if (!isIntersecting) continue;
+    sceneObserver.unobserve(target);
+    if (!reduced.matches) target.classList.add('scene-arrival');
+  }
+}, {threshold: .15});
+$$('.customer-stage, .demo-workbench, .chat-sample')
+  .forEach(scene => sceneObserver.observe(scene));
+
+const chapters = $$('[data-chapter]');
+const observer = new IntersectionObserver(entries => {
+  const entry = entries.find(item => item.isIntersecting);
+  if (!entry) return;
+  chapters.forEach(link => {
+    if (link.dataset.chapter === entry.target.id) link.setAttribute('aria-current', 'location');
+    else link.removeAttribute('aria-current');
   });
+}, {rootMargin: '-25% 0px -74% 0px'});
+chapters.forEach(link => observer.observe(document.getElementById(link.dataset.chapter)));
 
-  let writingTimer;
-  const output = $('#demo-output'), play = $('#play-writing');
-  const paperScene = $('#demo-paper-scene'), paperAnimations = createPaperAnimations();
-  function playPaperScene() {
-    const arrive = (part, from, delay, duration = 310) => paperAnimations.play(
-      paperScene.querySelector(`[data-paper-part="${part}"]`),
-      [{transform:from, opacity:0}, {transform:'none', opacity:1}],
-      {duration, delay, fill:'backwards', easing:'cubic-bezier(.16,1,.3,1)'},
-    );
-    arrive('source-back', 'translate(-22px, -5px) rotate(-9deg)', 0);
-    arrive('source', 'translate(-18px, 11px) rotate(6deg)', 85);
-    arrive('draft', 'translateX(-105px) scale(.62)', 290, 410);
-    paperAnimations.play(paperScene.querySelector('[data-paper-part="mark"]'), [
-      {strokeDasharray:'72', strokeDashoffset:'72'},
-      {strokeDasharray:'72', strokeDashoffset:'0'},
-    ], {duration:250, delay:630, fill:'backwards', easing:'ease-in-out'});
-    arrive('output-back', 'translate(-125px, 4px) scale(.76)', 845, 420);
-    arrive('output-front', 'translate(-122px, -3px) scale(.83)', 945, 425);
-  }
-  observePaperMotion(() => {
-    if (!canPlayPaperMotion()) paperAnimations.stop();
-    const hidden = !paperMotionEnabled();
-    if (paperScene.hasAttribute('hidden') === hidden) return;
-    paperScene.toggleAttribute('hidden', hidden);
-    window.ScrollTrigger?.refresh();
-  });
-  play.addEventListener('click', () => {
-    clearTimeout(writingTimer); output.hidden = false;
-    $('#play-status').textContent = '本页播放示例，不调用模型';
-    $('#output-status').textContent = '示例稿 · 已生成'; play.textContent = '重看演示 ↗';
-    paperAnimations.stop();
-    paperScene.toggleAttribute('hidden', !paperMotionEnabled());
-    if (paperMotionEnabled()) {
-      if (canPlayPaperMotion()) playPaperScene();
-    } else if (window.gsap && !reduced.matches) {
-      gsap.killTweensOf('#demo-output > *');
-      gsap.fromTo('#demo-output > :not([hidden])', {y: 12, opacity: 0}, {y: 0, opacity: 1, stagger: .12, duration: .55, clearProps: 'transform,opacity'});
-    }
-    writingTimer = setTimeout(() => { if (window.ScrollTrigger) ScrollTrigger.refresh(); }, 20);
-    output.scrollIntoView({behavior: reduced.matches ? 'instant' : 'smooth', block: 'nearest'});
-  });
-  $('#close-output').addEventListener('click', () => { clearTimeout(writingTimer); paperAnimations.stop(); output.hidden = true; $('#play-status').textContent = '看看生成后怎么阅读稿件'; play.focus(); if (window.ScrollTrigger) ScrollTrigger.refresh(); });
-
-  let reviewTimeline;
-  function replayReview() {
-    if (!window.gsap || reduced.matches) return;
-    reviewTimeline?.kill();
-    reviewTimeline = gsap.timeline({defaults: {ease: 'power2.out'}})
-      .fromTo('.review-before', {opacity: 1}, {opacity: .55, duration: .65})
-      .fromTo('.review-after', {y: 18, opacity: 0}, {y: 0, opacity: 1, duration: .8}, .35)
-      .fromTo('.review-explanation', {y: 9, opacity: 0}, {y: 0, opacity: 1, duration: .55}, .8);
-  }
-  $('#replay-review').addEventListener('click', replayReview);
-
-  const chapters = $$('[data-chapter]');
-  const observer = new IntersectionObserver(entries => {
-    const entry = entries.filter(item => item.isIntersecting).sort((a,b) => b.intersectionRatio - a.intersectionRatio)[0];
-    if (!entry) return;
-    chapters.forEach(link => { const active = link.dataset.chapter === entry.target.id; link.classList.toggle('active', active); if(active)link.setAttribute('aria-current', 'step');else link.removeAttribute('aria-current'); });
-  }, {rootMargin: '-20% 0px -45% 0px', threshold: [0, .1, .3]});
-  chapters.forEach(link => observer.observe(document.getElementById(link.dataset.chapter)));
-  chapters[0].classList.add('active');
-
-  function initMotion() {
-    if (!window.gsap || !window.ScrollTrigger) return;
-    gsap.registerPlugin(ScrollTrigger);
-    const media = gsap.matchMedia();
-    media.add({desktop: '(min-width: 761px)', reduced: '(prefers-reduced-motion: reduce)'}, context => {
-      const {desktop, reduced: quiet} = context.conditions;
-      gsap.to('.reading-progress', {scaleX: 1, ease: 'none', scrollTrigger: {trigger: document.documentElement, start: 'top top', end: 'max', scrub: true}});
-      if (quiet) return;
-      gsap.timeline({defaults:{ease:'power3.out'}})
-        .from('.hero-copy > *', {y: 24, opacity: 0, stagger: .1, duration: .9}, 0)
-        .from('.hero-sheet', {y: '+=90', rotation: 0, opacity: 0, stagger: .12, duration: 1.2}, .18)
-        .from('.orbit', {scale: .8, opacity: 0, stagger: .1, duration: 1.2}, .2);
-      gsap.to('.hero-stage', {y: -35, rotationX: 6, ease:'none', scrollTrigger:{trigger:'.hero',start:'top top',end:'bottom top',scrub: .8}});
-      $$('.reveal').forEach(element => gsap.from(element, {y: 35, opacity: .15, duration: .9, ease: 'power3.out', scrollTrigger: {trigger:element,start:'top 88%',once:true}}));
-      gsap.timeline({scrollTrigger: {trigger: '.customer-stage', start: 'top 85%', end: 'center 50%', scrub: .6}})
-        .from('.document-row', {x: 50, opacity: .2, stagger: .18, ease:'none'})
-        .from('.customer-identity .check-disc', {scale: .3, opacity: 0, ease:'back.out(1.5)'}, .25);
-      gsap.timeline({scrollTrigger: {trigger: '.question-lab', start: 'top 86%', end: 'bottom 65%', scrub: .65}})
-        .from('.branch-lines', {scaleY: 0, transformOrigin: 'top', ease:'none'})
-        .from('.question-choice', {y: 30, opacity: .15, stagger: .15, ease:'none'}, .3);
-      if (desktop) {
-        gsap.from('.demo-workbench', {rotationY: -5, rotationX: 3, y: 40, transformPerspective: 1200, ease:'none', scrollTrigger:{trigger:'.writing-layout',start:'top 90%',end:'top 38%',scrub:.8}});
-        $$('.instruction').forEach(item => gsap.from(item, {opacity: .3, x: -14, duration: .7, scrollTrigger:{trigger:item,start:'top 75%',once:true}}));
-      }
-      ScrollTrigger.create({trigger:'.review-stage',start:'top 75%',once:true,onEnter:replayReview});
-      gsap.from('.reuse-strip > div', {y: 30, scale:.96, opacity: .2, stagger: .15, duration: .8, ease:'power3.out',scrollTrigger:{trigger:'.reuse-strip',start:'top 85%',once:true}});
-      gsap.from('.closing-mark', {rotation:-20,scale:.7,opacity:.2,duration:.9,ease:'back.out(1.3)',scrollTrigger:{trigger:'.closing',start:'top 85%',once:true}});
-    });
-    document.fonts.ready.then(() => ScrollTrigger.refresh());
-    reduced.addEventListener('change', () => { reviewTimeline?.kill(); gsap.set('.review-before,.review-after,.review-explanation', {clearProps:'transform,opacity'}); });
-  }
-  initMotion();
-  addEventListener('pagehide', () => { clearTimeout(writingTimer); paperAnimations.stop(); reviewTimeline?.kill(); observer.disconnect(); });
-})();
+addEventListener('pagehide', () => {
+  finishStepMotion();
+  finishPaperScene();
+  reviewAnimations.stop();
+});

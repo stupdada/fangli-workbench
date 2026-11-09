@@ -68,7 +68,7 @@
 
 ## 运行环境与本机配置
 
-推荐 Windows、Python 3.11、Node.js 20+。`app/` 和 `bridge/` 的 Python 业务代码使用标准库，捆绑 SDK 不需要 `npm install`。完整启动会托管视频模块，因此还需要 Pillow、PATH 中可用的 FFmpeg / ffprobe 及视频渲染器支持的中文字体。浏览器的 woff2 字体不能代替 Pillow 渲染字体。
+推荐 Windows、Python 3.11、Node.js 20+。捆绑 SDK 无需 `npm install`。完整启动会托管视频模块，需要 Pillow、PATH 中可用的 FFmpeg / ffprobe 及视频渲染器支持的中文字体。浏览器的 woff2 字体不能代替 Pillow 渲染字体。客户 PDF 和图片识别依赖见 `requirements-ocr.txt`，安装后使用 CPU 和 Python 包内置的模型。
 
 在仓库根目录使用 PowerShell 7：
 
@@ -88,6 +88,7 @@ ffprobe -version
 python -m venv .venv
 & ./.venv/Scripts/Activate.ps1
 python -m pip install -r requirements-video.txt
+python -m pip install -r requirements-ocr.txt
 ```
 
 这部分是完整视频运行依赖；仅执行 `pip install -r requirements.txt` 不会安装 Pillow。中文字体候选见 `video/runtime/video-engine/silent_renderer.py`。原机 Windows 字体及特定字体哈希属于历史验收条件，新设备需核对字体选择和实际排版。

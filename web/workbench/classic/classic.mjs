@@ -1,4 +1,6 @@
 import { WorkbenchClient } from '../client.mjs';
+import { fetchDelivery, startBrowserDownload } from '../download-delivery.mjs';
+import { chooseArticleTopic } from '../topic-picker.mjs';
 import { CustomerClient, importCustomerFile } from '../customers-client.mjs';
 import { classicURL } from '../classic-view.mjs';
 import { streamDocument, remainingCount } from '../live-model.mjs';
@@ -330,8 +332,8 @@ async function beginWriting() {
     if (!confirmation) return;
   }
   s.error = '';
-  await client.start({confirmed:s.needsConfirmation});
-  setStep(3);
+  const started = await client.start({confirmed:s.needsConfirmation,chooseTopic:chooseArticleTopic});
+  if (started) setStep(3);
 }
 
 async function changeTask(action) {
@@ -380,14 +382,24 @@ async function upload(files) {
   if (warnings.length) throw new Error(warnings.join('；'));
 }
 
-function exportArticles(fmt) {
+async function exportArticles(fmt) {
   const ids = s.articles.filter(a => picks.has(a.id) && a.current_version != null && !a.locked).map(a => a.id);
   if (!ids.length) return;
   const url = new URL(client.path('/export'), location.origin);
   url.searchParams.set('fmt', fmt);
   url.searchParams.set('ids', ids.join(','));
   if (fmt === 'md' || fmt === 'txt') url.searchParams.set('scope', 'body');
-  location.assign(url);
+  if (!s.bootstrap?.download_settings) {
+    location.assign(url);
+    return;
+  }
+  const result = await fetchDelivery(url, `方立-${s.conversation.id}.${fmt}`, {saveLocal: true});
+  if (result.saved) {
+    await ask('文件已保存', '<p>' + e(result.saved) + '</p>', '完成');
+  } else {
+    startBrowserDownload(result);
+    if (result.warning) await ask('已交给浏览器下载', '<p>' + e(result.warning) + '</p>', '完成');
+  }
 }
 
 const actions = {
@@ -435,7 +447,7 @@ const actions = {
   btnBackToSetup: () => setStep(1),
   btnPickAll: () => { picks = new Set(s.articles.filter(a => !a.locked && a.current_version != null).map(a => a.id)); renderArticles(); },
   btnPickNone: () => { picks.clear(); renderArticles(); },
-  btnExportWord: () => exportArticles('docx'),
+  btnExportWord: () => act(() => exportArticles('docx')),
   btnSaveArt: () => act(async () => {
     const draft = currentEditor();
     if (!draft?.dirty) return;
@@ -473,7 +485,7 @@ document.addEventListener('click', event => {
   const button = event.target.closest('button');
   if (!button) return;
   if (button.dataset.article) openArticle(button.dataset.article);
-  if (button.dataset.export) exportArticles(button.dataset.export);
+  if (button.dataset.export) void act(() => exportArticles(button.dataset.export));
   if (button.dataset.view) { editView = button.dataset.view; renderArticles(); }
   if (button.dataset.readDocument) {
     const doc = [...s.documents, ...s.library].find(d => matching(d.id, button.dataset.readDocument));

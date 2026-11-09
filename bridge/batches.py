@@ -9,6 +9,7 @@ from .batch_video import BatchVideos, video_specs
 from .customers import BATCH_OPTION_FIELDS
 from .errors import Problem, Conflict, Missing
 from .storage import dumps, loads, uid, text_value
+from .topic_suggestions import recommend
 
 
 class Batches:
@@ -68,7 +69,7 @@ class Batches:
                     raise Problem('客户ID无效或重复')
                 seen.add(cid)
                 self.ws.active_client(cid)
-                videos = video_specs(item.get('videos', []))
+                videos = video_specs(item.get('videos', []), allow_unset=preview or 'preview' in item)
                 plan = self.s.customers.plan(cid)['plan']
                 if videos:
                     overrides = item.get('options', {})
@@ -138,6 +139,26 @@ class Batches:
     def preflight(self, items):
         with self.s.guard:
             return self.preflight_result(*self.prepare(items, preview=True))
+
+    def topics(self, body):
+        if set(body) - {'count'} != {'item', 'revision', 'rows', 'seen'}:
+            raise Problem('选题请求需包含本次安排和待推荐条目')
+        rows = body['rows']
+        if not isinstance(rows, list) or not 1 <= len(rows) <= 8 or not all(isinstance(row, str) for row in rows) or len(set(rows)) != len(rows):
+            raise Problem('每次请选择1至8个待推荐条目')
+        with self.s.guard:
+            prepared, issues = self.prepare([body['item']], preview=True)
+        if issues:
+            raise Problem(issues[0]['error'])
+        item = prepared[0]
+        plan = item['preview']
+        if body['revision'] != plan['revision']:
+            raise Problem('预览依据已更新，请刷新预览后重新确认')
+        slots = {row['id']: row for row in public_preview(plan)['rows']}
+        if not all(row in slots for row in rows):
+            raise Problem('选题条目不属于本次安排')
+        return {'topics': recommend(self.s, item['snapshot']['creation_context'],
+                                    [slots[row] for row in rows], body['seen'], count=body.get('count', 1))}
 
     def submit(self, body):
         if set(body) != {'request_key', 'items'}:
@@ -393,6 +414,14 @@ class Batches:
 
     def process(self, item):
         article_status, article_error = item['article_status'], item['article_error']
+        with self.store.conn() as c:
+            independent = [row for row in self.videos.rows(c, item['id'])
+                           if row['source'] == 'documents' and row['status'] == 'queued']
+        video_worker = None
+        if independent and article_status == 'queued':
+            video_worker = threading.Thread(target=self.process_videos, args=(item, independent),
+                                            name='batch-video-' + item['id'][:8], daemon=True)
+            video_worker.start()
         if article_status == 'queued':
             article_status, article_error = self.process_articles(item)
         with self.s.guard:
@@ -402,9 +431,10 @@ class Batches:
                 if any(v['stage'] == 'waiting_article' for v in videos):
                     self.bind_video_articles(c, item)
                     videos = self.videos.rows(c, item['id'])
-        for video in videos:
-            if video['status'] == 'queued':
-                self.videos.process(item, video)
+        if video_worker:
+            video_worker.join()
+        self.process_videos(item, [row for row in videos
+                                  if row['status'] == 'queued' and (not video_worker or row['source'] == 'article')])
         with self.s.guard:
             with self.store.conn() as c:
                 videos = self.videos.rows(c, item['id'])
@@ -417,6 +447,14 @@ class Batches:
                               (status, now(), item['conversation_id']))
             self.stopping.discard(item['id'])
             self.recompute(item['batch_id'])
+
+    def process_videos(self, item, rows):
+        for row in rows:
+            try:
+                self.videos.process(item, row)
+            except Exception as exc:
+                from . import provider
+                self.videos.update(row, status='interrupted', error=provider.public_error(exc))
 
     def close(self):
         self.closing = True

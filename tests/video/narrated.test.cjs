@@ -7,7 +7,7 @@ const os=require('node:os');
 const path=require('node:path');
 const vm=require('node:vm');
 const {start}=require('../../video/server.cjs');
-const {MODEL}=require('../../video/narrated/contract.cjs');
+const {MODEL,validateDraft}=require('../../video/narrated/contract.cjs');
 
 const draft={title:'访客到厂前的准备',script:{paragraphs:[
   {page_id:'p1',text:'访客到厂之前，先向接待人员说明来访日期、到场人数和计划参观的环节。'},
@@ -20,6 +20,15 @@ const draft={title:'访客到厂前的准备',script:{paragraphs:[
   {id:'p3',heading:'领取安全帽',points:['确认通行路线']},
   {id:'p4',heading:'返回接待区',points:['确认下次沟通']},
 ]};
+test('混排口播按字宽预估单页长度，仍严格校验全片字符数和纯中文单页',()=>{
+  const mixed=structuredClone(draft);
+  mixed.script.paragraphs[2].text='第三步查版本：Model-X和Model-Y的安装说明以Product Guide为准。';
+  assert.ok(validateDraft(mixed).script.characters<=160);
+  mixed.script.paragraphs[2].text='字'.repeat(37);
+  assert.throws(()=>validateDraft(mixed),/第3页口播最多36个有效字符/);
+  mixed.script.paragraphs[2].text='A'.repeat(65);
+  assert.throws(()=>validateDraft(mixed),/口播共.*100—160/);
+});
 function gate(){
   let release;
   const promise=new Promise(resolve=>{release=resolve;});
@@ -270,6 +279,7 @@ test('短视频详情按指定客户打开目标制作，忽略其他制作的�
   const productionId=await f.create({topic:'到厂流程'});
   const render=await f.complete((await f.request(`/productions/${productionId}/renders`,'POST',{expected_version:1,narration:false})).value);
   const ui=await fs.readFile(path.join(__dirname,'../../video/public/narrated.js'),'utf8');
+  const topics=await import('../../web/workbench/topic-recommendation.mjs');
   async function open(query){
     const nodes=new Map(),requests=[];
     const location=new URL(`/video/narrated/?${query}`,f.origin);
@@ -289,8 +299,9 @@ test('短视频详情按指定客户打开目标制作，忽略其他制作的�
       if(!nodes.has(id))nodes.set(id,element());
       return nodes.get(id);
     };
-    await vm.runInNewContext(ui,{
+    await vm.runInNewContext(ui.replace(/^import .*?;\r?\n/u,''),{
       URL,URLSearchParams,location,
+      ...topics,
       document:{getElementById,createElement:element},
       window:{addEventListener(){}},
       history:{replaceState(_data,_unused,url){location.href=url.href;}},

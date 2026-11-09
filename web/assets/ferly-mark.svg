@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="94 43.5 68 45">
+  <g id="mark">
+    <path fill="#EB5312" d="M128.211 47.843A20.633 21.173 0 1 1 128.211 83.989A20.624 21.173 0 1 1 128.211 47.843Z"/>
+    <path fill="none" stroke="#FFD5BC" stroke-width=".88" stroke-linejoin="round" d="M128.537 53.071A16.028 16.728 0 1 1 128.537 78.833A16.524 16.728 0 1 1 128.537 53.071Z"/>
+    <path fill="#fff" transform="translate(94.866 30.162) scale(.7609 .7628)" d="M32.22 36.50H47.88V41.93H37.61V45.03H47.64V50.49H37.61V52.96H32.22Z M48.93 37.25L52.86 42.02V57.21H36.71L33.20 54.02H48.93Z"/>
+  </g>
+</svg>

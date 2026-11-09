@@ -101,15 +101,16 @@ class BatchVideoClient:
                 raise Conflict('成片文件不完整')
 
 
-def video_specs(value):
+def video_specs(value, *, allow_unset=False):
     if not isinstance(value, list) or len(value) > 3:
         raise Problem('每批最多安排三条视频')
     result = []
     for video in value:
         if not isinstance(video, dict) or set(video) - {'topic', 'source', 'article_index', 'narration'}:
             raise Problem('视频安排字段不正确')
-        topic = text_value(video.get('topic'), '视频主题', 500, empty=False).strip()
         source, narration = video.get('source'), video.get('narration', True)
+        topic = '' if allow_unset and source == 'documents' and 'topic' not in video else text_value(
+            video.get('topic'), '视频主题', 500, empty=False).strip()
         if source not in ('documents', 'article') or type(narration) is not bool or '\x00' in topic:
             raise Problem('视频来源、主题或配音设置不正确')
         if source == 'article':
@@ -206,6 +207,11 @@ class BatchVideos:
                 phase = '脚本' if stage == 'script' else '成片'
                 if status == 'interrupted':
                     raise VideoInterrupted(f'{phase}操作已中断，请确认后重试此阶段')
+                detail = result.get('error')
+                if stage == 'script' and isinstance(detail, str) and re.fullmatch(
+                    r'第[1-6](?:页口播|屏字幕)最多[0-9]{1,2}个有效字符|口播共[0-9]{1,4}字，请调整为100—160字', detail
+                ):
+                    raise Problem(f'脚本校验失败，{detail}。可单独重试视频。')
                 raise Problem(f'{phase}制作未完成，请检查视频工作区后重试')
             if status != 'running':
                 break
@@ -223,10 +229,11 @@ class BatchVideos:
 
     def process(self, item, row):
         try:
-            self.guard(item)
-            if row['stage'] == 'waiting_article':
-                raise Problem(f"第{row['article_index']}篇文章尚未完成，请先继续文章任务")
-            self.update(row, status='running', error='')
+            with self.batches.s.guard:
+                self.guard(item)
+                if row['stage'] == 'waiting_article':
+                    raise Problem(f"第{row['article_index']}篇文章尚未完成，请先继续文章任务")
+                self.update(row, status='running', error='')
             if row['stage'] == 'script':
                 payload = {'clientId': item['client_id'], 'topic': row['topic']}
                 if row['source'] == 'article':

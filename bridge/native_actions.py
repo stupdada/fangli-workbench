@@ -63,7 +63,7 @@ def perform(service, ident, aid, expected, action, note=''):
         source = {'brief': brief, 'documents': service.ws.selected_documents(conv),
                   'platforms': service.store.list_platforms(), 'models': service.store.list_models(),
                   'prefs': service.store.get_prefs(), 'risks': service.store.list_risks(),
-                  'settings': service.store.get_settings(), 'articles': service.ws.visible_articles(conv['plan_id'])}
+                  'settings': service.public_settings(), 'articles': service.ws.visible_articles(conv['plan_id'])}
         article = {k: copy.deepcopy(v) for k, v in selected.items() if k not in ('current_version', 'version_label', 'origin', 'review', 'locked')}
         evidence = service.ws.version_evidence(aid, expected)
 
@@ -81,7 +81,7 @@ def perform(service, ident, aid, expected, action, note=''):
                     job = generator.get_job(jid)
                     if job['status'] != 'done':
                         failed = getattr(provider.local, 'failure', None)
-                        if failed: raise provider.failure(failed['kind'], failed.get('status'))
+                        if failed: raise llm.LLMError(failed['message'], failed['kind'], failed.get('status'))
                         raise Problem(job.get('error') or '原生重写未完成，当前稿保留')
                     raw = last_response()
                     data = llm.parse_json(raw)
@@ -106,7 +106,7 @@ def perform(service, ident, aid, expected, action, note=''):
                 with service.guard:
                     frozen_input = {k: v for k, v in source.items() if k not in ('articles', 'settings')}
                     frozen_input['brief'] = audit_brief
-                    frozen_input['settings'] = {k: source['settings'][k] for k in ('model', 'temperature', 'max_tokens', 'title_prefix', 'disable_thinking', 'brand')}
+                    frozen_input['settings'] = source['settings']
                     vid = service.ws.save_native_version(aid, expected, adapter.article, op,
                         'zip_regenerate' if action == 'regenerate' else 'zip_audit', evidence, frozen_input, initial)
                 result = {'article_id': aid, 'adopted_version': vid, 'base_version': expected, 'audit': audit}
