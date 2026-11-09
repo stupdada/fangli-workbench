@@ -12,7 +12,7 @@ export class WorkbenchClient {
     this.interviewStreams = new Map();
     try { this.cache = JSON.parse(storage?.getItem(STORAGE_KEY) || '{}'); } catch { this.cache = {}; }
     this.state = { bootstrap: null, config: null, clients: [], conversations: [], conversation: null, batch: null, articles: [], documents: [], library: [],
-      operations: [], job: null, stream: {}, options: normalizeOptions(this.cache.pending?.options), documentIds: this.cache.pending?.documentIds || [],
+      operations: [], job: null, stream: {}, options: normalizeOptions(this.cache.pending?.options), documentIds: this.cache.pending?.documentIds || [], availableKeywords: [],
       ui: { followup: true, sidebarWidth: 244, collapsed: false, ...this.cache.ui }, editors: this.cache.editors || {}, messageDrafts:this.cache.messageDrafts || {},
       dirty: !!this.cache.pending, saved: false, error: '', needsConfirmation: this.cache.needsConfirmation || false, results: {}, busy: new Set(), loaded: false };
   }
@@ -46,6 +46,21 @@ export class WorkbenchClient {
   get targets() { return this.state.bootstrap?.target_models || []; }
   get platforms() { return this.state.bootstrap?.platforms || []; }
   assertBriefEditable() { if(this.state.batch?.frozen)throw new Error('本批安排已冻结，可复用为新任务调整'); }
+  get keywordChoices() {
+    const {availableKeywords, options, conversation, ui, batch} = this.state;
+    if (batch?.frozen) return options.keywords;
+    return [...new Set([...availableKeywords, ...(ui.taskKeywordChoices?.[conversation?.id || '_new'] || []), ...options.keywords])];
+  }
+  toggleKeyword(word, checked) {
+    this.assertBriefEditable();
+    const {availableKeywords, options, conversation, ui} = this.state;
+    const id = conversation?.id || '_new';
+    const choices = this.keywordChoices;
+    const selected = new Set(options.keywords);
+    if (checked) selected.add(word); else selected.delete(word);
+    ui.taskKeywordChoices = {...ui.taskKeywordChoices, [id]:choices.filter(choice => !availableKeywords.includes(choice))};
+    this.setOptions({keywords:choices.filter(choice => selected.has(choice))});
+  }
   messageDraft(id = this.state.conversation?.id || '_new') { return this.state.messageDrafts[id]?.text || ''; }
   setMessageDraft(text, id = this.state.conversation?.id || '_new') { this.state.messageDrafts[id]={...this.state.messageDrafts[id],text,error:''};this.persist(); }
   messageError(id = this.state.conversation?.id || '_new') { return this.state.messageDrafts[id]?.error || ''; }
@@ -105,6 +120,8 @@ export class WorkbenchClient {
     const s = this.state; let c = data.conversation;
     const same = s.conversation?.id === c.id;
     s.batch = data.batch || null;
+    s.availableKeywords = data.available_keywords || [];
+    if (s.conversation?.client_id !== c.client_id) s.library = [];
     if(s.batch?.frozen){clearTimeout(this.saveTimer);s.dirty=false;this.cache.pending=null;}
     const staleDraft=same&&Number(c.draft_revision??0)<Number(s.conversation.draft_revision??0);
     if(staleDraft)c={...c,...Object.fromEntries(['brief','document_ids','mode','followup','needs_confirmation','draft_revision'].map(key=>[key,s.conversation[key]]))};
@@ -173,9 +190,9 @@ export class WorkbenchClient {
     };
     this.saveQueue=this.saveQueue.catch(()=>{}).then(task);return this.saveQueue;
   }
-  async createConversation(clientId) {
+  async createConversation(clientId, options = {}) {
     if (this.state.conversation && this.state.dirty) await this.saveDraft();
-    const d = await this.api('/api/workbench/conversations', 'POST', { client_id: clientId });
+    const d = await this.api('/api/workbench/conversations', 'POST', { ...options, client_id: clientId });
     const pendingNote = !this.state.conversation && this.state.dirty ? this.state.options.note : '';
     const pendingMessage = !this.state.conversation ? this.messageDraft('_new') : '';
     this.state.dirty = false; this.cache.pending = null; this.state.results = {}; this.state.stream = {}; this.state.needsConfirmation = false;
@@ -237,7 +254,10 @@ export class WorkbenchClient {
     const d=await this.api(`/api/workbench/clients/${enc(cid)}/documents`,'POST',{filename:source.filename,kind:source.kind,text:text.trim(),update_document_id:source.id});
     if (!d.document || d.outcome === 'needs_resolution' || d.outcome === 'pending') throw new Error('资料修订未成为有效版本，原选择已保留');
     if(this.state.conversation?.id!==conversationId)return d.document;
-    if(!this.state.library.some(item=>item.id===d.document.id))this.state.library.push(d.document);
+    const revision = d.document;
+    this.state.library = this.state.library.filter(item => item.id !== revision.id && (!revision.group_id || item.group_id !== revision.group_id));
+    this.state.library.push(revision);
+    if (!this.state.documentIds.some(value=>String(value)===String(id))) { this.emit(); return revision; }
     this.selectDocuments(this.state.documentIds.map(value=>String(value)===String(id)?d.document.id:value));
     const docs=new Map([...this.state.documents,...this.state.library].map(item=>[String(item.id),item]));
     this.state.documents=this.state.documentIds.map(value=>docs.get(String(value))).filter(Boolean);
@@ -400,16 +420,27 @@ export class WorkbenchClient {
     delete this.state.editors[`${cid}:${id}`]; this.emit(); return d.article;
   }
   async versions(id) { return this.api(this.articlePath(id, '/versions')); }
+  async setTaskState(id, field, enabled) {
+    if (field === 'archived' && enabled && this.state.conversation?.id === id && this.state.dirty) await this.saveDraft();
+    const {task} = await this.api(`/api/workbench/conversations/${enc(id)}/task-state`,'PUT',{[field]:enabled});
+    const listed = this.state.conversations.find(value => value.id === id);
+    if (listed) Object.assign(listed, task);
+    if (this.state.conversation?.id === id) Object.assign(this.state.conversation, task);
+    this.emit();
+    return task;
+  }
   assertSettled() { if(this.activeJob||this.state.operations.some(running))throw new Error('当前任务仍在处理，请等待收尾后再操作'); }
   async deleteArticle(id) {
     this.assertSettled();const article=this.assertEditable(id),cid=this.state.conversation.id;
     await this.api(this.articlePath(id),'DELETE',{expected_version:article.current_version});
     if(this.state.conversation?.id===cid){delete this.state.editors[`${cid}:${id}`];await this.reload();}
   }
-  async cloneConversation() {
-    this.assertSettled();
-    const pending=this.state.dirty?{options:clone(this.state.options),documentIds:clone(this.state.documentIds),followup:this.state.ui.followup}:null;
-    const d=await this.api(this.path('/clone'),'POST',{});
+  async cloneConversation(id = this.state.conversation?.id) {
+    const current = id === this.state.conversation?.id;
+    if (current) this.assertSettled();
+    else if (this.state.dirty && this.state.conversation) await this.saveDraft();
+    const pending=current&&this.state.dirty?{options:clone(this.state.options),documentIds:clone(this.state.documentIds),followup:this.state.ui.followup}:null;
+    const d=await this.api(`/api/workbench/conversations/${enc(id)}/clone`,'POST',{});
     // A batch task is frozen. Explicit reuse applies any local changes to the new ordinary task only.
     this.state.dirty=false;this.cache.pending=null;await this.load(d.conversation.id);
     if(pending){this.state.options=pending.options;this.state.documentIds=pending.documentIds;this.state.ui.followup=pending.followup;this.markDirty();await this.saveDraft();}

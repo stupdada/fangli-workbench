@@ -12,12 +12,19 @@ export class CustomerClient {
     try { this.pending = JSON.parse(storage?.getItem(pendingKey) || 'null'); } catch { this.pending = null; }
   }
   path(id, tail = '') { return `/api/workbench/clients/${enc(id)}${tail}`; }
-  async clients() { return (await this.api('/api/workbench/clients')).clients; }
+  async clients(archived = false) { return (await this.api('/api/workbench/clients' + (archived ? '?archived=1' : ''))).clients; }
   async client(id) { return (await this.api(this.path(id))).client; }
-  async saveClient(id, name, profile) { return (await this.api(id ? this.path(id) : '/api/workbench/clients', id ? 'PUT' : 'POST', { name, profile })).client; }
+  archiveClient(id) { return this.api(this.path(id, '/archive'), 'POST', {}); }
+  restoreClient(id) { return this.api(this.path(id, '/restore'), 'POST', {}); }
+  async importDrafts() { return (await this.api('/api/workbench/import-drafts')).drafts; }
+  startImport(id, name) { return this.api('/api/workbench/import-drafts', 'POST', {id,name}); }
+  async saveClient(id, name, profile, creationId) { return (await this.api(id ? this.path(id) : '/api/workbench/clients', id ? 'PUT' : 'POST', { name, profile, ...(!id && creationId ? {creation_id:creationId} : {}) })).client; }
   plan(id) { return this.api(this.path(id, '/generation-plan')); }
   savePlan(id, payload) { return this.api(this.path(id, '/generation-plan'), 'PUT', payload); }
-  async documents(id) { return (await this.api(this.path(id, '/documents'))).documents; }
+  async documents(id, removed = false) { return (await this.api(this.path(id, '/documents' + (removed ? '?removed=1' : '')))).documents; }
+  removeDocument(id, documentId) { return this.api(this.path(id, `/documents/${enc(documentId)}`), 'DELETE', {}); }
+  restoreDocument(id, documentId, add_to_defaults) { return this.api(this.path(id, `/documents/${enc(documentId)}/restore`), 'POST', {add_to_defaults}); }
+  retryDocument(id, documentId, payload = {}) { return this.api(this.path(id, `/documents/${enc(documentId)}/retry`), 'POST', payload); }
   checkDocument(id, payload) { return this.api(this.path(id, '/documents/check'), 'POST', payload); }
   addDocument(id, payload) { return this.api(this.path(id, '/documents'), 'POST', payload); }
   async revisions(id, documentId) { return (await this.api(this.path(id, `/documents/${enc(documentId)}/revisions`))).documents; }

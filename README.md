@@ -23,7 +23,7 @@ if (-not (Test-Path -LiteralPath config/workbuddy.json)) {
 python main.py
 ```
 
-展示首页：`http://127.0.0.1:8770/`；内部使用指南：`/guide/index.html`；对话创作：`/workbench`；ZIP分步：`/workbench/zip`；视频：`/video/`。同一次启动自动拉起并管理视频子服务，终端输出实际主端口、主PID及视频PID。关闭窗口或Ctrl+C退出。`启动_开发模式.bat` 保留终端但不自动打开浏览器。
+默认入口 `http://127.0.0.1:8770/` 和 `/workbench` 进入分步创作。对话创作为 `/workbench/index.html`，展示页为 `/index.html`，内部使用指南为 `/guide/index.html`，视频为 `/video/`。同一次启动自动拉起并管理视频子服务，终端输出实际主端口、主PID及视频PID。关闭窗口或Ctrl+C退出。`启动_开发模式.bat` 保留终端但不自动打开浏览器。
 
 可指定独立数据目录、端口或让系统分配端口：
 

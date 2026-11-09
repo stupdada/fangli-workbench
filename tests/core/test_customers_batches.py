@@ -84,6 +84,120 @@ class CustomersAndBatches(unittest.TestCase):
     def submit(self, key, items=None):
         return self.http('/api/workbench/batches', 'POST', {'request_key': key, 'items': items or [{'client_id': self.cid}]})['batch']
 
+    def test_keyword_links_reach_chat_zip_and_batch_only_from_main_term(self):
+        document = self.document(text='资料支持西邦24用于橡胶与金属粘接。')['document']
+        links = [['西邦24', '橡胶与金属粘接'], ['橡胶与金属粘接', '另一条规则']]
+        options = {'keywords': ['西邦24'], 'keyword_links': links,
+                   'selections': [{'platform_id': self.platform['id'], 'account_type': 'official', 'count': 1}]}
+        saved = self.http(self.base + '/generation-plan', 'PUT', {'options': options, 'document_ids': [document['id']]})
+        self.assertEqual(saved['plan']['options']['keyword_links'], links)
+        for mode in ('chat', 'zip'):
+            conv = self.http('/api/workbench/conversations', 'POST', {'client_id': self.cid})['conversation']
+            self.assertEqual(conv['brief']['keyword_links'], links)
+            path = '/api/workbench/conversations/' + conv['id']
+            self.http(path + '/draft', 'PUT', {'mode': mode})
+            started = self.http(path + '/start', 'POST', {})
+            self.s.threads[started['job_id']].join(8)
+            self.assertEqual(self.http(path)['conversation']['mode'], mode)
+        check = self.http('/api/workbench/batches/preflight', 'POST', {'items': [{'client_id': self.cid}]})
+        self.assertEqual(check['items'][0]['preview']['rows'][0]['related_keywords'], ['橡胶与金属粘接'])
+        self.submit('keyword-links')
+        self.assertTrue(self.s.batches.idle.wait(8))
+        prompts = [r['messages'][1]['content'] for r in self.model.requests if '【主关键词】' in r['messages'][1]['content']]
+        self.assertEqual(len(prompts), 3)
+        for prompt in prompts:
+            self.assertIn('【本篇关联词】["橡胶与金属粘接"]', prompt)
+            self.assertNotIn('另一条规则', prompt)
+
+    def test_task_pin_archive_and_restore_keep_history_and_versions(self):
+        self.plan(count=1)
+        bid = self.submit('archive-finished')['id']
+        self.assertTrue(self.s.batches.idle.wait(8))
+        batch_path = '/api/workbench/batches/' + bid
+        item = self.http(batch_path)['batch']['items'][0]
+        ident = item['conversation_id']
+        path = '/api/workbench/conversations/' + ident
+        other = self.http('/api/workbench/conversations', 'POST', {'client_id': self.cid})['conversation']['id']
+        article = self.http(path)['articles'][0]
+        self.assertTrue(self.http(path + '/task-state', 'PUT', {'pinned': True})['task']['pinned_at'])
+        archived = self.http(path + '/task-state', 'PUT', {'archived': True})['task']
+        self.assertTrue(archived['archived_at'])
+        self.assertIsNone(archived['pinned_at'])
+        self.http(path + '/task-state', 'PUT', {'pinned': True}, expected=409)
+        self.close_server()
+        self.open_server()
+        rows = {t['id']: t for t in self.http('/api/workbench/bootstrap')['conversations']}
+        self.assertEqual(rows[ident]['archived_at'], archived['archived_at'])
+        self.assertIsNone(rows[other]['archived_at'])
+        self.assertEqual(self.http(batch_path)['batch']['items'][0]['archived_at'], archived['archived_at'])
+        restored = self.http(path + '/task-state', 'PUT', {'archived': False})['task']
+        self.assertIsNone(restored['archived_at'])
+        self.assertEqual(self.http(path)['articles'][0]['current_version'], article['current_version'])
+
+    def test_client_lifecycle_preserves_history_and_default_revision(self):
+        clients = '/api/workbench/clients'
+        other = self.customer('  Ｆｏｏ　客户  ')
+        self.http(clients, 'POST', {'name': 'foo 客户'}, expected=409)
+        self.http(self.base, 'PUT', {'name': 'FOO  客户', 'profile': other['profile']}, expected=409)
+        doc = self.document()['document']
+        plan = self.plan(ids=[doc['id']])['plan']
+        old = self.s.create_conversation(self.cid)
+        path = self.base + '/documents/' + doc['id']
+        removed = self.http(path, 'DELETE', {})['document']
+        self.assertTrue(removed['removed_at'])
+        self.assertEqual(self.http(path, 'DELETE', {})['document']['removed_at'], removed['removed_at'])
+        next_plan = self.http(self.base + '/generation-plan')['plan']
+        self.assertEqual(next_plan['document_ids'], [])
+        self.assertEqual(next_plan['revision'], plan['revision'] + 1)
+        self.assertEqual(self.http(self.base + '/documents')['documents'], [])
+        self.assertEqual(self.http(self.base + '/documents?removed=1')['documents'][0]['id'], doc['id'])
+        self.assertEqual(self.http(doc['original_url'], raw=True), doc['text'].encode())
+        self.assertEqual(self.s.clone_conversation(old['id'])['document_ids'], [])
+        self.assertEqual(self.s.view(old['id'])['documents'][0]['id'], doc['id'])
+        new = self.s.create_conversation(self.cid)
+        self.http('/api/workbench/conversations/' + new['id'] + '/draft', 'PUT',
+                  {'options': {}, 'document_ids': [doc['id']]}, expected=400)
+        preflight = self.http('/api/workbench/batches/preflight', 'POST',
+                              {'items': [{'client_id': self.cid, 'document_ids': [doc['id']]}]})
+        self.assertFalse(preflight['ready'])
+        self.assertIn('移出资料库', preflight['issues'][0]['error'])
+
+        archived = self.http(self.base + '/archive', 'POST', {})['client']
+        self.assertEqual(self.http(self.base + '/archive', 'POST', {})['client']['archived_at'], archived['archived_at'])
+        self.assertNotIn(self.cid, [item['id'] for item in self.http(clients)['clients']])
+        self.assertIn(self.cid, [item['id'] for item in self.http(clients + '?archived=1')['clients']])
+        self.http('/api/workbench/conversations', 'POST', {'client_id': self.cid}, expected=409)
+        history = self.http(self.base + '/history')['conversations']
+        self.assertIn(old['id'], [item['id'] for item in history])
+        collision = self.customer(archived['name'])['id']
+        self.assertNotEqual(collision, self.cid)
+        self.http(self.base + '/restore', 'POST', {}, expected=409)
+        self.http(clients + '/' + collision + '/archive', 'POST', {})
+        self.assertFalse(self.http(self.base + '/restore', 'POST', {})['client']['archived_at'])
+        self.assertEqual(self.http(self.base + '/restore', 'POST', {})['client']['id'], self.cid)
+
+        restored = self.http(path + '/restore', 'POST', {'add_to_defaults':False})['document']
+        self.assertEqual(restored['id'], doc['id'])
+        self.assertEqual(self.http(self.base + '/generation-plan')['plan']['document_ids'], [])
+        self.assertEqual(self.s.create_conversation(self.cid)['document_ids'], [])
+        self.assertEqual(self.http(restored['original_url'], raw=True), doc['text'].encode())
+        self.http(path + '/restore', 'POST', {'add_to_defaults':True})
+        default = self.http(self.base + '/generation-plan')['plan']
+        self.assertEqual(default['document_ids'], [doc['id']])
+        self.assertEqual(default['revision'], next_plan['revision'] + 1)
+        self.http(path + '/restore', 'POST', {'add_to_defaults':True})
+        self.assertEqual(self.http(self.base + '/generation-plan')['plan']['revision'], default['revision'])
+
+    def test_restore_without_saved_plan_does_not_silently_select_document(self):
+        doc = self.document()['document']
+        path = self.base + '/documents/' + doc['id']
+        self.http(path, 'DELETE', {})
+        self.http(path + '/restore', 'POST', {})
+        self.assertEqual(self.s.create_conversation(self.cid)['document_ids'], [])
+        self.assertEqual(self.http(self.base + '/documents')['documents'][0]['id'], doc['id'])
+        self.http(path + '/restore', 'POST', {'add_to_defaults':True})
+        self.assertEqual(self.s.create_conversation(self.cid)['document_ids'], [doc['id']])
+
     def test_hash_alias_update_and_old_task_preserved(self):
         old = self.document()['document']
         duplicate = self.document('资料（1）.txt')
@@ -192,6 +306,100 @@ class CustomersAndBatches(unittest.TestCase):
         self.assertEqual(self.http(self.base + '/generation-plan')['plan']['options']['note'], '长期要求。')
         self.assertEqual(self.model.catalog_calls, 0)
 
+    def test_quick_article_length_is_frozen_without_saving_a_customer_plan(self):
+        options = {'keywords': ['材料选型'], 'length_hint': '短篇',
+                   'selections': [{'platform_id': self.platform['id'], 'account_type': 'official', 'count': 1}]}
+        items = [{'client_id': self.cid, 'options': options}]
+        preflight = self.http('/api/workbench/batches/preflight', 'POST', {'items': items})
+        self.assertTrue(preflight['ready'])
+        self.assertEqual(preflight['items'][0]['options']['length_hint'], '短篇')
+        batch = self.submit('quick-short', items)
+        self.assertTrue(self.s.batches.idle.wait(10))
+        self.assertEqual(self.http('/api/workbench/batches/' + batch['id'])['batch']['status'], 'done')
+        requests = json.dumps(self.model.requests, ensure_ascii=False)
+        self.assertRegex(requests, r'正文 (300—450|250—350) 字')
+        plan = self.http(self.base + '/generation-plan')['plan']
+        self.assertEqual(plan['revision'], 0)
+        self.assertEqual(plan['options']['selections'], [])
+
+    def test_first_draft_targets_and_forms_reach_chat_zip_and_quick(self):
+        zhihu, sohu = (next(p for p in self.s.store.list_platforms() if p['name'] == name)
+                       for name in ('知乎', '搜狐'))
+        self.http(f'/api/platforms/{zhihu["id"]}', 'PUT', {'formats': ['问答', '图文']})
+        target_a, target_b = self.s.store.list_models()[:2]
+        condition = '西邦24仅用于已除油的钢件，试样保压15分钟。'
+        doc = self.document(text=condition)['document']
+        self.http(self.base + '/generation-plan', 'PUT', {'options': {'keywords': ['西邦24'],
+            'note': '平时正文650—850字'}, 'document_ids': [doc['id']]})
+        baseline = self.model.response
+        unsupported = '西邦24适用于所有钢件。'
+
+        def response(payload):
+            kind, result = baseline(payload)
+            if kind == 'generate':
+                result['sections'][0]['paragraphs'] = [unsupported, '试样保压15分钟。']
+            elif kind == 'audit':
+                body = payload['messages'][1]['content'].split('【待核查的文章】\n', 1)[1].split('\n\n【输出】', 1)[0].strip()
+                revised = '西邦24仅用于已除油的钢件。'
+                result = {'findings': [{'quote': unsupported, 'why': '遗漏已除油的适用条件',
+                                       'kind': '争议', 'revised': revised}],
+                          'verdict': 'revised', 'revised_body': body.replace(unsupported, revised)}
+            return kind, result
+
+        self.model.response = response
+        for mode, fmt, platform, preset, level, expected, style in (
+                ('chat', '问答', zhihu, '短篇', 'high', '正文 1200—1600 字', '第一段直接回应提问。'),
+                ('chat', '问答', zhihu, '长篇', 'low', '正文 1601—2000 字', '第一段直接回应提问。'),
+                ('zip', '图文', zhihu, '短篇', 'mid', '正文 1200—1600 字', '不套答题开场。'),
+                ('zip', '图文', zhihu, '长篇', 'high', '正文 1601—2000 字', '不套答题开场。'),
+                ('quick', '图文', sohu, '短篇', 'low', '正文 900—1150 字', 'sohu_personal'),
+                ('quick', '图文', sohu, '长篇', 'mid', '正文 1151—1400 字', 'sohu_personal')):
+            with self.subTest(mode=mode, preset=preset):
+                platform_id = platform['id']
+                for target, configured in ((target_a, 'low'), (target_b, level)):
+                    self.http('/api/prefs', 'POST', {'model_id': target['id'], 'platform_id': platform_id, 'level': configured})
+                options = {'length_hint': preset, 'models': [target_a['name'], target_b['name']],
+                           'selections': [{'platform_id': platform_id, 'account_type': 'personal', 'count': 1}],
+                           'format_overrides': {str(platform_id): [fmt]}}
+                before = len(self.model.requests)
+                if mode == 'quick':
+                    items = [{'client_id': self.cid, 'options': options}]
+                    preview = self.http('/api/workbench/batches/preflight', 'POST', {'items': items})
+                    self.assertEqual(preview['items'][0]['preview']['rows'][0]['length_hint'], expected)
+                    batch = self.submit('first-draft-' + preset, items)
+                    self.assertTrue(self.s.batches.idle.wait(8))
+                    path = '/api/workbench/conversations/' + batch['items'][0]['conversation_id']
+                else:
+                    conv = self.http('/api/workbench/conversations', 'POST', {'client_id': self.cid})['conversation']
+                    path = '/api/workbench/conversations/' + conv['id']
+                    self.http(path + '/draft', 'PUT', {'mode': mode, 'options': options})
+                    started = self.http(path + ('/start' if mode == 'chat' else '/write-one'), 'POST', {})
+                    self.s.threads[started['job_id']].join(8)
+                first, audit = self.model.requests[before:]
+                system, user = [m['content'] for m in first['messages']]
+                self.assertIn(style, system)
+                self.assertIn('【正文篇幅】' + expected, user)
+                self.assertIn(condition, user)
+                self.assertIn('保留型号、数字、适用条件和承诺范围', system)
+                label = {'high':'高', 'mid':'中', 'low':'低'}[level]
+                self.assertIn(f'【目标 AI 抓取偏好】{label}档', system)
+                self.assertEqual('小标题后直接回答' in system, level == 'high')
+                self.assertIn('核对事实的力度与条件', audit['messages'][1]['content'])
+
+                # Later preference changes must not relabel a saved draft.
+                self.http('/api/prefs', 'POST', {'model_id': target_b['id'], 'platform_id': platform_id,
+                                                'level': 'high' if level != 'high' else 'low'})
+                article = self.http(path)['articles'][0]
+                self.assertIn('仅用于已除油的钢件。', article['body_md'])
+                self.assertIn('试样保压15分钟。', article['body_md'])
+                self.assertNotIn(unsupported, article['body_md'])
+                url = path + f'/articles/{article["id"]}/editorial?version_id={article["current_version"]}'
+                shown = self.http(url)['generation_context']
+                self.assertEqual(shown['style']['applied']['retrieval_preference'], {'level': level,
+                    'targets': [{'name': target_a['name'], 'level': 'low'}, {'name': target_b['name'], 'level': level}]})
+                length = shown['editorial']['length']
+                self.assertEqual((length['hint'], length['status']), (expected, 'below'))
+
     def test_interrupted_requires_explicit_resume_and_completed_not_repeated(self):
         self.plan(count=2)
         self.model.gate_kind, self.model.gate_index = 'generate', 2
@@ -268,6 +476,14 @@ class CustomersAndBatches(unittest.TestCase):
         self.s.ws.update_conversation(conv['id'], document_ids=[old['id']])
         self.close_server()
         with closing(sqlite3.connect(self.db)) as c, c:
+            c.execute('DROP TRIGGER wb_client_unique_insert')
+            c.execute('DROP TRIGGER wb_client_unique_update')
+            c.execute('DROP INDEX wb_clients_active_name')
+            c.execute('ALTER TABLE wb_clients DROP COLUMN name_key')
+            c.execute('ALTER TABLE wb_clients DROP COLUMN archived_at')
+            for table in ('wb_geo_current_plans', 'wb_geo_items', 'wb_geo_runs', 'wb_geo_plans'):
+                c.execute(f'DROP TABLE {table}')
+            c.execute('PRAGMA user_version=0')
             c.execute('DROP TABLE wb_document_assets')
             c.execute('DROP TABLE wb_document_groups')
             c.execute('CREATE TABLE legacy_docs(id TEXT PRIMARY KEY,client_id TEXT NOT NULL,filename TEXT NOT NULL,kind TEXT,text TEXT NOT NULL,digest TEXT NOT NULL,created_at TEXT,UNIQUE(client_id,digest,filename))')

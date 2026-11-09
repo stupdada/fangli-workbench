@@ -9,7 +9,7 @@ from pathlib import Path
 from app import parsers
 from app.store import now
 from .errors import Problem, Missing, Conflict
-from .storage import uid, text_value, identifier
+from .storage import dumps, identifier, loads, text_value, uid
 
 
 def digest(data):
@@ -52,7 +52,7 @@ class Documents:
                 CREATE INDEX IF NOT EXISTS wb_assets_hash ON wb_document_assets(raw_sha256);
                 CREATE INDEX IF NOT EXISTS wb_documents_client ON wb_documents(client_id);
             ''')
-            c.execute('''INSERT OR IGNORE INTO wb_document_groups SELECT d.id,d.client_id,d.id
+            c.execute('''INSERT OR IGNORE INTO wb_document_groups(id,client_id,current_document_id) SELECT d.id,d.client_id,d.id
                 FROM wb_documents d LEFT JOIN wb_document_assets a ON a.document_id=d.id WHERE a.document_id IS NULL''')
             rows = c.execute('SELECT d.id,d.filename FROM wb_documents d LEFT JOIN wb_document_assets a ON a.document_id=d.id WHERE a.document_id IS NULL').fetchall()
             for row in rows:
@@ -79,8 +79,9 @@ class Documents:
         with self.store.conn() as c:
             row = c.execute('''SELECT d.*,a.group_id,a.revision,a.status,a.raw_sha256,
                 a.original_path,a.parsed_path,a.original_name,a.normalized_name,a.error,
-                g.current_document_id FROM wb_documents d JOIN wb_document_assets a ON a.document_id=d.id
-                JOIN wb_document_groups g ON g.id=a.group_id WHERE d.id=? AND d.client_id=?''', (did, cid)).fetchone()
+                g.current_document_id,g.removed_at,g.default_excluded FROM wb_documents d JOIN wb_document_assets a ON a.document_id=d.id
+                JOIN wb_document_groups g ON g.id=a.group_id AND g.client_id=d.client_id
+                WHERE d.id=? AND d.client_id=?''', (did, cid)).fetchone()
         if not row:
             raise Missing('资料不属于当前客户')
         return dict(row)
@@ -88,27 +89,104 @@ class Documents:
     def public(self, row):
         row = dict(row)
         base = '/api/workbench/clients/' + row['client_id'] + '/documents/' + row['id']
+        removed = {'removed_at': row['removed_at']} if row['removed_at'] else {}
         return {k: row[k] for k in ('id', 'client_id', 'filename', 'kind', 'text', 'digest', 'created_at',
-                                    'group_id', 'revision', 'status', 'raw_sha256', 'error')} | {
+                                    'group_id', 'revision', 'status', 'raw_sha256', 'error')} | removed | {
             'has_original': bool(row['original_path']), 'is_current': row['id'] == row['current_document_id'],
+            'default_excluded': bool(row['default_excluded']),
             'original_url': base + '/original' if row['original_path'] else None, 'text_url': base + '/text'}
 
-    def list(self, cid, all_revisions=False):
+    def list(self, cid, all_revisions=False, *, removed=False):
         self.ws.client(cid)
         with self.store.conn() as c:
-            rows = c.execute('''SELECT d.*,a.*,g.current_document_id FROM wb_documents d
+            rows = c.execute('''SELECT d.*,a.*,g.current_document_id,g.removed_at,g.default_excluded FROM wb_documents d
                 JOIN wb_document_assets a ON a.document_id=d.id
-                JOIN wb_document_groups g ON g.id=a.group_id WHERE d.client_id=?
+                JOIN wb_document_groups g ON g.id=a.group_id AND g.client_id=d.client_id WHERE d.client_id=?
+                AND (g.removed_at IS NOT NULL)=?
                 ''' + ('' if all_revisions else "AND (d.id=g.current_document_id OR a.status='pending')") +
-                ' ORDER BY d.created_at,d.rowid', (cid,)).fetchall()
+                ' ORDER BY d.created_at,d.rowid', (cid, int(removed))).fetchall()
         return [self.public(row) for row in rows]
 
     def revisions(self, cid, did):
-        group = self.row(cid, did)['group_id']
-        return [d for d in self.list(cid, True) if d['group_id'] == group]
+        row = self.row(cid, did)
+        return [d for d in self.list(cid, True, removed=bool(row['removed_at'])) if d['group_id'] == row['group_id']]
+
+    def remove(self, cid, did):
+        with self.lock:
+            self.ws.active_client(cid, include_import=True)
+            group = self.row(cid, did)['group_id']
+            timestamp = now()
+            with self.store.conn() as c:
+                c.execute('BEGIN IMMEDIATE')
+                removed = c.execute('''UPDATE wb_document_groups SET removed_at=?
+                    WHERE id=? AND client_id=? AND removed_at IS NULL''', (timestamp, group, cid))
+                if removed.rowcount:
+                    plan = c.execute('SELECT document_groups FROM wb_customer_plans WHERE client_id=?', (cid,)).fetchone()
+                    groups = loads(plan[0], []) if plan else []
+                    if group in groups:
+                        groups = [value for value in groups if value != group]
+                        c.execute('''UPDATE wb_customer_plans SET document_groups=?,revision=revision+1,updated_at=?
+                            WHERE client_id=?''', (dumps(groups), timestamp, cid))
+        return self.public(self.row(cid, did))
+
+    def restore(self, cid, did, add_to_defaults=False):
+        with self.lock:
+            self.ws.active_client(cid)
+            row = self.row(cid, did)
+            if add_to_defaults and not row['current_document_id']:
+                raise Conflict('资料没有有效修订，恢复后请先完成解析')
+            group = row['group_id']
+            with self.store.conn() as c:
+                c.execute('BEGIN IMMEDIATE')
+                c.execute('''UPDATE wb_document_groups SET removed_at=NULL,default_excluded=?
+                    WHERE id=? AND client_id=? AND (removed_at IS NOT NULL OR ?=1)''',
+                    (int(not add_to_defaults), group, cid, int(add_to_defaults)))
+                if add_to_defaults:
+                    plan = c.execute('SELECT document_groups FROM wb_customer_plans WHERE client_id=?', (cid,)).fetchone()
+                    if plan:
+                        groups = loads(plan[0], [])
+                        if group not in groups:
+                            c.execute('''UPDATE wb_customer_plans SET document_groups=?,revision=revision+1,updated_at=?
+                                         WHERE client_id=?''', (dumps([*groups, group]), now(), cid))
+            return self.public(self.row(cid, row['current_document_id'] or did))
+
+    def retry_import(self, cid, did, body):
+        if set(body) - {'text'}:
+            raise Problem('解析重试仅接受校对后的正文')
+        with self.lock:
+            self.ws.active_client(cid, include_import=True)
+            row = self.row(cid, did)
+            if row['removed_at'] or row['status'] != 'pending':
+                raise Conflict('请选择待解析的资料')
+            if row['current_document_id']:
+                current = self.row(cid, row['current_document_id'])
+                if current['revision'] > row['revision']:
+                    return {'outcome': 'duplicate', 'document': self.public(current)}
+            name, kind = row['filename'], row['kind']
+            if 'text' in body:
+                text = text_value(body['text'], '校对正文', 200000, empty=False)
+                if name.lower().endswith('.pdf'):
+                    kind = 'PDF 文档'
+            else:
+                raw, _, _ = self.download(cid, did, original=True)
+                try:
+                    parsed = parsers.parse_file(name, raw)
+                    text = text_value(parsed.get('text'), '资料正文', 200000, empty=False)
+                    kind = parsed.get('kind', kind)
+                except (parsers.Unsupported, parsers.ParseError, Problem) as exc:
+                    return {'outcome': 'pending', 'document': self.public({**row, 'error': str(exc)})}
+            return self.import_document(cid, {'filename': name, 'kind': kind, 'text': text, 'update_document_id': did})
+
+    def draft_current(self, cid):
+        latest = {}
+        for doc in self.list(cid):
+            group = doc['group_id']
+            if group not in latest or doc['revision'] > latest[group]['revision']:
+                latest[group] = doc
+        return list(latest.values())
 
     def check(self, cid, name, raw_sha='', text_digest=''):
-        self.ws.client(cid)
+        self.ws.active_client(cid, include_import=True)
         name = self.filename(name)
         for value in (raw_sha, text_digest):
             if not isinstance(value, str) or value and not re.fullmatch('[0-9a-fA-F]{64}', value):
@@ -142,7 +220,7 @@ class Documents:
         if set(body) - {'filename', 'kind', 'text', 'content_b64', 'update_document_id', 'as_new'}:
             raise Problem('资料导入包含未知字段')
         with self.lock:
-            self.ws.client(cid)
+            self.ws.active_client(cid, include_import=True)
             name = self.filename(body.get('filename'))
             kind = text_value(body.get('kind') or '文本', '资料类型', 50)
             text = body.get('text')
@@ -155,6 +233,8 @@ class Documents:
             if 'update_document_id' in body:
                 identifier(body['update_document_id'], '资料ID')
             target = self.row(cid, body['update_document_id']) if 'update_document_id' in body else None
+            if target and target['removed_at']:
+                raise Conflict('此资料已移出资料库，请作为新资料导入')
             if target and target['status'] == 'ready' and target['current_document_id'] not in (None, target['id']):
                 raise Conflict('资料已有新修订，请重新打开当前版本')
             if target and target['status'] == 'pending' and target['current_document_id']:
@@ -226,7 +306,7 @@ class Documents:
                         if current != target['current_document_id']:
                             raise Conflict('资料版本已变化，未切换有效版')
                     else:
-                        c.execute('INSERT INTO wb_document_groups VALUES(?,?,NULL)', (group_id, cid))
+                        c.execute('INSERT INTO wb_document_groups(id,client_id) VALUES(?,?)', (group_id, cid))
                     c.execute('INSERT INTO wb_documents VALUES(?,?,?,?,?,?,?)', (did, cid, name, kind, text, text_hash, now()))
                     c.execute('INSERT INTO wb_document_assets VALUES(?,?,?,?,?,?,?,?,?,?)',
                               (did, group_id, revision, status, raw_sha, original, parsed_path, name, normalized_name(name), error))

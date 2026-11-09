@@ -3,7 +3,7 @@ import hashlib
 import json
 from app.store import now
 from .errors import Conflict, Missing
-from .storage import dumps, loads, uid
+from .storage import client_name_write, dumps, loads, uid, update_client_profile
 
 
 def fingerprint(value):
@@ -83,18 +83,26 @@ class IntakeRepository:
                 raise Missing('整理结果不属于当前客户')
             if row['status'] != 'ready':
                 raise Conflict('资料整理尚未完成')
-            current = c.execute('SELECT name,profile FROM wb_clients WHERE id=?', (cid,)).fetchone()
-            if not current or profile_version({'name': current['name'], 'profile': loads(current['profile'], {})}) != expected:
+            current = c.execute('SELECT name,profile,import_draft FROM wb_clients WHERE id=?', (cid,)).fetchone()
+            actual_profile = {'name': current['name'], 'profile': loads(current['profile'], {})} if current else None
+            last = c.execute('SELECT * FROM wb_client_intake_adoptions WHERE intake_id=? ORDER BY rowid DESC LIMIT 1', (ident,)).fetchone()
+            if (loads(row['frozen']).get('import_confirmation') and last and not expected_adoption
+                    and last['base_version'] == expected and actual_profile == profile
+                    and loads(last['profile']) == profile and loads(last['editorial']) == editorial):
+                return last['id']
+            if not current or profile_version(actual_profile) != expected:
                 raise Conflict('客户档案已更新，请重新读取整理结果后合并修改')
-            last = c.execute('SELECT id FROM wb_client_intake_adoptions WHERE intake_id=? ORDER BY rowid DESC LIMIT 1', (ident,)).fetchone()
-            if (last[0] if last else None) != expected_adoption:
+            if (last['id'] if last else None) != expected_adoption:
                 raise Conflict('整理采用记录已更新，请重新打开后保存')
             for doc in loads(row['frozen'])['documents']:
-                actual = c.execute('SELECT current_document_id FROM wb_document_groups WHERE id=? AND client_id=?', (doc['group_id'], cid)).fetchone()
+                actual = c.execute('SELECT current_document_id FROM wb_document_groups WHERE id=? AND client_id=? AND removed_at IS NULL', (doc['group_id'], cid)).fetchone()
                 if not actual or actual[0] != doc['id']:
                     raise Conflict('资料已有新修订，请用当前资料重新整理')
             aid = uid()
-            c.execute('UPDATE wb_clients SET name=?,profile=? WHERE id=?', (profile['name'], dumps(profile['profile']), cid))
+            update_client_profile(c, cid, profile['name'], profile['profile'])
+            if current['import_draft']:
+                with client_name_write():
+                    c.execute('UPDATE wb_clients SET import_draft=0 WHERE id=?', (cid,))
             c.execute('INSERT INTO wb_client_intake_adoptions VALUES(?,?,?,?,?,?,?)',
                       (aid, ident, cid, expected, dumps(profile), dumps(editorial), now()))
         return aid
@@ -105,3 +113,9 @@ class IntakeRepository:
         if not row:
             return None
         return {**dict(row), 'profile': loads(row['profile']), 'editorial': loads(row['editorial'])}
+
+    def adopted_keywords(self, cid):
+        with self.store.conn() as c:
+            row = c.execute('SELECT editorial FROM wb_client_intake_adoptions WHERE client_id=? ORDER BY rowid DESC LIMIT 1',
+                            (cid,)).fetchone()
+        return [item['text'] for item in loads(row[0], {}).get('keywords', [])] if row else []

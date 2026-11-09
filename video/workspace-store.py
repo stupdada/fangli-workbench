@@ -22,6 +22,13 @@ class WorkspaceStore(native.VideoStore):
             raise native.StoreError('STORE_UNAVAILABLE', 503)
         self.origin = origin.rstrip('/')
         super().__init__(root, Path(root) / '.unused-workspace')
+        self.db.executescript("""
+        CREATE TABLE IF NOT EXISTS workspace_asset_removals(
+            id TEXT PRIMARY KEY REFERENCES assets(id), removed_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS workspace_job_archives(
+            batch TEXT NOT NULL, job TEXT NOT NULL, archived_at TEXT NOT NULL,
+            PRIMARY KEY(batch,job), FOREIGN KEY(batch,job) REFERENCES jobs(batch,id));
+        """)
 
     def context(self, client, source=None):
         if not isinstance(client, str) or not client.strip() or len(client) > 100:
@@ -72,11 +79,59 @@ class WorkspaceStore(native.VideoStore):
         if any(source.get(k) != snapshot[k] for k in snapshot) or source.get('digest') != digest:
             raise native.StoreError('CONTENT_VERSION_CONFLICT', 409)
 
+    def batch(self, ident, client=None):
+        record = super().batch(ident, client)
+        archived = dict(self.db.execute('SELECT job,archived_at FROM workspace_job_archives WHERE batch=?', (ident,)).fetchall())
+        for job in record['jobs']:
+            job['archived_at'] = archived.get(job['id'])
+        return record
+
     def _execute(self, op, data):
         if op == 'asset.list':
             client = self.client(data.get('clientId'))
-            rows = self.db.execute('SELECT id,name,type,size FROM assets WHERE client=? ORDER BY created DESC,id', (client,))
-            return [dict(row) for row in rows]
+            condition = 'IS NOT NULL' if data.get('removed') is True else 'IS NULL'
+            rows = self.db.execute(f"""SELECT a.id,a.name,a.type,a.size,r.removed_at FROM assets a
+                LEFT JOIN workspace_asset_removals r ON r.id=a.id WHERE a.client=? AND r.id {condition}
+                ORDER BY a.created DESC,a.id""", (client,))
+            return [{k: row[k] for k in row.keys() if row[k] is not None} for row in rows]
+        if op == 'asset.get':
+            row = super()._execute(op, data)
+            state = self.db.execute('SELECT removed_at FROM workspace_asset_removals WHERE id=?', (row['id'],)).fetchone()
+            row['removed_at'] = state[0] if state else None
+            return row
+        if op == 'asset.lifecycle':
+            row = super()._execute('asset.get', data)
+            if data['removed']:
+                self.db.execute('INSERT OR IGNORE INTO workspace_asset_removals VALUES (?,?)', (row['id'], native.now()))
+            else:
+                self.db.execute('DELETE FROM workspace_asset_removals WHERE id=?', (row['id'],))
+            return self._execute('asset.get', data)
+        if op == 'job.lifecycle':
+            record = self.batch(data['id'], data['clientId'])
+            job = next((j for j in record['jobs'] if j['id'] == data['jobId']), None)
+            if not job:
+                raise native.StoreError('NOT_FOUND', 404)
+            key = (record['id'], job['id'])
+            if data['archived']:
+                if job['state'] != 'completed':
+                    raise native.StoreError('WORK_ARCHIVE_BUSY', 409)
+                self.db.execute('INSERT OR IGNORE INTO workspace_job_archives VALUES (?,?,?)', (*key, native.now()))
+            else:
+                self.db.execute('DELETE FROM workspace_job_archives WHERE batch=? AND job=?', key)
+            return self.batch(record['id'], data['clientId'])
+        if op == 'batch.list' and 'archived' in data:
+            client = self.client(data['clientId'])
+            condition = 'IS NOT NULL' if data['archived'] else 'IS NULL'
+            rows = self.db.execute(f"""SELECT b.id FROM batches b WHERE b.client=? AND EXISTS(
+                SELECT 1 FROM jobs j LEFT JOIN workspace_job_archives a ON a.batch=j.batch AND a.job=j.id
+                WHERE j.batch=b.id AND a.job {condition}) ORDER BY b.rowid DESC LIMIT 100""", (client,)).fetchall()
+            return [self.batch(row[0], client) for row in rows]
+        if op == 'batch.create':
+            spec = data['spec']
+            if not self.db.execute('SELECT 1 FROM batches WHERE client=? AND digest=?', (spec['clientId'], data['digest'])).fetchone():
+                for asset in spec.get('assetDigests', {}):
+                    if self.db.execute('SELECT 1 FROM workspace_asset_removals WHERE id=?', (asset,)).fetchone():
+                        raise native.StoreError('ASSET_REMOVED', 409)
         if op == 'content.sources':
             context = self.context(data['clientId'])
             documents = context['documents']

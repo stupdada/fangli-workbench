@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GEO 内容工作台</title>
+<link rel="stylesheet" href="./zip-original.css">
+<link rel="stylesheet" href="./classic.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <div class="logo">GEO</div>
+    <div class="brand-txt">
+      <h1>GEO 内容工作台</h1>
+      <p>方立 · ZIP 原版创作</p>
+    </div>
+  </div>
+  <div class="top-actions">
+    <span id="srvInfo" class="srv-info"></span>
+    <button class="btn ghost" id="btnHome">开始新方案</button>
+    <a class="btn ghost" id="btnCustomers" href="/workbench?area=customers">客户管理</a>
+    <a class="btn ghost" href="/workbench/geo/">GEO 检测</a>
+    <button class="btn ghost" id="btnHistory">历史记录</button>
+    <button class="btn ghost" id="btnSettings">设置</button>
+  </div>
+</header>
+
+<main>
+<div class="card hidden" id="classicNotice" role="alert"></div>
+
+<!-- ====================== 向导 ====================== -->
+<section id="view-wizard">
+  <ol class="steps" id="stepper">
+    <li data-step="1" class="active"><b>1</b><span>放资料与关键词</span></li>
+    <li data-step="2"><b>2</b><span>看抓取偏好与风险</span></li>
+    <li data-step="3"><b>3</b><span>自动写稿</span></li>
+    <li data-step="4"><b>4</b><span>预览修改与导出</span></li>
+  </ol>
+
+  <!-- ---------- 第 1 步 ---------- -->
+  <div id="step1" class="panel">
+    <div class="card">
+      <div class="card-head">
+        <h2>第一步：把客户资料和目标关键词放进来</h2>
+        <p>选好客户后，自动带出客户资料、关键词和常用安排。</p>
+      </div>
+
+      <div class="grid2">
+        <label class="field"><span>客户</span><select id="classicCustomer"></select></label>
+        <div class="field"><span>当前方案</span><strong id="classicTask">请选择客户</strong></div>
+      </div>
+      <details><summary>查看客户档案</summary><div id="classicProfile" class="grid2"></div></details>
+      <button class="btn ghost sm hidden" id="classicExistingTask">返回当前方案</button>
+      <div class="hidden" id="classicFrozen"><p class="tip">本批安排已冻结。</p><button class="btn ghost sm" id="cloneBatch">复用为新方案</button></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>① 目标搜索关键词 <i class="req">*</i></h2>
+        <p>已勾选的关键词用于这次创作。</p>
+      </div>
+      <div class="kw-add">
+        <input id="k_input" placeholder="输入一个搜索词，例如：小型咖啡机怎么选（按回车添加）">
+        <button class="btn ghost" id="btnAddKw">添加</button>
+      </div>
+      <div id="kwList" class="kw-list"></div>
+      <p class="tip" id="kwHint"></p>
+
+      <details><summary>别名分组</summary>
+        <div id="aliasList" class="alias-list"></div>
+        <button class="btn ghost sm" id="btnDetectAlias">识别疑似别名</button>
+      </details>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>② 客户资料文件</h2>
+        <p>在这里勾选本次需要的客户资料。</p>
+      </div>
+
+      <details><summary>补充资料</summary>
+      <div id="dropZone" class="drop-zone">
+        <div class="dz-icon">＋</div>
+        <div class="dz-main">把文件拖到这里，或点一下选择文件</div>
+        <div class="dz-sub" id="matHint">可一次选多个；单个文件不超过 8MB</div>
+        <input type="file" id="fileInput" multiple hidden
+               accept=".docx,.docm,.xlsx,.xlsm,.pptx,.txt,.md,.markdown,.csv,.tsv,.json,.html,.htm,.log">
+      </div>
+
+      <div class="mat-tools">
+        <button class="btn ghost sm" id="btnPaste">粘贴文字</button>
+        <span class="hint" id="matSummary"></span>
+      </div>
+
+      </details>
+      <div id="matList" class="mat-list"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>③ 补充说明（可以不填）</h2>
+        <p>资料里没写、但这次想强调的，用一段话讲清楚就行：重点讲什么、别讲什么、用什么语气。</p>
+      </div>
+      <label class="field">
+        <textarea id="f_note" rows="5" placeholder="例如：重点讲清洗方便，别提价格；语气平实一点，像懂行的人在讲，不要喊口号；面向家里有小孩的用户，别用网络流行语。"></textarea>
+        <small>这段话会原样作为写作要求交给模型；不填就完全按客户资料来写。</small>
+      </label>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>④ 这次想被哪些 AI 搜到，发到哪里 <i class="req">*</i></h2>
+      </div>
+
+      <div class="field">
+        <span>目标大模型</span>
+        <div id="modelChips" class="chips"></div>
+        <small>可多选。系统会针对它们的抓取习惯调整写法。</small>
+      </div>
+
+      <div class="field">
+        <span>分发平台与每个平台篇数</span>
+        <div id="platformCards" class="plat-grid"></div>
+        <small>官方号和个人号可以分别设置，各 0–20 篇。</small>
+      </div>
+
+      <div class="actions right">
+        <span id="planSummary" class="hint"></span>
+        <button class="btn primary" id="btnToStep2">下一步：确认写作 →</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ---------- 第 2 步 ---------- -->
+  <div id="step2" class="panel hidden">
+    <div class="card">
+      <div class="card-head"><h2>第二步：确认本次写作</h2><p id="classicRecap"></p></div>
+      <details>
+        <summary>查看抓取偏好与风险</summary>
+        <h3 class="sec-title">① 大模型与内容平台抓取偏好</h3>
+        <div id="prefTable" class="table-wrap"></div>
+        <h3 class="sec-title">② 分发平台风险清单</h3>
+        <div id="riskList" class="risk-list"></div>
+      </details>
+    </div>
+    <div class="actions between">
+      <button class="btn ghost" id="btnBack1">← 上一步</button>
+      <div class="actions">
+        <span id="genSummary" class="hint"></span>
+        <button class="btn primary lg" id="btnGenerate">开始写第一篇</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ---------- 第 3 步 ---------- -->
+  <div id="step3" class="panel hidden">
+    <div class="card">
+      <div class="card-head">
+        <h2 id="writeTitle">正在写第 1 篇</h2>
+        <p id="jobMsg">准备中…</p>
+      </div>
+
+      <div id="autoBar" class="auto-bar hidden">
+        <div class="auto-progress"><i id="autoFill"></i></div>
+        <span id="autoText" class="auto-text">0 / 0 篇</span>
+        <button class="btn ghost sm" id="btnPause">暂停</button>
+      </div>
+
+      <div class="stream-box">
+        <div id="streamEmpty" class="stream-empty">等待正文…</div>
+        <div id="streamText" class="stream-text preview"></div>
+      </div>
+
+      <div class="stream-meta">
+        <span id="streamChars">0 字</span>
+        <span id="streamTask" class="hint"></span>
+      </div>
+
+      <div id="doneList" class="done-list hidden">
+        <div class="dl-head">这次已写完 <b id="doneCount">0</b> 篇
+          <span class="hint">（写一篇点一篇，不用等）</span>
+        </div>
+        <div id="doneItems"></div>
+      </div>
+
+      <div id="writeDone" class="batch-done hidden">
+        <div id="writeSummary" class="batch-summary"></div>
+        <div class="actions">
+          <button class="btn primary" id="btnContinue">继续写剩下的</button>
+          <button class="btn ghost" id="btnGoPreview">去看看稿子</button>
+          <button class="btn ghost" id="btnBackToSetup2">调整本次安排</button>
+        </div>
+      </div>
+
+      <div class="actions right">
+        <button class="btn ghost" id="btnSkip">查看稿件</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ---------- 第 4 步 ---------- -->
+  <div id="step4" class="panel hidden">
+    <div class="card plan-head">
+      <div>
+        <h2 id="planTitle">方案</h2>
+        <p id="planMeta" class="tip"></p>
+      </div>
+      <div class="actions">
+        <button class="btn ghost" id="btnBackToWrite">← 回到自动写稿</button>
+        <button class="btn primary" id="btnExportWord">导出所选 Word（0 篇）</button>
+        <details class="classic-more"><summary>更多导出</summary>
+          <button class="btn ghost sm" data-export="md">Markdown</button>
+          <button class="btn ghost sm" data-export="txt">纯文本</button>
+          <button class="btn ghost sm" data-export="json">JSON</button>
+        </details>
+      </div>
+
+      <div id="progressBanner" class="progress-banner hidden">
+        <span id="progressText"></span>
+        <div class="actions">
+          <button class="btn primary sm" id="btnResume">继续写剩下的</button>
+          <button class="btn ghost sm" id="btnBackToSetup">调整本次安排</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="editor-layout">
+      <aside class="card list-col">
+        <div class="card-head sm"><h3>稿件清单</h3><p id="listCount"></p></div>
+        <div class="pick-bar">
+          <span id="pickCount" class="pick-count">导出勾选：0 / 0 篇</span>
+          <div class="pick-acts">
+            <button class="link-btn" id="btnPickAll">全选</button>
+            <button class="link-btn" id="btnPickNone">全不选</button>
+          </div>
+        </div>
+        <div id="articleList" class="art-list"></div>
+      </aside>
+
+      <section class="card edit-col">
+        <div id="editorEmpty" class="empty">
+          <p>左边点一篇稿件，就能在这里看和改。</p>
+        </div>
+
+        <div id="editorBody" class="hidden">
+          <div class="edit-head">
+            <div class="edit-tags">
+              <span id="edPlatform" class="pill"></span>
+              <span id="edAngle" class="pill soft"></span>
+              <span id="edFmt" class="pill soft"></span>
+              <span id="edWords" class="pill soft"></span>
+            </div>
+            <details class="classic-more"><summary>更多</summary>
+              <button class="btn ghost sm" id="btnRegen">重新写这篇</button>
+              <button class="btn ghost sm" id="btnAuditAgain">再核一次</button>
+              <button class="btn ghost sm" id="btnRestore">历史版本</button>
+              <button class="btn ghost sm danger" id="btnDelArt">删除</button>
+            </details>
+          </div>
+
+          <label class="field">
+            <span>标题</span>
+            <input id="edTitle">
+          </label>
+
+          <div class="grid2 tight">
+            <label class="field">
+              <span>话题标签（用逗号隔开）</span>
+              <input id="edTags">
+            </label>
+            <label class="field">
+              <span>发布勾选声明</span>
+              <input id="edDecl" placeholder="用逗号隔开">
+            </label>
+          </div>
+
+          <div class="field">
+            <div class="row-between">
+              <span>正文（可直接改文字，<code>##</code> 表示小标题，<code>-</code> 表示要点）</span>
+              <div class="seg">
+                <button class="seg-btn" data-view="edit">编辑</button>
+                <button class="seg-btn active" data-view="preview">预览</button>
+              </div>
+            </div>
+            <textarea id="edBody" rows="22" spellcheck="false"></textarea>
+            <div id="edPreview" class="preview hidden"></div>
+          </div>
+
+          <details class="selfcheck">
+            <summary>事实核查</summary>
+            <p id="auditSummary" class="hint"></p>
+            <ul id="auditList" class="audit-list"></ul>
+          </details>
+
+          <div class="actions right">
+            <span id="saveHint" class="hint"></span>
+            <button class="btn primary" id="btnSaveArt">保存这篇修改</button>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+</section>
+
+</main>
+<dialog id="classicDialog" class="classic-dialog"><form method="dialog">
+  <h2 id="classicDialogTitle"></h2>
+  <div id="classicDialogBody"></div>
+  <div class="actions right"><button class="btn ghost" value="cancel">取消</button><button class="btn primary" value="confirm">确认</button></div>
+</form></dialog>
+<script type="module" src="./classic.mjs"></script>
+</body>
+</html>

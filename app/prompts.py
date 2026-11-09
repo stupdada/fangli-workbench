@@ -115,9 +115,13 @@ def build_system(platform, risk_items, pref_level, keyword, brand="", brief_comp
         structure = '按主题安排必要段落，为摘要与各节分配篇幅。'
         if budget:
             sections = '、'.join(f'第{i}节约{size}字' for i, size in enumerate(budget['sections'], 1))
+            section_form = f"每节写{budget['paragraphs_per_section']}个完整段落，精简小标题，句子保持完整。"
+            if creation_context.get('article_structure'):
+                section_form = (f"叙述小节可参考{budget['paragraphs_per_section']}个完整段落。"
+                                "采用步骤清单的小节按需配简短说明，清单文字计入该节篇幅。")
             structure = (f"【结构与字数】正文合计写到约{budget['target']}字。摘要不超过{budget['summary']}字，"
                          f"sections 恰好{len(budget['sections'])}节，{sections}（含小标题）。"
-                         f"每节写{budget['paragraphs_per_section']}个完整段落，精简小标题，句子保持完整。"
+                         f"{section_form}"
                          '按本次要求的顺序分配各节，每节解决一个具体问题。篇幅接近上限时删掉外围例子和收尾扩展。')
         return f"""为{platform['name']}撰写能直接阅读的稿件。面向{platform['audience']}；平台基础语气：{platform['style']}。
 {identity}

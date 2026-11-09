@@ -43,6 +43,7 @@
 | POST `/api/workbench/conversations` | `{client_id}` → conversation |
 | PUT `/api/workbench/conversations/{id}/profile` | `{name,profile,save_as_default?:true}` → `{client,conversation}`；默认只更新本任务，显式save_as_default才同步客户；profile七字段齐全，清空传空字符串 |
 | GET `/api/workbench/conversations/{id}` | conversation, articles, documents, job, operations |
+| PUT `/api/workbench/conversations/{id}/task-state` | `{pinned:true\|false}` 或 `{archived:true\|false}` → `{task:{id,pinned_at,archived_at}}`。归档清除置顶，排队或执行中的任务返回 409。归档任务可按原 ID 查阅和恢复 |
 | POST `/api/workbench/conversations/{id}/clone` | `{}` → 新conversation；同客户、复制当前可见brief和所选资料，原任务ID记parent_conversation_id，不复制稿件/历史对话/计划/完成状态 |
 | DELETE `/api/workbench/conversations/{id}` | `{}` → deleted_id；仅逻辑删除，运行任务409，旧视频固定来源继续可读 |
 | PUT `/api/workbench/conversations/{id}/draft` | `{options,document_ids?,mode?}`，保存两个入口的同一草稿，不调用模型 |
@@ -62,6 +63,8 @@
 | POST `…/articles/{aid}/style-review` | `{expected_version}` → operation_id；结果suggestions/observations/assessment/base_version |
 | POST `…/articles/{aid}/style-rewrite` | `{expected_version,review_id,selected,mode:'full'|'standard'|'light',material?,conservative?:string[]}` → operation_id；结果candidate_version/changes/fact_check。conservative明确指定已选且需要素材的建议只做删减/收紧；其余需要素材的项仍校验material |
 | POST `…/articles/{aid}/revise` | `{expected_version,instruction}` → operation_id；针对当前正文的修改候选，不能误用原ZIP整篇重写冒充局部修改 |
+| GET `…/articles/{aid}/editorial?version_id=…` | 本版核查状态、问题原句、依据、修订记录和创作配置。历史版按其版本 ID 返回对应资料 |
+| POST `…/articles/{aid}/repair-facts` | `{expected_version,selected:[问题编号]}` → operation_id。对可唯一定位的原句生成替换文本，保存候选并局部复核。沿用 `select-version` 明确采用 |
 | PUT `…/articles/{aid}/review-record` | `{candidate_version,codex_review,user_review}`，分别保存真正的双方意见 |
 | GET `…/articles/{aid}/compare?candidate_version=…` | base, candidate, diff, review, review_records；可支持fmt=json/md下载 |
 | GET `/api/workbench/conversations/{id}/export?fmt=docx|md|json|txt&ids=…` | 导出当前明确采用版本。Markdown、TXT 可传 `scope=body` 下载与 Word 同源的正文。省略 `scope` 沿用各格式的原有内容，JSON 为任务资料 |
@@ -103,11 +106,11 @@ conversation.brief是八项客户字段和本次安排的唯一有效来源；�
 
 document返回 `id,client_id,filename,kind,text,digest`。conversation至少有 `id,client_id,title,plan_id,messages,brief,document_ids,job_id,status`。article至少有ZIP原字段和 `current_version,version_label,origin,review,locked`。version有 `id,article_id,parent_id,origin,label,article,review,created_at`。
 
-`length_hint` 为可选本次篇幅说明；优先采用其非空值，其次识别本次 `note` 的显式字数，再读客户常用方案的字数偏好，最后使用平台匹配形态的 `length_hint`。每种实际平台、身份、形态的长度保存为 `{hint,source,metric}`，`source` 为 `request|customer_preference|platform_default`，`metric` 为 `nonWhitespace`。正文由摘要和主题段落组成，附加卖点/数据/问答不重复拼到文末。编辑侧 `editorial.length.actual` 记录正文实测字符数（含小标题，去 Markdown 样式、文章标题、标签和声明）。篇幅是创作目标，生成调用及原生核查的次数不因此增加。客户常用方案可在 `note` 写偏好，例如“正文通常 600—800 字”。
+`length_hint` 为可选本次篇幅说明。依次采用本次非空 `length_hint`、本次 `note` 中的显式字数、客户常用方案中的字数偏好、平台匹配形态的默认篇幅。每种实际平台、身份、形态的目标保存为 `{hint,source,metric}`，`source` 为 `request|customer_preference|platform_default`，`metric` 为 `nonWhitespace`。本版详情按所查看的版本正文实测，计入小标题及列表文字，略过文章标题、标签、声明和常见 Markdown 标记。明确给出范围或上、下限时显示是否落在目标内。生成和原生核查调用次数沿用原流程。客户常用方案可在 `note` 写“正文通常 600—800 字”。
 
 首次写作识别本次明确字数范围或目标后，将摘要、各节字数和段落数量保存到实际 `style` 变体的 `budget`。各节按主题问题分工。首次核查对照业务条件和表述力度，问题摘录必须出现在原稿。若摘录对不上，或正文变化缺少核查问题作为依据，保留初稿并在编辑记录标记为 `unverified`。
 
-普通任务 `/start`、`/write-one` 将 `creation_context` 随现有生成快照保存。结构为 `{schema_version,client,documents,request,style,source_article,editorial,digest}`；`client` 含 id/name/profile，`documents` 含本次选定 ID、修订、文本哈希、文件名和正文，`request` 含本次主题/关键词、要求、选择和形态覆盖；`style.variants` 以 `platform_id:account_type:fmt` 索引适用规则、认可表达、版本、文件哈希和有效篇幅。原生审核、候选及采用流程保持各自状态。已提交的既有批次继续使用其提交时快照。
+普通任务 `/start`、`/write-one` 和批量任务将 `creation_context` 随现有生成快照保存。结构为 `{schema_version,client,documents,request,style,source_article,editorial,digest}`，其中 `client` 含 id/name/profile，`documents` 含本次选定 ID、修订、文本哈希、文件名和正文，`request` 含本次主题/关键词、要求、选择和形态覆盖。`style.variants` 以 `platform_id:account_type:fmt` 索引适用规则、认可表达、版本、文件哈希和有效篇幅。同一风格配置中按形态定义的规则覆盖通用字段。文章变体保存 `retrieval_preference`，取已选目标在当前平台的最高档，未配置的格子或未选择目标时按中档。高档优先按问题组织小节并独立呈现事实，中档突出结论和条件，低档沿用平台写法。原生审核、候选及采用流程保持各自状态。已提交的既有批次继续使用提交时的快照。
 
 客户确认整理结果后，新任务沿用正式客户档案。本次所选资料的 ID、修订和正文哈希与某次整理采用的整个资料集合一致时，快照的 `editorial` 保存最近一次匹配的 `intake_id`、`adoption_id`、概览、关键词、重要说法和冲突。引用和核对状态供编辑和下游来源回看，首次正文请求仍使用正式任务档案、本次要求及选定原文。
 

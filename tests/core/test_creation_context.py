@@ -1,5 +1,6 @@
 import unittest
-from bridge.creation_context import build, digest, for_article, resolve_length, section_budget
+from bridge.checks import article_length
+from bridge.creation_context import build, digest, for_article, platform_preference, resolve_length, section_budget
 
 
 class CreationContextTests(unittest.TestCase):
@@ -19,6 +20,25 @@ class CreationContextTests(unittest.TestCase):
         self.assertEqual(resolve_length({'note': '说明真实工艺'}, customer, platform)['source'], 'customer_preference')
         self.assertEqual(resolve_length({}, {}, platform, '图文'),
                          {'hint': '图文 300-600 字', 'source': 'platform_default', 'metric': 'nonWhitespace'})
+        self.assertEqual(resolve_length({'length_hint': '短篇'}, customer, platform, '图文')['hint'], '正文 300—450 字')
+        self.assertEqual(resolve_length({'length_hint': '长篇'}, customer, platform, '短视频')['hint'], '正文 351—450 字')
+
+    def test_length_limits_and_platform_preference_use_effective_inputs(self):
+        target = resolve_length({'note': '正文不超过 20 字'}, {}, {'length_hint': '300—500 字'})
+        self.assertEqual(target['hint'], '正文不超过 20 字')
+        self.assertLess(section_budget(target)['target'], 20)
+        body = '# 标题\n\n## 条件\n\n- **确认样件**\n\n#标签\n\n声明：含AI生成内容'
+        self.assertEqual(article_length(body, target)['actual'], 6)
+        self.assertEqual(article_length(body, target)['status'], 'within')
+        self.assertEqual(article_length(body.replace('确认样件', '要' * 20), target)['status'], 'above')
+        self.assertNotIn('status', article_length(body, {**target, 'source': 'platform_default'}))
+
+        targets = [{'name':'低档目标', 'id':1, 'enabled':True}, {'name':'无配置目标', 'id':2, 'enabled':True}]
+        prefs = [{'model_id':1, 'platform_id':9, 'level':'low'}, {'model_id':2, 'platform_id':8, 'level':'high'}]
+        result = platform_preference(9, ['低档目标', '无配置目标'], targets, prefs)
+        self.assertEqual([target['level'] for target in result['targets']], ['low', 'mid'])
+        self.assertEqual(result['level'], 'mid')
+        self.assertEqual(platform_preference(9, [], targets, prefs), {'level':'mid', 'targets':[]})
 
     def test_style_scope_and_digest_follow_actual_platform_and_identity(self):
         platform = {'id': 9, 'name': '头条', 'formats': ['图文'], 'length_hint': '800—1300字'}

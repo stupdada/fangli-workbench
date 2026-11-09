@@ -2,7 +2,10 @@
 const {createHash}=require('node:crypto');
 const MODEL='deepseek-v4.1-flash';
 const POINT_MAX_CHARACTERS=32;
-const TEMPLATES=Object.freeze({process:'流程说明',intro:'图文介绍',qa:'问题解答'});
+const DAILY='daily';
+const DAILY_CAPTION_MAX=24;
+const DAILY_SHOTS=5;
+const TEMPLATES=Object.freeze({process:'流程说明',intro:'图文介绍',qa:'问题解答',[DAILY]:'门店日常'});
 const ASSET_ID=/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/u;
 const clone=value=>JSON.parse(JSON.stringify(value));
 const hash=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -25,7 +28,11 @@ function assetSelection(value=[]){
 function publishing(draft){
   return draft.publish??{title:draft.title,description:draft.script.paragraphs[0].text};
 }
-function freezeContext(value,{topic,source,note,platform,template='process'}={}){
+function validateDailyPhotos(photos){
+  if(photos.length!==DAILY_SHOTS||photos.some(photo=>!photo.type.startsWith('image/')))
+    throw problem(400,'门店日常需要 5 张不同的图片');
+}
+function freezeContext(value,{topic,source,note,platform,template='process',shotNotes}={}){
   if(!value?.client||!Array.isArray(value.documents))throw problem(400,'请先选择客户与资料');
   const client={id:text(value.client.id,'客户ID',100),name:text(value.client.name,'客户名称',200),profile:clone(value.client.profile||{})};
   let size=0;
@@ -36,34 +43,51 @@ function freezeContext(value,{topic,source,note,platform,template='process'}={})
   if(article)text(article.body_md,'文章正文',60000);
   const source_article=article?{article_id:article.article_id,version_id:article.version_id,title:text(article.title,'文章标题',500),body_md:article.body_md}:null;
   if(!documents.some(d=>d.text)&&!source_article)throw problem(400,'请为本次制作选择业务资料或采用的文章');
+  const daily=templateId(template)===DAILY;
   const request={...clone(value.request||{}),topic:text(topic||value.request?.topic||source_article?.title,'视频主题',500),
-    ...(note===undefined?{}:{note:text(note,'本次要求',4000,true)}),platform:platform===undefined?'短视频':text(platform,'发布平台',100),
-    format:'页面式口播',template:templateId(template),target_seconds:[30,45],target_characters:[100,160]};
+    ...(note===undefined?{}:{note:text(note,'本次要求',4000,true)}),platform:platform===undefined?(daily?'抖音':'短视频'):text(platform,'发布平台',100),
+    format:daily?'实拍图与字幕':'页面式口播',template,target_seconds:daily?[22,22]:[30,45],target_characters:daily?[60,110]:[100,160]};
+  if(daily){
+    if(!Array.isArray(shotNotes)||shotNotes.length!==DAILY_SHOTS)throw problem(400,'请按图片顺序填写 5 条镜头说明');
+    request.shot_notes=shotNotes.map((note,i)=>line(note,`第${i+1}张图的镜头说明`,80));
+  }
   return {client,documents,request,style:clone(value.style||{}),source_article,editorial:clone(value.editorial||{})};
 }
 function validateDraft(input){
   const title=line(input?.title,'视频标题',40);
+  const template=templateId(input.template??'process'),daily=template===DAILY;
   if(!Array.isArray(input.pages)||input.pages.length<3||input.pages.length>6)throw problem(400,'短视频需要3—6个页面');
-  if(!Array.isArray(input.script?.paragraphs)||input.script.paragraphs.length!==input.pages.length)throw problem(400,'每个页面需要一段连续口播');
+  if(daily&&input.pages.length!==DAILY_SHOTS)throw problem(400,'门店日常需要 5 屏字幕');
+  if(!Array.isArray(input.script?.paragraphs)||input.script.paragraphs.length!==input.pages.length)
+    throw problem(400,daily?'每个镜头需要一条字幕':'每个页面需要一段连续口播');
   const pages=input.pages.map((p,i)=>{
     const id=`p${i+1}`;
     if(p?.id!==id)throw problem(400,'页面编号须按p1、p2顺序排列');
+    if(daily)return {id,heading:line(p.heading,'镜头名称',16),points:[],...(p.asset_id==null?{}:{asset_id:assetId(p.asset_id)})};
     if(!Array.isArray(p.points)||p.points.length<1||p.points.length>3)throw problem(400,'每页展示1—3个简短要点');
+    if(p.layout===DAILY)throw problem(400,'请从新建短视频选择门店日常模板');
     return {id,heading:line(p.heading,'页面标题',16),points:p.points.map(s=>line(s,`画面要点（最多${POINT_MAX_CHARACTERS}字）`,POINT_MAX_CHARACTERS)),
       ...(p.layout==null?{}:{layout:templateId(p.layout)}),...(p.asset_id==null?{}:{asset_id:assetId(p.asset_id)})};
   });
   const paragraphs=input.script.paragraphs.map((p,i)=>{
-    if(p?.page_id!==pages[i].id)throw problem(400,'口播与页面编号不一致');
-    const label=`第${i+1}页口播`,spoken=line(p.text,label,144);
-    if(count(spoken)>36)throw problem(400,`${label}最多36个有效字符`);
+    if(p?.page_id!==pages[i].id)throw problem(400,'字幕或口播与画面编号不一致');
+    const label=daily?`第${i+1}屏字幕`:`第${i+1}页口播`,spoken=line(p.text,label,144);
+    const maximum=daily?DAILY_CAPTION_MAX:36;
+    if(count(spoken)>maximum)throw problem(400,`${label}最多${maximum}个有效字符`);
     return {page_id:p.page_id,text:spoken};
   });
   const full=paragraphs.map(p=>p.text).join(''),characters=count(full);
-  if(characters<100||characters>160)throw problem(400,`口播共${characters}字，请调整为100—160字`);
-  const template=templateId(input.template??'process');
+  if(!daily&&(characters<100||characters>160))throw problem(400,`口播共${characters}字，请调整为100—160字`);
   const result={title,template,script:{text:full,paragraphs,characters},pages};
-  if(input.publish!==undefined){
+  if(daily||input.publish!==undefined){
     result.publish={title:line(input.publish?.title,'发布标题',80),description:text(input.publish?.description,'发布简介',300)};
+    if(daily){
+      const tags=input.publish.tags;
+      if(!Array.isArray(tags)||tags.length<3||tags.length>6)throw problem(400,'请填写 3—6 个话题标签');
+      result.publish.tags=tags.map(tag=>line(tag,'话题标签',24).replace(/^#/u,''));
+      if(new Set(result.publish.tags).size!==tags.length||result.publish.tags.some(tag=>!/^[-_\p{L}\p{N}]{2,23}$/u.test(tag)))
+        throw problem(400,'话题标签须互不相同，且仅包含文字、数字、短横线或下划线');
+    }
   }else result.publish=publishing(result);
   return result;
 }
@@ -81,11 +105,12 @@ function validateEditorial(value,context,draft){
   const claims=[],unresolved=[];
   for(const c of value.claims){
     const quote=text(c?.quote,'来源引文',1000),statement=text(c.text,'采用事实',500),source_id=String(c.source_id);
-    if(!draft.pages.some(p=>p.id===c.page_id))throw problem(400,'事实记录需对应一个页面');
+    const publication=draft.template===DAILY&&c.page_id==='publish';
+    if(!publication&&!draft.pages.some(p=>p.id===c.page_id))throw problem(400,'事实记录需对应画面或发布简介');
     const entry={text:statement,page_id:c.page_id,source_id};
     if(sources.get(source_id)?.includes(quote))claims.push({...entry,quote});
     else unresolved.push({...entry,reason:'来源引文需核对'});
   }
   return {claims,unresolved,issues:value.issues.map(issueText),factual_entailment:'待人工阅读核对'};
 }
-module.exports={MODEL,POINT_MAX_CHARACTERS,TEMPLATES,assetSelection,publishing,clone,hash,count,problem,freezeContext,validateDraft,validateEditorial};
+module.exports={MODEL,POINT_MAX_CHARACTERS,DAILY,DAILY_SHOTS,DAILY_CAPTION_MAX,TEMPLATES,assetSelection,validateDailyPhotos,publishing,clone,hash,count,problem,freezeContext,validateDraft,validateEditorial};

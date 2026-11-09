@@ -100,8 +100,10 @@ class ClientIntake:
         with self.service.guard, self.ws.files.lock:
             if self.service.closed:
                 raise Conflict('服务正在退出')
-            self.ws.client(cid)
-            docs = self.ws.selected_documents({'client_id': cid, 'document_ids': []}, body.get('document_ids'))
+            client = self.ws.active_client(cid, include_import=True)
+            docs = self.ws.selected_documents({'client_id': cid, 'document_ids': []}, body.get('document_ids'), active_only=True)
+            if client['import_draft'] and {doc['id'] for doc in self.ws.files.draft_current(cid)} != {doc['id'] for doc in docs}:
+                raise Conflict('请先处理导入草稿中未解析的资料，再整理全部有效资料')
             if not docs or any(not d['text'].strip() for d in docs) or sum(len(d['text']) for d in docs) > 120000:
                 raise Problem('请选择正文合计不超过12万字的有效资料')
             if any(not d['is_current'] for d in docs) or len({d['group_id'] for d in docs}) != len(docs):
@@ -111,6 +113,8 @@ class ClientIntake:
                         if k in ('model', 'temperature', 'max_tokens', 'disable_thinking')}
             frozen = {'client_id': cid, 'documents': docs, 'rule_version': RULE_VERSION,
                       'rule_hash': fingerprint(PROMPT), 'settings': settings}
+            if client['import_draft']:
+                frozen['import_confirmation'] = True
             row, reused = self.repo.reserve(cid, fingerprint(frozen), frozen, body.get('retry', False))
             if not reused:
                 cancel = threading.Event()
@@ -179,7 +183,7 @@ class ClientIntake:
             'result': result, 'sources': [{k: d[k] for k in ('id', 'group_id', 'revision', 'digest', 'filename')} for d in row['frozen']['documents']],
             'rule_version': row['frozen']['rule_version'], 'rule_hash': row['frozen']['rule_hash'],
             'expected_profile_version': profile_version(client), 'current_client': client,
-            'proposed_client': {'name': client['name'], 'profile': merged}, 'profile_conflicts': conflicts,
+            'proposed_client': {'name': client['name'] or suggestion.get('name', ''), 'profile': merged}, 'profile_conflicts': conflicts,
             'adoption': adoption, 'expected_adoption_id': adoption['id'] if adoption else None,
             'public_search_configured': self.claim_checks.configured()}
 
@@ -221,9 +225,12 @@ class ClientIntake:
             raise Problem('采用需提交全部七项档案字段')
         profile = {k: text_value(body['profile'][k], k, 4000).strip() for k in PROFILE_FIELDS}
         with self.service.guard, self.ws.files.lock:
+            client = self.ws.active_client(cid, include_import=True)
             row = self.repo.get(cid, ident)
             if row['status'] != 'ready':
                 raise Conflict('资料整理尚未完成')
+            if client['import_draft'] and {doc['id'] for doc in self.ws.files.draft_current(cid)} != {doc['id'] for doc in row['frozen']['documents']}:
+                raise Conflict('草稿资料已变化，请重新识别后确认')
             editorial = validate_result(body['editorial'], row['frozen']['documents'])
             original = row['result']['important_claims']
             for i, claim in enumerate(editorial['important_claims']):

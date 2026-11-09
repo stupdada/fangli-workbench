@@ -1,7 +1,9 @@
 """CPU page-video renderer; timestamps come from the produced WAV segments."""
 import argparse
+from array import array
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -11,11 +13,13 @@ import threading
 import time
 import wave
 
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 STOP = threading.Event()
 ROOT = Path(__file__).resolve().parent
 VOICE = 'Microsoft Huihui Desktop'
+DAILY_SIZE = (1080, 1920)
+DAILY_SECONDS = 22
 
 
 def write_json(path, value):
@@ -88,8 +92,8 @@ def draw_points(draw, points, font, number_font, y, accent, layout):
         y += len(wrapped) * 40 + 12
 
 
-def caption_rows(draw, caption, font):
-    wrapped = lines(draw, caption, font, 598)
+def caption_rows(draw, caption, font, width=598):
+    wrapped = lines(draw, caption, font, width)
     if len(wrapped) > 2:
         raise RuntimeError('分段字幕超出两行，请把口播拆成更短的段落')
     if len(wrapped) != 2:
@@ -98,7 +102,7 @@ def caption_rows(draw, caption, font):
     for split in range(1, len(caption)):
         left, right = caption[:split].rstrip(), caption[split:].lstrip()
         widths = [draw.textlength(row, font=font) for row in (left, right)]
-        if not left or not right or max(widths) > 598 or right[0] in '，。！？、；：）】》':
+        if not left or not right or max(widths) > width or right[0] in '，。！？、；：）】》':
             continue
         natural = caption[split-1] in '，。！？、；： ' or caption[split].isspace()
         if natural and min(widths) >= 170:
@@ -106,7 +110,33 @@ def caption_rows(draw, caption, font):
     return list(min(candidates)[1:]) if candidates else wrapped
 
 
+def daily_image(draft, index, target, show_caption, media):
+    source = media[draft['pages'][index]['asset_id']].convert('RGB')
+    ratio = source.width / source.height
+    if .49 <= ratio <= .67:
+        image = ImageOps.fit(source, DAILY_SIZE, Image.Resampling.LANCZOS)
+    else:
+        backdrop = ImageOps.fit(source, (135, 240)).filter(ImageFilter.GaussianBlur(9))
+        image = backdrop.resize(DAILY_SIZE, Image.Resampling.BICUBIC)
+        photo = ImageOps.contain(source, (1080, 1540), Image.Resampling.LANCZOS)
+        image.paste(photo, ((1080-photo.width)//2, (1920-photo.height)//2))
+    if show_caption:
+        draw = ImageDraw.Draw(image)
+        font = ImageFont.truetype(font_path(), 64)
+        caption = draft['script']['paragraphs'][index]['text']
+        rows = caption_rows(draw, caption, font, 900)
+        center = 420 if index == 0 else 1450
+        for i, row in enumerate(rows):
+            y = center + 79 * (i - (len(rows) - 1) / 2)
+            draw.text((540, y), row, font=font, anchor='mm', fill='#fffdf8',
+                      stroke_width=5, stroke_fill='#302822')
+    image.save(target)
+
+
 def page_image(draft, index, client, target, show_caption=True, media=None):
+    if draft.get('template') == 'daily':
+        daily_image(draft, index, target, show_caption, media)
+        return
     page = draft['pages'][index]
     layout = page.get('layout') or draft.get('template', 'process')
     accent = {'process': '#99e6cb', 'intro': '#f0cf97', 'qa': '#bcd4ff'}[layout]
@@ -176,7 +206,7 @@ def check_media_size(width, height):
         raise RuntimeError('画面素材尺寸超出范围')
 
 
-def representative_frame(source, directory, index):
+def representative_frame(source, directory, index, maximum=(720, 720)):
     file = source['file']
     if source['type'].startswith('video/'):
         base = ['-v', 'error', '-protocol_whitelist', 'file,pipe', '-format_whitelist', 'mov,matroska,webm']
@@ -195,7 +225,7 @@ def representative_frame(source, directory, index):
         with Image.open(file) as image:
             check_media_size(*image.size)
             frame = ImageOps.exif_transpose(image)
-            frame.thumbnail((720, 720), Image.Resampling.LANCZOS)
+            frame.thumbnail(maximum, Image.Resampling.LANCZOS)
             return frame.convert('RGBA')
     except (OSError, Image.DecompressionBombError):
         raise RuntimeError('画面素材无法解码') from None
@@ -274,6 +304,32 @@ def silent_durations(draft):
     return [4 + remaining * n / sum(weights) for n in weights]
 
 
+def daily_music(directory):
+    """Write a short original arpeggio for the five-photo template."""
+    rate, beat = 24000, .6
+    chords = [(60, 64, 67, 72), (57, 60, 64, 69), (53, 57, 60, 65), (55, 59, 62, 67)]
+    samples = [0.0] * (rate * DAILY_SECONDS)
+    for i in range(72):
+        chord = chords[(i // 8) % len(chords)]
+        note = chord[(0, 2, 1, 3, 1, 2, 3, 2)[i % 8]]
+        start = round(i * beat * rate / 2)
+        phase = math.tau * 440 * 2 ** ((note - 69) / 12) / rate
+        for offset in range(min(rate, len(samples) - start)):
+            t = offset / rate
+            envelope = min(1, t * 140) * math.exp(-6 * t)
+            samples[start + offset] += envelope * (math.sin(phase * offset) + .2 * math.sin(2 * phase * offset))
+    fade = rate * 3 // 4
+    pcm = array('h', (round(sample * 2800 * min(1, i/fade, (len(samples)-1-i)/fade))
+                      for i, sample in enumerate(samples)))
+    if sys.byteorder != 'little':
+        pcm.byteswap()
+    file = directory / 'music.wav'
+    with wave.open(str(file), 'wb') as stream:
+        stream.setparams((1, 2, rate, 0, 'NONE', 'not compressed'))
+        stream.writeframes(pcm.tobytes())
+    return file
+
+
 def health(directory):
     font = font_path()
     if not all(shutil.which(name) for name in ['ffmpeg', 'ffprobe']):
@@ -286,7 +342,7 @@ def health(directory):
     except Exception:
         voices = {'provider': 'windows-system-speech', 'voices': [], 'defaultVoice': VOICE}
     return {'ready': True, 'width': 720, 'height': 1280, 'font': Path(font).name,
-            'speech': voices, 'narrationReady': VOICE in voices['voices'], 'templates': ['process', 'intro', 'qa']}
+            'speech': voices, 'narrationReady': VOICE in voices['voices'], 'templates': ['process', 'intro', 'qa', 'daily']}
 
 
 def execute(request):
@@ -301,17 +357,25 @@ def execute(request):
         os.replace(temp, directory / 'asset.png')
         return {'width': frame.width, 'height': frame.height}
     draft = request['draft']
+    daily = draft.get('template') == 'daily'
+    size = DAILY_SIZE if daily else (720, 1280)
     ids = dict.fromkeys(page['asset_id'] for page in draft['pages'] if page.get('asset_id'))
-    media = {ident: representative_frame(request['media'][ident], directory, index)
+    media = {ident: representative_frame(request['media'][ident], directory, index, size if daily else (720, 720))
              for index, ident in enumerate(ids, 1)}
     for i in range(len(draft['pages'])):
         page_image(draft, i, request['client'], directory / f'page-{i+1}.png', media=media)
     page_image(draft, 0, request['client'], directory / 'cover.png', show_caption=False, media=media)
     if request['operation'] == 'preview':
-        return {'pages': len(draft['pages']), 'width': 720, 'height': 1280}
-    with_voice = request.get('narration', True)
-    if with_voice:
+        return {'pages': len(draft['pages']), 'width': size[0], 'height': size[1]}
+    with_voice = not daily and request.get('narration', True)
+    audio_file = None
+    if daily:
+        durations = [DAILY_SECONDS / 5] * 5
+        audio_file = daily_music(directory)
+        audio = {'kind': 'music', 'provider': 'local', 'voice': None, 'actualTtsSegments': 0, 'duration': DAILY_SECONDS}
+    elif with_voice:
         durations, audio = speech(draft, request.get('voice', VOICE), directory)
+        audio_file = directory / 'narration.wav'
     else:
         durations = silent_durations(draft)
         audio = {'provider': None, 'voice': None, 'actualTtsSegments': 0, 'duration': sum(durations)}
@@ -327,10 +391,10 @@ def execute(request):
     (directory / 'pages.ffconcat').write_text(concat, encoding='utf-8')
     command = ['ffmpeg', '-hide_banner', '-loglevel', 'warning', '-y', '-threads', '2',
                '-f', 'concat', '-safe', '0', '-i', str(directory / 'pages.ffconcat')]
-    if with_voice:
-        command += ['-i', str(directory / 'narration.wav')]
+    if audio_file:
+        command += ['-i', str(audio_file)]
     command += ['-vf', 'fps=25,format=yuv420p', '-c:v', 'libx264', '-preset', 'veryfast', '-threads', '2', '-crf', '22']
-    command += ['-c:a', 'aac', '-b:a', '128k'] if with_voice else ['-an']
+    command += ['-c:a', 'aac', '-b:a', '128k'] if audio_file else ['-an']
     command += ['-t', f'{sum(durations):.9f}', '-movflags', '+faststart', str(directory / 'video.mp4')]
     run(command, directory, 'ffmpeg')
     probe = json.loads(run(['ffprobe', '-v', 'error', '-show_format', '-show_streams', '-of', 'json', str(directory / 'video.mp4')], directory, 'ffprobe'))
@@ -338,10 +402,11 @@ def execute(request):
     video = next(s for s in probe['streams'] if s['codec_type'] == 'video')
     audio_streams = [s for s in probe['streams'] if s['codec_type'] == 'audio']
     duration = float(probe['format']['duration'])
-    if (video['width'], video['height']) != (720, 1280) or not 30 <= duration <= 45.1 or with_voice != bool(audio_streams):
+    duration_ok = abs(duration - DAILY_SECONDS) <= .05 if daily else 30 <= duration <= 45.1
+    if (video['width'], video['height']) != size or not duration_ok or bool(audio_file) != bool(audio_streams):
         raise RuntimeError('成片未通过画幅、时长或音轨检查')
     return {'duration': duration, 'audio': audio, 'captions': captions, 'actualTtsSegments': audio['actualTtsSegments'],
-            'actualMp4Encodes': 1, 'width': 720, 'height': 1280, 'audioStreams': len(audio_streams)}
+            'actualMp4Encodes': 1, 'width': size[0], 'height': size[1], 'audioStreams': len(audio_streams)}
 
 
 def main():

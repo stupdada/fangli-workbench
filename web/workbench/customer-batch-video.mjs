@@ -29,17 +29,20 @@ export function updateVideoSource(select) {
   field.querySelector('input').disabled = field.hidden;
 }
 
-export function updateVideoLimit(editor) {
-  const count = editor.querySelectorAll('[data-batch-video-row]').length;
-  editor.querySelector('[data-batch-video-limit]').textContent = `视频 ${count} / ${MAX_VIDEOS} 条`;
+function videoCount(plans) {
+  return plans.reduce((count, plan) => count + plan.querySelectorAll('[data-batch-video-row]').length, 0);
+}
+
+export function updateVideoLimit(editor, plans) {
+  const count = videoCount(plans);
+  for (const label of editor.querySelectorAll('[data-batch-video-limit]')) label.textContent = `视频 ${count} / ${MAX_VIDEOS} 条`;
   for (const button of editor.querySelectorAll('[data-customer-action="batch-video-add"]')) button.disabled = count >= MAX_VIDEOS;
 }
 
-export function addBatchVideo(editor, planner) {
-  if (editor.querySelectorAll('[data-batch-video-row]').length >= MAX_VIDEOS) return;
+export function addBatchVideo(planner, plans) {
+  if (videoCount(plans) >= MAX_VIDEOS) return;
   const rows = planner.querySelector('[data-batch-video-rows]');
   rows.insertAdjacentHTML('beforeend', videoFields());
-  updateVideoLimit(editor);
   rows.lastElementChild.querySelector('[data-batch-video-topic]').focus();
 }
 

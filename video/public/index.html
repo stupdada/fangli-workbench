@@ -5,26 +5,32 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>方立 · 视频工作区</title>
   <link rel="stylesheet" href="/video/video-ui.css">
+  <link rel="stylesheet" href="/video/workspace-rail.css">
+  <link rel="stylesheet" href="/video/palette.css">
   <script src="/video/content.js" defer></script>
   <script src="/video/authoring-view.js" defer></script>
   <script src="/video/video-ui.js" defer></script>
+  <script type="module" src="/video/video-shell.mjs"></script>
 </head>
-<body>
+<body class="video-shell">
   <a class="skip-link" href="#editor">跳到视频编辑</a>
-  <header class="topbar"><a class="brand" href="/">方立</a><h1>视频工作区</h1><a href="/video/narrated/">制作短视频</a><a href="/workbench/index.html">返回文案工作台</a></header>
+  <aside id="video-navigation" aria-label="工作台导航"></aside>
+  <div class="video-surface">
+  <header class="topbar video-topbar"><h1>视频工作区</h1><nav aria-label="视频类型"><span aria-current="page">全文视频</span><a href="/video/narrated/" data-video-mode="/video/narrated/">短视频</a></nav><a href="/workbench/zip/index.html" data-video-return>返回工作台</a></header>
   <div id="notice" role="status" aria-live="polite"></div>
   <div id="fixture-banner" hidden>接口验收环境 · 客户与文章由只读合同替身提供，制作由本机引擎执行。</div>
   <div class="workspace">
     <aside class="rail" aria-label="客户和本批视频">
       <label for="client">客户</label><select id="client"><option value="">选择客户</option></select>
       <div class="section-head"><h2>本批视频</h2><span id="job-count">0 / 30</span></div>
-      <nav id="jobs" aria-label="待制作视频"></nav><button id="add-job" class="secondary" disabled>添加视频</button>
+      <nav id="jobs" aria-label="待制作视频"></nav><button id="add-job" class="text-button" disabled>＋ 添加视频</button>
       <p class="muted">草稿按客户保存在本机。</p><hr><p id="renderer-info" class="muted">正在读取合成配置…</p><button id="reload-config" class="text-button">重新读取配置</button>
       <div class="rail-action"><p id="batch-duration" class="duration-summary"></p><button id="start-batch" class="primary" disabled>开始制作本批视频</button></div>
     </aside>
     <main id="editor" tabindex="-1"><div class="empty"><h2>把稿件安排成画面</h2><p>选择客户，填写正文或导入采用的文章版本，再选择图片制作无声视频。</p></div></main>
-    <aside class="history" aria-label="视频制作历史"><div class="section-head"><h2>制作记录</h2><button id="refresh-history" class="text-button" disabled>刷新</button></div><p id="history-note" class="muted">选择客户后读取已保存的任务。</p><div id="batches"></div></aside>
+    <aside class="history" aria-label="视频制作历史"><div class="section-head"><h2>制作记录</h2><button id="refresh-history" class="text-button" disabled>刷新</button></div><button id="archived-works" class="text-button" aria-pressed="false" disabled>已归档作品</button><p id="history-note" class="muted">选择客户后读取已保存的任务。</p><div id="batches"></div></aside>
   </div>
   <noscript>视频工作区需要启用JavaScript。请通过本机服务打开。</noscript>
+  </div>
 </body>
 </html>

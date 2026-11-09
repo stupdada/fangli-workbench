@@ -1,0 +1,28 @@
+.top-actions { flex-wrap: wrap; }
+.top-actions a { text-decoration: none; }
+.classic-dialog { border: 1px solid var(--line); border-radius: var(--radius); color: var(--ink); padding: 24px; width: min(620px, calc(100vw - 32px)); max-height: calc(100vh - 40px); overflow: auto; }
+.classic-dialog::backdrop { background: rgb(27 36 48 / 38%); }
+.classic-dialog h2 { margin: 0 0 14px; }
+.classic-dialog pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.classic-dialog .actions { margin-top: 16px; }
+.classic-dialog label { display: block; margin: 8px 0; }
+.classic-dialog textarea { width: 100%; }
+#classicNotice { color: var(--dang); }
+.classic-choice { display: inline-flex; align-items: center; gap: 6px; }
+.classic-choice input { accent-color: var(--brand); }
+.chip.classic-choice input { display: inline-block; }
+#matList .mat-row { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--line); padding: 9px 0; }
+#classicProfile { margin: 10px 0; overflow-wrap: anywhere; }
+#aliasList:empty { display: none; }
+#streamText { white-space: normal; overflow-wrap: anywhere; }
+#edPreview { overflow-wrap: anywhere; }
+.classic-more { position: relative; }
+.classic-more[open] { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.classic-more summary { padding: 6px; }
+summary { cursor: pointer; }
+button:focus-visible, a:focus-visible, summary:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+#classicHistory .classic-history-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--line); padding: 10px 0; }
+@media (max-width: 640px) {
+  .topbar { flex-wrap: wrap; }
+  .steps { flex-wrap: wrap; }
+}

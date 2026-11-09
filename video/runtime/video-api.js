@@ -174,8 +174,9 @@ function createHandler(options = {}) {
     if (process.platform === 'win32' && record.jobs.some(job => path.join(outputDir(record), job.id, 'status.json.' + '0'.repeat(32) + '.tmp').length >= 260)) throw fault(400, 'DATA_PATH_TOO_LONG');
   }
   const cacheDir = path.join(dataDir, 'cache');
-  async function asset(clientId, id, expectedDigest, signal) {
+  async function asset(clientId, id, expectedDigest, signal, historical = false) {
     const meta = await store.call('asset.get', { clientId, id });
+    if (meta.removed_at && !historical && !expectedDigest) throw fault(409, 'ASSET_REMOVED');
     if (!TYPES[meta.type] || meta.file !== id + TYPES[meta.type]) throw fault(400, 'ASSET_INVALID');
     let file;
     try { file = (await existingFile(path.join(dataDir, 'uploads'), path.join(dataDir, 'uploads', meta.file))).file; }
@@ -196,7 +197,7 @@ function createHandler(options = {}) {
           if (job.result?.mode !== 'silent' || job.result.audioTrackCount !== 0) throw fault(409, 'ADAPTER_PROTOCOL');
           for (const file of ['video.mp4', 'subtitles.srt']) await existingFile(outputDir(record), path.join(outputDir(record), job.id, file));
         } else for (const segment of job.spec.segments) {
-          if (!verified.has(segment.media)) { await asset(record.client, segment.media, record.spec.assetDigests?.[segment.media]); verified.add(segment.media); }
+          if (!verified.has(segment.media)) { await asset(record.client, segment.media, record.spec.assetDigests?.[segment.media], undefined, true); verified.add(segment.media); }
         }
       }
       return { canRetry: true };
@@ -207,7 +208,7 @@ function createHandler(options = {}) {
     const query = `?clientId=${encodeURIComponent(record.client)}`;
     const jobs = record.jobs.map(job => {
       const result = { id: job.id, title: job.spec.title, state: job.state, phase: job.phase || null, completedSegments: job.completed, totalSegments: job.total,
-        version: job.version, source: job.spec.source || null, originalText: job.spec.originalText ?? job.spec.segments.map(s => s.text).join('\n'), segments: job.spec.segments };
+        version: job.version, archivedAt: job.archived_at || null, source: job.spec.source || null, originalText: job.spec.originalText ?? job.spec.segments.map(s => s.text).join('\n'), segments: job.spec.segments };
       Object.assign(result,{editorial:job.spec.editorial||null,targetPreset:job.spec.targetPreset,targetAssessment:job.spec.targetAssessment,targetAcknowledged:job.spec.targetAcknowledged});
       if (job.spec.contentGenerationId) {result.contentGenerationId=job.spec.contentGenerationId;result.contentEdited=job.spec.contentEdited===true;}
       if (silent) {
@@ -243,7 +244,7 @@ function createHandler(options = {}) {
           const segments = [], verified = new Map();
           for (const segment of job.spec.segments) {
             if (control.signal.aborted) break;
-            if (!verified.has(segment.media)) verified.set(segment.media, await asset(record.client, segment.media, record.spec.assetDigests?.[segment.media], control.signal));
+            if (!verified.has(segment.media)) verified.set(segment.media, await asset(record.client, segment.media, record.spec.assetDigests?.[segment.media], control.signal, true));
             segments.push({ ...segment, media: verified.get(segment.media).file });
           }
           if (control.signal.aborted) break;
@@ -339,10 +340,28 @@ function createHandler(options = {}) {
         json(res, 201, { id, assetId: id, clientId, name, type, size: bytes.length }); return true;
       }
       if (req.method === 'GET' && url.pathname === '/api/video/assets') {
-        json(res, 200, { assets: await store.call('asset.list', { clientId }) }); return true;
+        json(res, 200, { assets: await store.call('asset.list', { clientId, removed:url.searchParams.get('removed') === '1' }) }); return true;
+      }
+      const assetState = url.pathname.match(/^\/api\/video\/assets\/([^/]+)\/lifecycle$/);
+      if (req.method === 'PUT' && assetState && UUID.test(assetState[1])) {
+        const input = await readJson(req);
+        if (typeof input.clientId !== 'string' || !input.clientId || typeof input.removed !== 'boolean') throw fault(400, 'INVALID_INPUT');
+        const meta = await store.call('asset.lifecycle', { clientId:input.clientId, id:assetState[1], removed:input.removed });
+        json(res, 200, { id:meta.id, name:meta.name, type:meta.type, size:meta.size, removed_at:meta.removed_at }); return true;
       }
       if (req.method === 'GET' && url.pathname === '/api/video/batches') {
-        const records = await store.call('batch.list', { clientId }); json(res, 200, { batches: await Promise.all(records.map(view)) }); return true;
+        const archived = url.searchParams.get('archived') === '1';
+        const records = await store.call('batch.list', { clientId, archived });
+        const batches = await Promise.all(records.map(view));
+        for (const batch of batches) batch.jobs = batch.jobs.filter(job => Boolean(job.archivedAt) === archived);
+        json(res, 200, { batches }); return true;
+      }
+      const jobState = url.pathname.match(/^\/api\/video\/batches\/([^/]+)\/jobs\/([A-Za-z0-9_-]{1,64})\/archive$/);
+      if (req.method === 'PUT' && jobState && UUID.test(jobState[1])) {
+        const input = await readJson(req);
+        if (typeof input.clientId !== 'string' || !input.clientId || typeof input.archived !== 'boolean') throw fault(400, 'INVALID_INPUT');
+        const record = await store.call('job.lifecycle', { id:jobState[1], jobId:jobState[2], clientId:input.clientId, archived:input.archived });
+        json(res, 200, await view(record)); return true;
       }
       if (req.method === 'POST' && url.pathname === '/api/video/batches') {
         const spec = normalizeBatch(await readJson(req)); requireRenderer();

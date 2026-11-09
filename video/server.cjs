@@ -54,7 +54,16 @@ async function start(options){
       }
       if(await narrated.handle(req,res,url,{json,inputJson})||await handle(req,res))return;
       const staticFiles={'/video/':['index.html','text/html; charset=utf-8'],'/video/index.html':['index.html','text/html; charset=utf-8'],'/video/video-ui.js':['video-ui.js','text/javascript; charset=utf-8'],'/video/content.js':['content.js','text/javascript; charset=utf-8'],'/video/authoring-view.js':['authoring-view.js','text/javascript; charset=utf-8'],'/video/video-ui.css':['video-ui.css','text/css; charset=utf-8'],
-        '/video/narrated/':['narrated.html','text/html; charset=utf-8'],'/video/narrated.js':['narrated.js','text/javascript; charset=utf-8'],'/video/narrated.css':['narrated.css','text/css; charset=utf-8']};
+        '/video/narrated/':['narrated.html','text/html; charset=utf-8'],'/video/narrated.js':['narrated.js','text/javascript; charset=utf-8'],'/video/narrated.css':['narrated.css','text/css; charset=utf-8'],
+        '/video/video-shell.mjs':['video-shell.mjs','text/javascript; charset=utf-8'],
+        '/video/workspace-rail.mjs':['../../web/workbench/workspace-rail.mjs','text/javascript; charset=utf-8'],
+        '/video/workspace-rail.css':['../../web/workbench/workspace-rail.css','text/css; charset=utf-8'],
+        '/video/palette.mjs':['../../web/workbench/palette.mjs','text/javascript; charset=utf-8'],
+        '/video/palette.css':['../../web/workbench/palette.css','text/css; charset=utf-8'],
+        '/video/fonts/fonts.css':['../../web/assets/fonts/fonts.css','text/css; charset=utf-8'],
+        ...Object.fromEntries(['Regular','Medium','Semibold','Bold'].map(weight => [
+          `/video/fonts/MiSans-${weight}.woff2`, [`../../web/assets/fonts/MiSans-${weight}.woff2`,'font/woff2'],
+        ]))};
       if(['GET','HEAD'].includes(req.method)&&staticFiles[url.pathname]){
         const [file,type]=staticFiles[url.pathname],bytes=await fs.readFile(path.join(__dirname,'public',file));
         res.writeHead(200,{'Content-Type':type,'Content-Length':bytes.length,'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});return res.end(req.method==='HEAD'?undefined:bytes);

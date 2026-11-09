@@ -5,6 +5,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+import uuid
 from unittest.mock import patch
 
 from bridge import client_intake, provider
@@ -66,6 +67,44 @@ class IntakeTests(unittest.TestCase):
         return {**record['proposed_client'], 'editorial': record['result'],
                 'expected_profile_version': record['expected_profile_version'], 'expected_adoption_id':record['expected_adoption_id']}
 
+    def test_import_resumes_after_restart_and_promotes_only_on_confirmation(self):
+        ident = str(uuid.uuid4())
+        self.assertEqual(self.s.ws.start_import(ident, '')['id'], ident)
+        good = self.upload(ident)
+        bad_bytes = b'not a supported document'
+        bad = self.s.ws.files.import_document(ident, {'filename':'待补录.pdf',
+            'content_b64':base64.b64encode(bad_bytes).decode()})['document']
+        self.assertEqual(bad['status'], 'pending')
+        self.assertNotIn(ident, {c['id'] for c in self.s.ws.clients()})
+        with self.assertRaises(Conflict):
+            self.s.create_conversation(ident)
+        with self.assertRaises(Conflict):
+            self.intake.start(ident, {'document_ids':[good['id']]})
+        self.s.close()
+        self.s = Service(LocalStore(Path(self.tmp.name) / 'intake.db'))
+        self.s.catalog = [{'id':provider.DEFAULT_MODEL}]
+        self.intake = client_intake.ClientIntake(self.s, self.chat)
+        self.assertEqual(self.s.ws.import_drafts()[0]['document_count'], 2)
+        self.assertEqual(self.s.ws.files.retry_import(ident, bad['id'], {})['outcome'], 'pending')
+        repaired = self.s.ws.files.retry_import(ident, bad['id'], {'text':'校对后的原件说明。'})['document']
+        self.assertEqual(repaired['group_id'], bad['group_id'])
+        self.assertEqual(self.s.ws.files.download(ident, repaired['id'], original=True)[0], bad_bytes)
+        self.assertEqual({d['id'] for d in self.s.ws.files.draft_current(ident)}, {good['id'],repaired['id']})
+        self.cid = ident
+        record = self.ready([good['id'],repaired['id']])
+        self.assertEqual(record['proposed_client']['name'], '资料客户')
+        self.assertNotIn(ident, {c['id'] for c in self.s.ws.clients()})
+        collision = self.s.ws.save_client('资料客户', {})['id']
+        with self.assertRaises(Conflict):
+            self.intake.adopt(ident, record['id'], self.body(record))
+        self.assertEqual(self.s.ws.import_drafts()[0]['id'], ident)
+        self.s.ws.archive_client(collision)
+        saved = self.intake.adopt(ident, record['id'], self.body(record))
+        self.assertEqual(saved['client']['id'], ident)
+        self.assertFalse(self.s.ws.import_drafts())
+        self.assertEqual(self.intake.repo.adopted_keywords(ident), ['资料产品'])
+        self.assertEqual(self.intake.adopt(ident, record['id'], self.body(record))['client']['id'], ident)
+
     def test_concurrent_reuse_explicit_adoption_and_isolation(self):
         self.release.clear()
         start = self.intake.start(self.cid, {'document_ids':[self.doc['id']]})
@@ -80,12 +119,18 @@ class IntakeTests(unittest.TestCase):
         self.assertEqual({c['field'] for c in record['profile_conflicts']}, {'name','company'})
         self.assertEqual(record['result']['important_claims'][0]['public_check_status'], 'not_checked')
         self.assertEqual(record['result']['conflicts'][0]['source_refs'][0]['revision'], self.doc['revision'])
+        self.assertEqual(self.s.customers.plan(self.cid)['available_keywords'], [])
         body = self.body(record)
         body['profile']['brand'] = '人工校订品牌'
         body['editorial']['overview']['text'] = '人工确认的业务概览。'
         saved = self.intake.adopt(self.cid, record['id'], body)
         self.assertEqual(saved['client']['profile']['brand'], '人工校订品牌')
         self.assertEqual(saved['intake']['adoption']['editorial']['overview']['text'], '人工确认的业务概览。')
+        keywords = [item['text'] for item in body['editorial']['keywords']]
+        self.assertEqual(self.s.customers.plan(self.cid)['available_keywords'], keywords)
+        task = self.s.create_conversation(self.cid)
+        self.assertEqual(task['brief']['keywords'], keywords)
+        self.assertEqual(task['document_ids'], [self.doc['id']])
         reused = self.ready()
         self.assertEqual(reused['proposed_client']['profile']['brand'], '人工校订品牌')
         self.assertEqual(len(self.calls), 1)

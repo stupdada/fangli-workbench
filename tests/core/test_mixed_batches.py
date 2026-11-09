@@ -245,6 +245,87 @@ class MixedBatches(unittest.TestCase):
         render = next(body for path, body in self.video.calls if path.endswith('/renders'))
         self.assertIs(render['narration'], False)
 
+    def test_preview_confirms_fixed_slots_and_retries_only_missing_articles(self):
+        options = {**self.selection(3), 'keywords': ['工艺甲', '工艺乙', '工艺丙']}
+        item = {'client_id': self.cid, 'options': options, 'document_ids': [self.doc['id']], 'videos': [
+            {'topic': '随第一篇取消', 'source': 'article', 'article_index': 1},
+            {'topic': '依赖第三篇', 'source': 'article', 'article_index': 3}]}
+        preflight = self.http(BATCHES + '/preflight', 'POST', {'items': [item]})
+        plan = preflight['items'][0]['preview']
+        one, two, three, cancelled, video = plan['rows']
+        self.assertEqual([r['id'] for r in plan['rows']], ['article:1', 'article:2', 'article:3', 'video:1', 'video:2'])
+        self.assertEqual(one['platform_name'], self.platform['name'])
+        self.assertIn(one['format'], self.platform['formats'])
+        self.assertEqual(video['depends_on'], three['id'])
+        self.assertEqual(plan['documents'], [{k: self.doc[k] for k in ('id', 'filename', 'revision')}])
+        self.assertEqual(self.model.requests, [])
+        choices = [{'id': two['id'], 'topic': '材料乙适用条件'}, {'id': three['id'], 'topic': '工序丙检查步骤'},
+                   {'id': video['id'], 'topic': '工序丙现场口播'}]
+        confirmed = {**item, 'preview': {'revision': plan['revision'], 'rows': choices}}
+        rejected = {**confirmed, 'preview': {**confirmed['preview'], 'rows': choices + [{'id': cancelled['id']}]}}
+        invalid = self.http(BATCHES, 'POST', {'request_key': 'invalid-dependency', 'items': [rejected]}, status=400)
+        self.assertIn('视频所引用的文章', invalid['error'])
+        self.assertEqual(self.http(BATCHES)['batches'], [])
+
+        respond = self.model.response
+
+        def fail_first_article(payload):
+            kind, value = respond(payload)
+            return (kind, {}) if kind == 'generate' and self.model.generated == 1 else (kind, value)
+
+        self.model.response = fail_first_article
+        zip_snapshot = self.s.zip_snapshot
+        with patch.object(self.s.batches, 'wake'), patch.object(self.s, 'zip_snapshot',
+                side_effect=lambda brief: {**zip_snapshot(brief), 'created_at': '2099-01-01'}):
+            result = self.http(BATCHES, 'POST', {'request_key': 'confirmed', 'items': [confirmed]})['batch']
+        path = BATCHES + '/' + result['id']
+        self.http(self.client_path + '/documents', 'POST', {'filename': '资料.txt', 'text': '第二版资料。', 'update_document_id': self.doc['id']})
+        self.s.batches.wake()
+        first = self.batch(path)
+        self.assertEqual((first['total'], first['completed'], first['video_total'], first['video_completed'], first['status']),
+                         (2, 1, 1, 1, 'partial'))
+        pinned = first['items'][0]['videos'][0]
+        production = self.video.productions[pinned['production_id']]
+        self.assertEqual(production['topic'], choices[-1]['topic'])
+        self.assertEqual(production['context']['documents'][0]['text'], '首版资料。')
+        self.assertIn('西邦24使用说明2', production['source']['title'])
+
+        self.close_server()
+        self.open_server()
+        self.http(path + '/resume', 'POST', {})
+        final = self.batch(path)
+        self.assertEqual((final['completed'], final['video_completed'], final['status']), (2, 1, 'done'))
+        self.assertEqual(final['items'][0]['videos'][0], pinned)
+        prompts = [r['messages'][1]['content'] for r in self.model.requests if '【主关键词】' in r['messages'][1]['content']]
+        self.assertEqual(len(prompts), 3)
+        for prompt, row, choice in zip(prompts, (two, three, two), (choices[0], choices[1], choices[0])):
+            self.assertIn(f"【主题】{choice['topic']}\n", prompt)
+            self.assertIn(f"【主关键词】{row['keywords'][0]}。", prompt)
+            self.assertIn('首版资料。', prompt)
+            self.assertNotIn('第二版资料。', prompt)
+
+    def test_preview_rejects_changed_document_revision_for_one_customer(self):
+        other = self.http('/api/workbench/clients', 'POST', {'name': '另一客户'})['client']['id']
+        items = [{'client_id': cid, 'options': self.selection(1)} for cid in (self.cid, other)]
+
+        def preview():
+            result = self.http(BATCHES + '/preflight', 'POST', {'items': items})
+            self.assertTrue(result['ready'], result['issues'])
+            return [row['preview'] for row in result['items']]
+
+        original = preview()
+        updated = self.http(self.client_path + '/documents', 'POST', {
+            'filename': '资料.txt', 'text': '第二版资料。', 'update_document_id': self.doc['id']})['document']
+        confirmed = [{**item, 'preview': {'revision': plan['revision'], 'rows': [{'id': plan['rows'][0]['id']}]}}
+                     for item, plan in zip(items, original)]
+        rejected = self.http(BATCHES, 'POST', {'request_key': 'stale', 'items': confirmed}, status=400)
+        self.assertIn('预览依据已更新', rejected['error'])
+        self.assertEqual(self.http(BATCHES)['batches'], [])
+        current = preview()
+        self.assertNotEqual(current[0]['revision'], original[0]['revision'])
+        self.assertEqual(current[0]['documents'][0]['revision'], updated['revision'])
+        self.assertEqual(current[1]['revision'], original[1]['revision'])
+
     def test_missing_article_does_not_hold_direct_video(self):
         item = {'client_id': self.cid, 'document_ids': [self.doc['id']], 'options': self.selection(1), 'videos': [
             {'topic': '等待文章', 'source': 'article', 'article_index': 1}, {'topic': '独立资料', 'source': 'documents'}]}

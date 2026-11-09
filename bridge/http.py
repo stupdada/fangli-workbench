@@ -28,14 +28,15 @@ from .zip_evidence import article_metadata
 MAX_BODY = 12 * 1024 * 1024
 MAX_VIDEO_TRANSFER = 64 * 1024 * 1024
 WEB = ROOT / 'web'
+GEO_ROUTE = re.compile(r'/api/workbench/clients/([^/]+)/geo(?:/(articles|runs|plan)(?:/([^/]+)(/stop)?)?)?')
 
 
 class DatabaseLease:
     """A second process must not recover locks belonging to a live service."""
-    def __init__(self, path):
+    def __init__(self, path, *, lock_name=None):
         path = Path(path).resolve()
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.file = open(str(path) + '.service.lock', 'a+b')
+        self.file = path.with_name(lock_name or path.name + '.service.lock').open('a+b')
         if self.file.tell() == 0:
             self.file.write(b'0')
             self.file.flush()
@@ -170,6 +171,9 @@ class Handler(BaseHTTPRequestHandler):
             if path.startswith('/video/') or path == '/api/video' or path.startswith('/api/video/'):
                 return self._proxy(self.path)
             if self.command in ('GET', 'HEAD'):
+                if path in ('/', '/workbench', '/workbench/'):
+                    suffix = '?' + parsed.query if parsed.query else ''
+                    return self._send(302, b'', 'text/plain; charset=utf-8', {'Location': '/workbench/zip/index.html' + suffix})
                 if path.startswith('/api/'): return self.route_get(path, query)
                 return self.static(path)
             if path.startswith(('/api/articles', '/api/plans', '/api/materials')):
@@ -187,9 +191,8 @@ class Handler(BaseHTTPRequestHandler):
     do_GET = do_HEAD = do_POST = do_PUT = do_DELETE = do_OPTIONS = _dispatch
 
     def static(self, path):
-        if path in ('/', '/index.html'): relative = 'index.html'
-        elif path in ('/workbench', '/workbench/'): relative = 'workbench/index.html'
-        elif path in ('/workbench/zip', '/workbench/zip/'): relative = 'workbench/zip/index.html'
+        if path in ('/workbench/zip', '/workbench/zip/'): relative = 'workbench/zip/index.html'
+        elif path in ('/workbench/geo', '/workbench/geo/'): relative = 'workbench/geo/index.html'
         else: relative = path.removeprefix('/static/').lstrip('/')
         file = (WEB / relative).resolve()
         if not file.is_relative_to(WEB.resolve()) or any(s.startswith('.') for s in Path(relative).parts): raise Forbidden('路径不正确')
@@ -207,11 +210,23 @@ class Handler(BaseHTTPRequestHandler):
 
     def route_get(self, path, query):
         s, ws = self.service, self.service.ws
+        if path == '/api/workbench/geo/connection':
+            return self._json({'provider': s.geo.provider.info()})
+        geo = GEO_ROUTE.fullmatch(path)
+        if geo:
+            cid, section, run_id, stop = geo.groups()
+            if not section: return self._json(s.geo.home(cid))
+            if section == 'articles' and not run_id: return self._json(s.geo.articles(cid))
+            if section == 'runs' and run_id and not stop: return self._json(s.geo.report(cid, run_id))
+            raise Missing('检测接口不存在')
         if path == '/api/workbench/runtime':
             return self._json({'main': {'pid': os.getpid(), 'port': self.server.server_port}, 'video': self.server.video.snapshot()})
         if path in ('/api/workbench/bootstrap', '/api/bootstrap'): return self._json(s.bootstrap())
         if path == '/api/workbench/zip-config': return self._json(s.zip_config())
-        if path == '/api/workbench/clients': return self._json({'clients': ws.clients()})
+        if path == '/api/workbench/clients':
+            return self._json({'clients': ws.clients(archived=query.get('archived') == ['1'])})
+        if path == '/api/workbench/import-drafts':
+            return self._json({'drafts': ws.import_drafts()})
         match = re.fullmatch(r'/api/workbench/clients/([^/]+)/intakes(?:/([^/]+))?', path)
         if match:
             cid, ident = match.groups()
@@ -241,7 +256,7 @@ class Handler(BaseHTTPRequestHandler):
             key = path.rsplit('/', 1)[-1]
             return self._json({key: {'models': s.store.list_models, 'platforms': s.store.list_platforms, 'risks': s.store.list_risks, 'prefs': s.store.get_prefs}[key]()})
         match = re.fullmatch(r'/api/workbench/clients/([^/]+)/documents', path)
-        if match: return self._json({'documents': ws.documents(match[1])})
+        if match: return self._json({'documents': ws.files.list(match[1], removed=query.get('removed') == ['1'])})
         match = re.fullmatch(r'/api/workbench/conversations/([^/]+)', path)
         if match: return self._json(s.view(match[1]))
         match = re.fullmatch(r'/api/workbench/operations/([^/]+)', path)
@@ -284,6 +299,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def route_write(self, method, path, body):
         s, ws = self.service, self.service.ws
+        if path == '/api/workbench/geo/connection' and method == 'PUT':
+            return self._json({'provider': s.geo.provider.configure(body)})
+        geo = GEO_ROUTE.fullmatch(path)
+        if geo and method == 'PUT' and geo[2] == 'plan' and not geo[3]:
+            return self._json(s.geo.save_plan(geo[1], body))
+        if geo and method == 'POST':
+            cid, section, run_id, stop = geo.groups()
+            if section == 'runs' and not run_id: return self._json(s.geo.start(cid, body), 202)
+            if section == 'runs' and run_id and stop: return self._json(s.geo.stop(cid, run_id))
+            raise Missing('检测接口不存在')
         match = re.fullmatch(r'/api/workbench/clients/([^/]+)/intakes/([^/]+)/claims/([a-f0-9]{64})/(search|review)', path)
         if match and method == 'POST':
             cid, ident, claim_key, action = match.groups()
@@ -304,7 +329,16 @@ class Handler(BaseHTTPRequestHandler):
         if path in ('/api/workbench/settings', '/api/settings') and method == 'POST': return self._json({'settings': s.save_settings(body)})
         if path == '/api/workbench/clients' and method == 'POST':
             if body.get('id') is not None: raise Problem('已有客户请使用客户独立更新接口')
-            return self._json({'client': ws.save_client(body.get('name'), body.get('profile'))})
+            return self._json({'client': ws.save_client(body.get('name'), body.get('profile'), creation_id=body.get('creation_id'))})
+        if path == '/api/workbench/import-drafts' and method == 'POST':
+            if set(body) - {'id', 'name'}: raise Problem('导入草稿包含未知字段')
+            with s.guard:
+                return self._json({'client': ws.start_import(body.get('id'), body.get('name', ''))})
+        match = re.fullmatch(r'/api/workbench/clients/([^/]+)/(archive|restore)', path)
+        if match and method == 'POST':
+            if body: raise Problem('归档或恢复客户无需额外字段')
+            with s.guard:
+                return self._json({'client': (ws.restore_client if match[2] == 'restore' else ws.archive_client)(match[1])})
         match = re.fullmatch(r'/api/workbench/clients/([^/]+)(?:/(generation-plan))?', path)
         if match and method == 'PUT':
             cid, action = match.groups()
@@ -317,6 +351,18 @@ class Handler(BaseHTTPRequestHandler):
         if match and method == 'POST':
             with s.guard:
                 return self._json(ws.files.import_document(match[1], body))
+        match = re.fullmatch(r'/api/workbench/clients/([^/]+)/documents/([^/]+)/(restore|retry)', path)
+        if match and method == 'POST':
+            with s.guard:
+                if match[3] == 'retry': return self._json(ws.files.retry_import(match[1], match[2], body))
+                add = body.get('add_to_defaults', False)
+                if set(body) - {'add_to_defaults'} or type(add) is not bool: raise Problem('默认取材需明确选择')
+                return self._json({'document': ws.files.restore(match[1], match[2], add)})
+        match = re.fullmatch(r'/api/workbench/clients/([^/]+)/documents/([^/]+)', path)
+        if match and method == 'DELETE':
+            if body: raise Problem('移出资料无需额外字段')
+            with s.guard:
+                return self._json({'document': ws.files.remove(*match.groups())})
         if path == '/api/workbench/batches/preflight' and method == 'POST':
             if set(body) != {'items'}: raise Problem('预检需包含items')
             return self._json(s.batches.preflight(body['items']))
@@ -330,7 +376,12 @@ class Handler(BaseHTTPRequestHandler):
                 if body: raise Problem('停止批次无需额外字段')
                 return self._json({'batch': s.batches.stop(match[1])})
             return self._json({'batch': s.batches.resume(match[1], body)})
-        if path == '/api/workbench/conversations' and method == 'POST': return self._json({'conversation': s.create_conversation(body.get('client_id'))})
+        if path == '/api/workbench/conversations' and method == 'POST':
+            return self._json({'conversation': s.create_conversation(body.get('client_id'),
+                document_ids=body.get('document_ids'), creation_id=body.get('creation_id'))})
+        match = re.fullmatch(r'/api/workbench/conversations/([^/]+)/task-state', path)
+        if match and method == 'PUT':
+            return self._json({'task': s.set_task_state(match[1], body)})
         match = re.fullmatch(r'/api/workbench/conversations/([^/]+)(/clone)?', path)
         if match:
             if match[2] and method == 'POST': return self._json({'conversation': s.clone_conversation(match[1])})
@@ -358,7 +409,7 @@ class Handler(BaseHTTPRequestHandler):
             if action == 'stop' and method == 'POST': return self._json(s.stop(ident))
         match = re.fullmatch(r'/api/workbench/operations/([^/]+)/stop', path)
         if match and method == 'POST': return self._json(s.cancel_operation(match[1]))
-        match = re.fullmatch(r'/api/workbench/conversations/([^/]+)/articles/(\d+)(?:/(select-version|style-review|style-rewrite|revise|review-record|regenerate|audit|accepted-expressions))?', path)
+        match = re.fullmatch(r'/api/workbench/conversations/([^/]+)/articles/(\d+)(?:/(select-version|style-review|style-rewrite|revise|repair-facts|review-record|regenerate|audit|accepted-expressions))?', path)
         if match:
             ident, aid, action = match[1], int(match[2]), match[3]
             if action == 'accepted-expressions' and method == 'POST':
@@ -378,6 +429,9 @@ class Handler(BaseHTTPRequestHandler):
                 if action == 'style-review' and method == 'POST': return self._json({'operation_id': s.style_review(ident, aid, body.get('expected_version'))})
                 if action == 'style-rewrite' and method == 'POST': return self._json({'operation_id': s.rewrite(ident, aid, body.get('expected_version'), body.get('review_id'), body.get('selected'), body.get('mode', 'full'), body.get('material', ''), body.get('conservative'))})
                 if action == 'revise' and method == 'POST': return self._json({'operation_id': s.revise(ident, aid, body.get('expected_version'), body.get('instruction'))})
+                if action == 'repair-facts' and method == 'POST':
+                    if set(body) != {'expected_version', 'selected'}: raise Problem('请选择基准版本和待修正问题')
+                    return self._json({'operation_id': s.repair_facts(ident, aid, body['expected_version'], body['selected'])})
                 if action == 'review-record' and method == 'PUT':
                     ws.save_review_notes(aid, body.get('candidate_version'), body.get('codex_review'), body.get('user_review'))
                     return self._json({'review_records': ws.review_records(aid)})
@@ -391,6 +445,8 @@ class Handler(BaseHTTPRequestHandler):
             if 'article_id' in query or 'version_id' in query: raise Problem('请求稿件版本时需明确client_id')
             return {'clients': ws.clients()}
         client = ws.client(cid)
+        if client['import_draft']:
+            raise Missing('客户档案尚未确认')
         result = {}
         aid = self.query_int(query, 'article_id', False)
         vid = self.query_int(query, 'version_id', False)
@@ -444,10 +500,12 @@ class Handler(BaseHTTPRequestHandler):
                     return video_projection(frozen)
                 brief = conv['brief']
             else:
+                if client['archived_at']:
+                    raise Conflict('此客户已归档，请选择活动客户')
                 conv = {'client_id': cid, 'document_ids': [d['id'] for d in ws.documents(cid) if d.get('status') == 'ready']}
                 brief = {**client['profile'], 'client': client['name']}
             ids = (query['document_ids'][0].split(',') if query['document_ids'][0] else []) if 'document_ids' in query else None
-            docs = ws.selected_documents(conv, ids)
+            docs = ws.selected_documents(conv, ids, active_only=not conversation_id)
             context = s.freeze_creation_context(cid, {'brief': brief, 'documents': docs, 'platforms': s.store.list_platforms()})
             result.update(video_projection(context))
         return result

@@ -103,6 +103,9 @@ class FirstGenerationStyleTest(unittest.TestCase):
         s.store.update_platform(platform['id'], length_hint='最新配置200字')
         newer = http(path + f'/articles/{aid}', 'PUT', {'expected_version': vid, 'body_md': '# 人工稿\n\n确认样件。'})['article']
         self.assertNotEqual(newer['current_version'], vid)
+        edited = http(path + f'/articles/{aid}/editorial?version_id={newer["current_version"]}')['generation_context']
+        self.assertEqual(edited['editorial']['length'], {'hint': '正文500—650字', 'source': 'request',
+                                                        'metric': 'nonWhitespace', 'actual': 5, 'status': 'below'})
         self.assertEqual(http(fixed), context)
         self.assertEqual(http(vc + f'&conversation_id={conv["id"]}')['documents'][0]['id'], doc['id'])
         self.assertIsNone(http(vc + f'&document_ids={doc["id"]}')['source_article'])

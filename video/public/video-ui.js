@@ -64,7 +64,7 @@
   function createController(options = {}) {
     const fetcher = options.fetch || globalThis.fetch.bind(globalThis);
     const storage = options.storage || { getItem() { return null; }, setItem() {} }, previewUrls = new Map();
-    const state = { clients: [], clientId: '', context:null, config: null, draft: null, batches: [], busy: false, generating: false, message: '', error: false, storageError: false, fixture: Boolean(options.fixture) };
+    const state = { clients: [], clientId: '', context:null, config: null, draft: null, batches: [], archived:false, removed:false, removedAssets:[], busy: false, generating: false, message: '', error: false, storageError: false, fixture: Boolean(options.fixture) };
     let selectedJob = '', selectedSegment = '', epoch = 0;
     const notify = (message = '', error = false) => { state.message = message; state.error = error; options.onChange?.(state); };
     async function request(url, init = {}) {
@@ -75,6 +75,7 @@
       return value;
     }
     const post = (url, body) => request(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const put = (url, body) => request(url, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     function persist() { if (state.clientId && state.draft) try { storage.setItem(KEY + state.clientId, JSON.stringify(state.draft)); state.storageError = false; } catch { state.storageError = true; } }
     const job = () => state.draft?.jobs.find(j => j.id === selectedJob);
     const selected = () => job()?.segments.find(s => s.id === selectedSegment) || job()?.segments[0];
@@ -85,21 +86,39 @@
       try { previewUrls.set(asset.id, options.makeObjectURL(blob)); } catch {}
     }
     async function loadHistory() {
-      const clientId = state.clientId, token = epoch; if (!clientId) return;
-      const result = await request('/api/video/batches?clientId=' + encodeURIComponent(clientId)); if (token !== epoch) return;
+      const clientId = state.clientId, token = epoch, archived=state.archived; if (!clientId) return;
+      const result = await request('/api/video/batches?clientId=' + encodeURIComponent(clientId) + '&archived=' + Number(archived)); if (token !== epoch || archived!==state.archived) return;
       state.batches = (Array.isArray(result) ? result : result.batches || []).filter(b => b.clientId === clientId); notify();
+    }
+    async function loadAssets(removed=false) {
+      const clientId=state.clientId, token=epoch;
+      const {assets}=await request('/api/video/assets?clientId='+encodeURIComponent(clientId)+(removed?'&removed=1':''));
+      if(token!==epoch)return;
+      if(removed)state.removedAssets=assets;
+      else {
+        const prior=new Map(state.draft.assets.map(a=>[a.id,a]));
+        state.draft.assets=assets.map(a=>({...a,clientId,selected:prior.get(a.id)?.selected??false}));
+        persist();
+      }
+      options.onChange?.(state);
+    }
+    async function lifecycle(action) {
+      if(state.busy||state.generating||!state.clientId)return;
+      state.busy=true;options.onChange?.(state);
+      try{await action(state.clientId);}
+      finally{state.busy=false;options.onChange?.(state);}
     }
     async function switchClient(clientId) {
       if (state.busy) throw new Error('请等待本次操作完成后切换客户。');
       if (clientId && !state.clients.some(c => c.id === clientId)) throw new Error('请选择已有客户。');
-      persist(); epoch++; state.clientId = clientId; state.context=null; state.batches = []; selectedSegment = '';
+      persist(); epoch++; state.clientId = clientId; state.context=null; state.batches = []; state.archived=false;state.removed=false;state.removedAssets=[]; selectedSegment = '';
       for (const url of previewUrls.values()) options.revokeObjectURL?.(url); previewUrls.clear();
       if (!clientId) { state.draft = null; selectedJob = ''; notify(); return; }
       let saved; try { saved = JSON.parse(storage.getItem(KEY + clientId) || 'null'); } catch {}
       state.draft = saved?.clientId === clientId && saved.mode === 'silent' && Array.isArray(saved.jobs) && saved.jobs.every(j => Array.isArray(j.segments) && j.textStyle) ? saved : { clientId, mode: 'silent', jobs: [newJob(1)], assets: [], snapshots: {} };
       state.draft.assets ||= []; state.draft.snapshots ||= {}; selectedJob = state.draft.jobs[0]?.id || ''; persist(); notify();
       const token = epoch, assets = [...state.draft.assets];
-      await Promise.all([loadHistory(), (async()=>{const context=await request('/api/video/context?clientId='+encodeURIComponent(clientId));if(token===epoch){state.context=context;options.onChange?.(state);}})(), (async () => {
+      await Promise.all([loadHistory(), loadAssets(), (async()=>{const context=await request('/api/video/context?clientId='+encodeURIComponent(clientId));if(token===epoch){state.context=context;options.onChange?.(state);}})(), (async () => {
         if (!options.blobStore) return;
         for (const asset of assets) { try { const blob = await options.blobStore.get(clientId, asset.id); if (token !== epoch) return; rememberPreview(asset, blob); } catch { break; } }
         if (token === epoch) options.onChange?.(state);
@@ -254,14 +273,14 @@
     }
     async function submit() {
       if (state.busy) return; const body = payload(), revisions = state.draft.jobs.map(j => ({ id: j.id, revision: j.revision })); state.busy = true; notify('正在提交本批视频…');
-      try { const batch = await post('/api/video/batches', body); if (!batch.id || batch.clientId !== state.clientId || batch.mode !== 'silent') throw new Error('服务端返回了无效的图文任务'); state.draft.snapshots[batch.id] = { jobs: body.jobs, revisions, createdAt: new Date().toISOString() }; persist(); state.batches = [batch, ...state.batches.filter(b => b.id !== batch.id)]; notify('已提交，本机将按顺序合成。'); }
+      try { const batch = await post('/api/video/batches', body); if (!batch.id || batch.clientId !== state.clientId || batch.mode !== 'silent') throw new Error('服务端返回了无效的图文任务'); state.draft.snapshots[batch.id] = { jobs: body.jobs, revisions, createdAt: new Date().toISOString() }; persist(); if (!state.archived) state.batches = [batch, ...state.batches.filter(b => b.id !== batch.id)]; notify('已提交，本机将按顺序合成。'); }
       catch (error) { error.message += ' 输入已保留，请先刷新制作记录确认任务状态。'; notify(error.message, true); throw error; }
       finally { state.busy = false; options.onChange?.(state); }
     }
     async function refreshBatch(id) {
       const token = epoch, clientId = state.clientId; if (!state.batches.some(b => b.id === id && b.clientId === clientId)) return;
       const result = await request('/api/video/batches/' + encodeURIComponent(id) + '/status?clientId=' + encodeURIComponent(clientId));
-      if (token !== epoch || result.clientId !== clientId) return;
+      if (token !== epoch || result.clientId !== clientId || state.archived) return;
       const index = state.batches.findIndex(b => b.id === id); if (index >= 0) state.batches[index] = result; options.onChange?.(state);
     }
     async function batchAction(id, action) {
@@ -274,6 +293,18 @@
       finally { state.busy = false; options.onChange?.(state); }
     }
     return { state, initialize, loadConfig, switchClient, loadHistory, job, selected, addJob, addSegment, editJob, editSegment, upload, useSelected, fillScreens, importArticle, importText:()=>importContent(null), relayoutGeo, payload, submit, refreshBatch, batchAction, persist, notify,
+      toggleArchive: () => lifecycle(async()=>{state.archived=!state.archived;try{await loadHistory();}catch(error){state.archived=!state.archived;throw error;}}),
+      toggleRemoved: () => lifecycle(async()=>{if(!state.removed)await loadAssets(true);state.removed=!state.removed;}),
+      setAssetRemoved: id => lifecycle(async clientId=>{
+        const meta=await put('/api/video/assets/'+encodeURIComponent(id)+'/lifecycle',{clientId,removed:!state.removed});
+        if(meta.removed_at)state.draft.assets=state.draft.assets.filter(a=>a.id!==id);
+        else {state.removedAssets=state.removedAssets.filter(a=>a.id!==id);if(!state.draft.assets.some(a=>a.id===id))state.draft.assets.push({...meta,clientId,selected:false});}
+        persist();notify(meta.removed_at?'素材已移出，已有作品仍保留原素材。':'素材已恢复到素材库。');
+      }),
+      archiveJob: (batch,id) => lifecycle(async clientId=>{
+        await put('/api/video/batches/'+encodeURIComponent(batch)+'/jobs/'+encodeURIComponent(id)+'/archive',{clientId,archived:!state.archived});
+        await loadHistory();notify(state.archived?'作品已恢复到制作列表。':'作品已归档，可在「已归档作品」中恢复。');
+      }),
       previewUrl(id) { return previewUrls.get(id) || ''; },
       selectJob(id) { selectedJob = id; selectedSegment = ''; notify(); }, selectSegment(id) { selectedSegment = id; notify(); },
       removeJob() { state.draft.jobs = state.draft.jobs.filter(j => j.id !== selectedJob); selectedJob = state.draft.jobs[0]?.id || ''; selectedSegment = ''; changed(); notify(); },
@@ -296,20 +327,24 @@
     const select = (field, label, values, value) => '<div><label for="setting-' + field + '">' + label + '</label><select id="setting-' + field + '" data-job-field="' + field + '">' + values.map(([id, name]) => '<option value="' + id + '"' + (id === value ? ' selected' : '') + '>' + name + '</option>').join('') + '</select></div>';
     return '<div class="editor-heading"><h2>安排画面</h2><span class="save-state">草稿 v' + current.revision + '</span><button data-action="remove-job">移除此视频</button></div><div class="field-row"><div><label for="job-title">视频标题</label><input id="job-title" data-job-field="title" value="' + esc(current.title) + '" maxlength="200"></div>' + select('format', '画幅', [['portrait', '竖版 9:16'], ['landscape', '横版 16:9']], current.width === 1280 ? 'landscape' : 'portrait') + '</div>' +
       geoMarkup(controller) + '<section class="editor-section"><h3>添加素材</h3><div class="upload-row"><div><label for="arrangement">多选文件时</label><select id="arrangement"><option value="sequence">按顺序加入当前视频</option><option value="separate">每个文件单独一条视频</option></select></div><div><label for="media-files">选择图片或视频 · 单个最多 ' + Math.floor(configDetails(state.config).maxUploadBytes / 1024 / 1024) + ' MB</label><input id="media-files" type="file" multiple accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm"></div></div>' +
-      (assets.length ? '<details class="asset-library"><summary>本客户素材库 · ' + assets.length + ' 份</summary>' + assets.map(a => '<label class="asset"><input type="checkbox" data-asset="' + esc(a.id) + '"' + (a.selected ? ' checked' : '') + '><div><strong>' + esc(a.name) + '</strong><span class="meta">' + esc(a.type) + ' · ' + esc(state.clients.find(c => c.id === a.clientId)?.name || a.clientId) + '</span></div></label>').join('') + '<button data-action="use-selected" class="text-button">按列表顺序添加勾选素材</button></details>' : '') + '</section>' +
+      '<details class="asset-library"' + (state.removed ? ' open' : '') + '><summary>本客户素材库 · ' + assets.length + ' 份</summary><button data-action="toggle-removed" class="text-button" aria-pressed="' + state.removed + '">' + (state.removed?'返回素材库':'已移出素材') + '</button>' +
+      ((state.removed?state.removedAssets:assets).map(a => '<div class="asset">' + (state.removed?'':'<input type="checkbox" aria-label="选择素材 ' + esc(a.name) + '" data-asset="' + esc(a.id) + '"' + (a.selected ? ' checked' : '') + '>') + '<div><strong>' + esc(a.name) + '</strong><span class="meta">' + esc(a.type) + '</span></div><button data-action="asset-lifecycle" data-id="' + esc(a.id) + '" class="text-button">' + (state.removed?'恢复素材':'移出素材') + '</button></div>').join('') || '<p class="muted">' + (state.removed?'暂无移出的素材。':'暂无素材。') + '</p>') +
+      (!state.removed && assets.length ? '<button data-action="use-selected" class="text-button">按列表顺序添加勾选素材</button>' : '') + '</details></section>' +
       '<div class="settings-preview"><section><h3>画面与文字样式</h3><div class="style-fields">' + select('position', '文字位置', [['bottom', '画面下方'], ['top', '画面上方']], current.textStyle.position) + select('preset', '文字样式', [['white-outline', '白字黑边'], ['yellow-outline', '黄字黑边']], current.textStyle.preset) + '<div><label for="font-size">字号 · 输出像素</label><input id="font-size" type="number" min="16" max="128" step="1" data-job-field="fontSize" value="' + Number(current.textStyle.fontSize) + '"></div>' + select('motion', '图片运动', [['gentle', '轻微推拉'], ['none', '保持静止']], current.motion) + '</div><p class="meta">自动分屏依据全文安排阅读时长；手动添加的画面默认停留5秒。</p><p id="job-duration" class="duration-summary"></p></section><section class="composition-preview" aria-label="画面文字编辑预览"><div id="composition-preview">' + previewMarkup(controller) + '</div></section></div>' +
       '<section class="editor-section"><div class="section-head"><h3>播放顺序与展示文字</h3><button data-action="add-segment" class="secondary">添加画面</button></div>' + current.segments.map((s, index) => '<div class="segment" data-segment-row="' + esc(s.id) + '"><div class="section-head"><h3>画面 ' + (index + 1) + '</h3><div class="actions"><button data-action="view-segment" data-segment="' + esc(s.id) + '">查看预览</button><button data-action="move-up" data-segment="' + esc(s.id) + '"' + (!index ? ' disabled' : '') + '>上移</button><button data-action="move-down" data-segment="' + esc(s.id) + '"' + (index === current.segments.length - 1 ? ' disabled' : '') + '>下移</button><button data-action="remove-segment" data-segment="' + esc(s.id) + '">移除</button></div></div><div class="field-row"><div><label for="media-' + esc(s.id) + '">图片或视频</label><select id="media-' + esc(s.id) + '" data-segment="' + esc(s.id) + '" data-segment-field="media"><option value="">选择本客户素材</option>' + assets.map(a => '<option value="' + esc(a.id) + '"' + (s.media === a.id ? ' selected' : '') + '>' + esc(a.name) + '</option>').join('') + '</select></div><div><label for="duration-' + esc(s.id) + '">停留秒数</label><input id="duration-' + esc(s.id) + '" type="number" min="1" max="60" step="0.1" data-segment="' + esc(s.id) + '" data-segment-field="durationSeconds" value="' + Number(s.durationSeconds) + '"></div></div><label for="text-' + esc(s.id) + '">展示文字</label><textarea id="text-' + esc(s.id) + '" data-segment="' + esc(s.id) + '" data-segment-field="text" rows="3" placeholder="一两句醒目的短文字，可手动换行">' + esc(s.text) + '</textarea><p class="layout-message meta" data-layout-for="' + esc(s.id) + '"></p></div>').join('') + '</section>' +
       '<footer>提交后保存独立制作版本。修改草稿、文章或素材不会替换已经完成的视频。</footer>';
   }
   function batchesMarkup(state) {
     return state.batches.map(batch => {
-      const silent = batch.mode === 'silent', active = ACTIVE.has(batch.state), completed = batch.jobs.filter(j => j.state === 'completed').length, snapshot = state.draft?.snapshots?.[batch.id];
-      return '<article class="batch' + (active ? ' is-active' : '') + '"><header><strong>' + esc(STATES[batch.state] || batch.state) + '</strong><span class="meta">' + completed + ' / ' + batch.jobs.length + ' 条</span></header><p class="meta">' + (silent ? '图文视频' : '历史配音任务 · 仅供查看') + ' · ' + esc(batch.id) + '</p>' + (batch.error ? '<p class="error">' + esc(batch.error) + '</p>' : '') +
-        (silent && active ? '<button class="secondary" data-action="stop" data-batch="' + esc(batch.id) + '"' + (batch.state === 'stopping' || state.busy ? ' disabled' : '') + '>停止本地合成</button><p class="meta">已完成的视频保留，等待服务端确认停止。</p>' : silent && ['failed', 'cancelled', 'interrupted'].includes(batch.state) && batch.canRetry !== false ? '<button class="secondary" data-action="retry" data-batch="' + esc(batch.id) + '"' + (state.busy ? ' disabled' : '') + '>恢复同一批次</button><p class="meta">保留原提交版本，复用有效缓存。</p>' : '') +
-        (silent && batch.canRetry === false && batch.retryUnavailableReason ? '<p class="meta">' + esc(batch.retryUnavailableReason) + '</p>' : '') +
-        batch.jobs.map(j => {
+      const jobs = batch.jobs.filter(j=>Boolean(j.archivedAt)===Boolean(state.archived));if(!jobs.length)return '';
+      const silent = batch.mode === 'silent', active = !state.archived && ACTIVE.has(batch.state), completed = jobs.filter(j => j.state === 'completed').length, snapshot = state.draft?.snapshots?.[batch.id];
+      return '<article class="batch' + (active ? ' is-active' : '') + '"><header><strong>' + esc(state.archived?'已归档':STATES[batch.state] || batch.state) + '</strong><span class="meta">' + completed + ' / ' + jobs.length + ' 条</span></header><p class="meta">' + (silent ? '图文视频' : '历史配音任务 · 仅供查看') + ' · ' + esc(batch.id) + '</p>' + (batch.error ? '<p class="error">' + esc(batch.error) + '</p>' : '') +
+        (silent && active ? '<button class="secondary" data-action="stop" data-batch="' + esc(batch.id) + '"' + (batch.state === 'stopping' || state.busy ? ' disabled' : '') + '>停止本地合成</button><p class="meta">已完成的视频保留，等待服务端确认停止。</p>' : silent && !state.archived && ['failed', 'cancelled', 'interrupted'].includes(batch.state) && batch.canRetry !== false ? '<button class="secondary" data-action="retry" data-batch="' + esc(batch.id) + '"' + (state.busy ? ' disabled' : '') + '>恢复同一批次</button><p class="meta">保留原提交版本，复用有效缓存。</p>' : '') +
+        (silent && !state.archived && batch.canRetry === false && batch.retryUnavailableReason ? '<p class="meta">' + esc(batch.retryUnavailableReason) + '</p>' : '') +
+        jobs.map(j => {
           const video = safeFileUrl(j.videoUrl), subtitles = safeFileUrl(j.subtitlesUrl), original = snapshot?.jobs.find(s => s.id === j.id) || j, revision = snapshot?.revisions.find(s => s.id === j.id)?.revision;
           return '<section class="batch-job"><h3>' + esc(j.title || j.id) + '</h3><p class="meta">' + esc(STATES[j.state] || j.state) + (silent && PHASES[j.phase] ? ' · ' + PHASES[j.phase] : '') + ' · 已完成画面 ' + Number(j.completedSegments || 0) + ' / ' + Number(j.totalSegments || 0) + '</p>' +
+            (j.state === 'completed' ? '<button class="text-button" data-action="archive-job" data-batch="' + esc(batch.id) + '" data-id="' + esc(j.id) + '"' + (state.busy?' disabled':'') + '>' + (state.archived?'恢复作品':'归档作品') + '</button>' : '') +
             (silent ? '<progress value="' + Number(j.completedSegments || 0) + '" max="' + Math.max(1, Number(j.totalSegments || 0)) + '" aria-label="' + esc(j.title) + ' 画面完成数"></progress>' : '') + (j.error ? '<p class="error">' + esc(j.error) + '</p>' : '') +
             (silent && j.state === 'completed' ? '<p class="meta">' + (state.fixture ? '离线结果展示，时长与音轨待实际文件验证' : (j.audioTrackCount === 0 ? '无声合成 · 0 音轨合同' : '音轨验证信息待确认') + (Number.isFinite(j.durationSeconds) ? ' · 成片 ' + secondsLabel(j.durationSeconds) + ' 秒' : '')) + '</p>' : '') +
             (video ? '<video controls preload="metadata" playsinline' + (silent ? ' muted' : '') + ' src="' + esc(video + (video.includes('?') ? '&' : '?') + 'inline=1') + '" aria-label="' + esc(j.title) + '成片预览"></video>' : '') + '<div class="downloads">' + (video ? '<a download href="' + esc(video) + '">下载视频</a>' : '') + (subtitles ? '<a download href="' + esc(subtitles) + '">下载字幕</a>' : '') + '</div><details><summary>制作版本' + (revision ? ' · 草稿 v' + revision : j.version ? ' · ' + esc(String(j.version).slice(0, 12)) : '') + '</summary><p class="meta">当前草稿修改不会替换本片。</p>' + (Array.isArray(original.segments) ? '<pre>' + esc(original.segments.map(s => s.text + (silent ? '（' + s.durationSeconds + ' 秒）' : '')).join('\n\n')) + '</pre>' : '<p class="meta">版本以服务端批次记录为准。</p>') + (j.source ? '<p class="meta">来源 ' + esc(j.source.article_id) + ' · 版本 ' + esc(j.source.version_id) + '</p>' : '') + Authoring.archive(j) + '</details></section>';
@@ -331,9 +366,12 @@
       $('#jobs').innerHTML = (state.draft?.jobs || []).map(j => { const total = duration(j); return '<button class="job-tab" data-action="select-job" data-job="' + esc(j.id) + '" aria-current="' + (j.id === current?.id ? 'page' : 'false') + '">' + esc(j.title) + '<span class="meta">' + j.segments.length + ' 幅 · ' + (total.valid ? secondsLabel(total.seconds) + ' 秒' : '时长待填写') + '</span></button>'; }).join('');
       $('#add-job').disabled = !state.clientId || state.busy || state.draft.jobs.length >= 30; $('#start-batch').disabled = !state.clientId || state.busy || state.generating || !limits.ready || !state.draft.jobs.length;
       $('#refresh-history').disabled = !state.clientId || state.busy; $('#reload-config').disabled = state.busy;
+      $('#archived-works').disabled = !state.clientId || state.busy || state.generating;
+      $('#archived-works').setAttribute('aria-pressed',String(state.archived));
+      $('#archived-works').textContent=state.archived?'返回制作列表':'已归档作品';
       $('#renderer-info').textContent = state.config ? limits.ready ? '本地合成已就绪 · 25 帧/秒' : limits.reason || '本地图文视频引擎尚未就绪，请检查本机环境后重新读取。' : '正在读取本地合成配置…';
       const totals = (state.draft?.jobs || []).map(duration); $('#batch-duration').textContent = totals.length ? totals.every(t => t.valid) ? '本批预计总时长 ' + secondsLabel(totals.reduce((sum, t) => sum + t.seconds, 0)) + ' 秒' : '请填写有效的停留时长' : '';
-      const nextStructure = current ? state.clientId + ':' + current.id + ':' + current.segments.map(s => s.id).join(',') + ':' + state.draft.assets.map(a => a.id).join(',') + ':' + (state.context?.client?.id||'') : state.clientId;
+      const nextStructure = current ? state.clientId + ':' + current.id + ':' + current.segments.map(s => s.id).join(',') + ':' + state.draft.assets.map(a => a.id).join(',') + ':' + (state.context?.client?.id||'') + ':' + state.removed + ':' + state.removedAssets.map(a=>a.id).join(',') : state.clientId;
       if (structure !== nextStructure) { $('#editor').innerHTML = editorMarkup(controller); structure = nextStructure; }
       // Preserve editable nodes and their caret during status updates.
       const preview = $('#composition-preview'); if (preview) { const html = previewMarkup(controller); if (preview.innerHTML !== html) preview.innerHTML = html; }
@@ -347,11 +385,11 @@
         for(const [field,value] of [['media',s.media],['text',s.text],['durationSeconds',s.durationSeconds]]){const input=doc.querySelector('[data-segment="'+s.id+'"][data-segment-field="'+field+'"]');if(input&&doc.activeElement!==input&&input.value!==String(value))input.value=String(value);}
         const message = doc.querySelector('[data-layout-for="' + s.id + '"]'); if (message) { const issue = textLayout(s.text, current).issue; message.textContent = issue || '最多两行展示文字，长句可拆成更多画面。'; message.classList.toggle('error', Boolean(issue)); }
       }
-      $('#history-note').textContent = state.clientId ? state.batches.length ? '保存提交版本，完成后可预览和下载。' : '当前客户暂无制作记录。' : '选择客户后读取已保存的任务。';
+      $('#history-note').textContent = state.clientId ? state.archived ? state.batches.length?'可下载原成片，或恢复到制作列表。':'暂无归档作品。' : state.batches.length ? '保存提交版本，完成后可预览和下载。' : '当前客户暂无制作记录。' : '选择客户后读取已保存的任务。';
       const batches = batchesMarkup(state); if ($('#batches').innerHTML !== batches) $('#batches').innerHTML = batches; schedule();
     }
     function schedule() {
-      if (timer || polling || failures >= 3 || doc.hidden || !controller.state.batches.some(b => b.mode === 'silent' && ACTIVE.has(b.state))) return;
+      if (timer || polling || failures >= 3 || doc.hidden || controller.state.archived || !controller.state.batches.some(b => b.mode === 'silent' && ACTIVE.has(b.state))) return;
       timer = setTimeout(async () => { timer = null; polling = true;
         try { for (const batch of [...controller.state.batches]) if (batch.mode === 'silent' && ACTIVE.has(batch.state)) await controller.refreshBatch(batch.id); failures = 0; }
         catch (error) { failures++; controller.notify(error.message + (failures >= 3 ? ' 自动更新已暂停，请手动刷新。' : ''), true); }
@@ -373,6 +411,7 @@
       if (el.id === 'add-job') controller.addJob();
       else if (el.id === 'reload-config') await controller.loadConfig(true);
       else if (el.id === 'refresh-history') { failures = 0; await controller.loadHistory(); }
+      else if (el.id === 'archived-works') await controller.toggleArchive();
       else if (el.id === 'start-batch') await controller.submit();
       else { const action = el.dataset.action;
         if (action === 'select-job') controller.selectJob(el.dataset.job);
@@ -382,6 +421,9 @@
         if (action === 'move-up' || action === 'move-down') controller.moveSegment(el.dataset.segment, action === 'move-up' ? -1 : 1);
         if (action === 'view-segment') controller.selectSegment(el.dataset.segment);
         if (action === 'use-selected') controller.useSelected();
+        if (action === 'toggle-removed') await controller.toggleRemoved();
+        if (action === 'asset-lifecycle') await controller.setAssetRemoved(el.dataset.id);
+        if (action === 'archive-job') await controller.archiveJob(el.dataset.batch,el.dataset.id);
         if (action === 'import-article') await controller.importArticle();
         if (action === 'import-text') await controller.importText();
         if (action === 'relayout-geo') await controller.relayoutGeo();

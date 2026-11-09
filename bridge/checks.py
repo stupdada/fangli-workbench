@@ -2,6 +2,42 @@
 import copy
 import re
 from app import prompts
+from .creation_context import length_bounds
+
+
+def body_character_count(body):
+    lines = body.strip().splitlines()
+    if lines and re.match(r'^#[ \t]+', lines[0]):
+        lines.pop(0)
+    count = 0
+    for line in lines:
+        line = line.strip()
+        if re.fullmatch(r'#[^#\s]+(?:\s+#[^#\s]+)*', line) or re.match(r'^声明\s*[:：]', line):
+            continue
+        if re.fullmatch(r'(?:(?:-\s*){3,}|(?:\*\s*){3,}|(?:_\s*){3,})', line):
+            continue
+        line = re.sub(r'^(?:#{1,6}\s+|[-*+]\s+|\d+[.)]\s+|>\s*)+', '', line)
+        line = re.sub(r'!?\[([^\]\n]*)\]\([^\n)]*\)', r'\1', line)
+        if line.startswith('|') and line.endswith('|'):
+            if re.fullmatch(r'[|:\s-]+', line):
+                continue
+            line = line.replace('|', '')
+        line = re.sub(r'(\*|_)([^*_]+)\1', r'\2', line.replace('**', '').replace('__', ''))
+        count += len(re.sub(r'\s|`', '', line))
+    return count
+
+
+def article_length(body, target):
+    report = {**target, 'actual': body_character_count(body)}
+    if target['source'] == 'request':
+        lower, upper = length_bounds(target['hint'])
+        if lower is not None and report['actual'] < lower:
+            report['status'] = 'below'
+        elif upper is not None and report['actual'] > upper:
+            report['status'] = 'above'
+        elif lower is not None or upper is not None:
+            report['status'] = 'within'
+    return report
 
 
 def article_checks(article, report, creation_style=None):
@@ -12,11 +48,7 @@ def article_checks(article, report, creation_style=None):
     facts = len(re.findall(r'(?m)^\s*[-*]\s+', block[1])) if block else 0
     checks = []
     if creation_style:
-        body = article.get('body_md') or ''
-        plain = '\n'.join(line for line in body.splitlines() if not re.match(r'^(#\s|#(?!#)\S|声明[:：])', line))
-        plain = re.sub(r'(?m)^\s*(?:#{2,6}\s+|[-*]\s+|\d+\.\s+)', '', plain)
-        measured = len(re.sub(r'\s|\*\*|__|`', '', plain))
-        report['length'] = {**creation_style['length'], 'actual': measured}
+        report['length'] = article_length(article.get('body_md') or '', creation_style['length'])
     for check in report.get('checks', []):
         # A universal 500-character gate contradicts short-video and short-post
         # configurations. Length is displayed, while the platform rule remains visible.

@@ -2,9 +2,12 @@
 import copy
 import hashlib
 import json
+import sqlite3
 import uuid
+from contextlib import contextmanager
 from app.store import now
 from .errors import Problem, Missing, Conflict
+from .migrations import client_name_key, migrate
 
 
 def dumps(value):
@@ -17,6 +20,15 @@ def loads(value, default=None):
 
 def uid():
     return str(uuid.uuid4())
+
+
+def validate_creation_id(value):
+    try:
+        key = uuid.UUID(value)
+        if key.version != 4 or str(key) != value:
+            raise ValueError
+    except (AttributeError, TypeError, ValueError):
+        raise Problem('创建编号不正确') from None
 
 
 PROFILE_FIELDS = ('industry', 'brand', 'company', 'products', 'website', 'phone', 'address')
@@ -38,6 +50,22 @@ def identifier(value, name):
     if not isinstance(value, str) or not value or len(value) > 120:
         raise Problem(f'{name}需为有效字符串ID')
     return value
+
+
+@contextmanager
+def client_name_write():
+    try:
+        yield
+    except sqlite3.IntegrityError as exc:
+        if str(exc) != 'wb_active_client_name':
+            raise
+        raise Conflict('已有同名的活动客户，请修改名称或选择已有客户') from None
+
+
+def update_client_profile(db, cid, name, profile):
+    with client_name_write():
+        db.execute('UPDATE wb_clients SET name=?,name_key=?,profile=? WHERE id=?',
+                   (name, client_name_key(name), dumps(profile), cid))
 
 
 class Workspace:
@@ -89,6 +117,7 @@ class Workspace:
                 c.execute('INSERT INTO wb_version_evidence VALUES(?,?)', (row['id'], dumps(payload)))
         from .documents import Documents
         self.files = Documents(self)
+        migrate(store)
 
     def recover(self):
         with self.zip.conn() as c:
@@ -100,24 +129,65 @@ class Workspace:
             if self.zip.get_article(aid):
                 self.capture_zip(aid, 'ZIP 中断保留稿', review={'status': 'unverified', 'summary': '服务中断，核查未确认完成'})
 
-    def clients(self):
+    def clients(self, *, archived=False):
         with self.zip.conn() as c:
-            rows = [dict(r) for r in c.execute('SELECT * FROM wb_clients ORDER BY created_at,id')]
+            condition = 'IS NOT NULL' if archived else 'IS NULL'
+            rows = [dict(r) for r in c.execute(f'''SELECT id,name,profile,created_at,archived_at,
+                COUNT(*) OVER (PARTITION BY name_key)>1 AS name_conflict
+                FROM wb_clients WHERE archived_at {condition} AND import_draft=0 ORDER BY created_at,id''')]
         for row in rows:
             row['profile'] = loads(row['profile'], {})
+            row['name_conflict'] = bool(row['name_conflict'])
         return rows
 
     def client(self, cid):
         identifier(cid, '客户ID')
         with self.zip.conn() as c:
-            row = c.execute('SELECT * FROM wb_clients WHERE id=?', (cid,)).fetchone()
+            row = c.execute('SELECT id,name,profile,created_at,archived_at,import_draft FROM wb_clients WHERE id=?', (cid,)).fetchone()
         if not row:
             raise Missing('客户不存在')
         row = dict(row)
         row['profile'] = loads(row['profile'], {})
         return row
 
-    def save_client(self, name, profile=None, cid=None):
+    def active_client(self, cid, *, include_import=False):
+        client = self.client(cid)
+        if client['archived_at']:
+            raise Conflict('此客户已归档，请选择活动客户')
+        if client['import_draft'] and not include_import:
+            raise Conflict('请先确认导入草稿')
+        return client
+
+    def archive_client(self, cid):
+        if self.client(cid)['import_draft']:
+            raise Conflict('导入草稿尚未成为客户档案')
+        with self.zip.conn() as c:
+            c.execute('UPDATE wb_clients SET archived_at=? WHERE id=? AND archived_at IS NULL', (now(), cid))
+        return self.client(cid)
+
+    def restore_client(self, cid):
+        if self.client(cid)['import_draft']:
+            raise Conflict('请先确认导入草稿')
+        with self.zip.conn() as c, client_name_write():
+            c.execute('UPDATE wb_clients SET archived_at=NULL WHERE id=? AND archived_at IS NOT NULL', (cid,))
+        return self.client(cid)
+
+    def import_drafts(self):
+        with self.zip.conn() as c:
+            return [dict(row) for row in c.execute('''SELECT c.id,c.name,c.created_at,
+                (SELECT COUNT(*) FROM wb_document_groups g WHERE g.client_id=c.id AND g.removed_at IS NULL) AS document_count
+                FROM wb_clients c WHERE c.import_draft=1 ORDER BY c.rowid DESC''')]
+
+    def start_import(self, ident, name):
+        validate_creation_id(ident)
+        name = text_value(name, '客户名称', 100).strip()
+        profile = {field: '' for field in PROFILE_FIELDS}
+        with self.zip.conn() as c:
+            c.execute('''INSERT OR IGNORE INTO wb_clients(id,name,profile,created_at,name_key,import_draft)
+                VALUES(?,?,?,?,?,1)''', (ident, name, dumps(profile), now(), client_name_key(name)))
+        return self.client(ident)
+
+    def save_client(self, name, profile=None, cid=None, *, creation_id=None):
         name = text_value(name, '客户名称', 100, empty=False).strip()
         if profile is None:
             profile = self.client(cid)['profile'] if cid else {}
@@ -125,9 +195,24 @@ class Workspace:
             raise Problem('客户资料格式或字段不正确')
         old = self.client(cid)['profile'] if cid else {}
         profile = {k: text_value(profile.get(k, old.get(k, '')), k, 4000).strip() for k in PROFILE_FIELDS}
-        cid = cid or uid()
+        if creation_id is not None:
+            validate_creation_id(creation_id)
         with self.zip.conn() as c:
-            c.execute('INSERT INTO wb_clients VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,profile=excluded.profile', (cid, name, dumps(profile), now()))
+            c.execute('BEGIN IMMEDIATE')
+            if cid:
+                update_client_profile(c, cid, name, profile)
+            else:
+                cid = creation_id or uid()
+                row = c.execute('SELECT name,profile,import_draft FROM wb_clients WHERE id=?', (cid,)).fetchone()
+                if row:
+                    if row['import_draft']:
+                        raise Conflict('请先确认导入草稿')
+                    if row['name'] != name or loads(row['profile']) != profile:
+                        raise Conflict('客户档案已创建并有变更，请在客户页继续')
+                else:
+                    with client_name_write():
+                        c.execute('INSERT INTO wb_clients(id,name,profile,created_at,name_key) VALUES(?,?,?,?,?)',
+                                  (cid, name, dumps(profile), now(), client_name_key(name)))
         return self.client(cid)
 
     def documents(self, cid):
@@ -137,19 +222,20 @@ class Workspace:
         result = self.files.import_document(cid, {'filename': name, 'kind': kind, 'text': text, 'as_new': True})
         return result['document']
 
-    def create_conversation(self, cid, defaults=None):
+    def create_conversation(self, cid, defaults=None, *, document_ids=(), creation_id=None):
         client = self.client(cid)
         defaults = {**(defaults or {}), **client['profile'], 'client': client['name']}
-        ident, t = uid(), now()
+        ident, t = creation_id or uid(), now()
         with self.zip.conn() as c:
             c.execute('INSERT INTO wb_conversations(id,client_id,title,messages,brief,document_ids,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)',
-                      (ident, cid, '新建内容', '[]', dumps(defaults), '[]', 'draft', t, t))
+                      (ident, cid, '新建内容', '[]', dumps(defaults), dumps(list(document_ids)), 'draft', t, t))
         return self.conversation(ident)
 
     def conversation(self, ident, include_deleted=False):
         identifier(ident, '任务ID')
         with self.zip.conn() as c:
-            row = c.execute('SELECT * FROM wb_conversations WHERE id=?', (ident,)).fetchone()
+            row = c.execute('''SELECT t.*, l.pinned_at, l.archived_at FROM wb_conversations t
+                LEFT JOIN wb_task_lifecycle l ON l.conversation_id=t.id WHERE t.id=?''', (ident,)).fetchone()
         if not row or row['deleted_at'] and not include_deleted:
             raise Missing('内容任务不存在')
         row = dict(row)
@@ -176,16 +262,35 @@ class Workspace:
 
     def clone_conversation(self, ident):
         source = self.conversation(ident)
-        self.selected_documents(source)
+        self.active_client(source['client_id'])
+        document_ids = [doc['id'] for doc in self.selected_documents(source) if not doc.get('removed_at')]
         new_id, t = uid(), now()
         with self.zip.conn() as c:
             c.execute('INSERT INTO wb_conversations(id,client_id,title,messages,brief,document_ids,status,created_at,updated_at,mode,followup,parent_conversation_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
-                      (new_id, source['client_id'], source['title'] + ' · 复用', '[]', dumps(source['brief']), dumps(source['document_ids']), 'draft', t, t, source['mode'], int(source['followup']), ident))
+                      (new_id, source['client_id'], source['title'] + ' · 复用', '[]', dumps(source['brief']), dumps(document_ids), 'draft', t, t, source['mode'], int(source['followup']), ident))
         return self.conversation(new_id)
 
     def delete_conversation(self, ident):
         with self.zip.conn() as c:
             c.execute('UPDATE wb_conversations SET deleted_at=?,updated_at=? WHERE id=? AND deleted_at IS NULL', (now(), now(), ident))
+
+    def set_task_state(self, ident, field, enabled):
+        with self.zip.conn() as c:
+            c.execute('BEGIN IMMEDIATE')
+            row = c.execute('SELECT pinned_at,archived_at FROM wb_task_lifecycle WHERE conversation_id=?', (ident,)).fetchone()
+            pinned, archived = tuple(row) if row else (None, None)
+            if field == 'pinned':
+                if enabled and archived:
+                    raise Conflict('请先恢复任务，再置顶')
+                pinned = (pinned or now()) if enabled else None
+            else:
+                archived = (archived or now()) if enabled else None
+                if enabled:
+                    pinned = None
+            c.execute('''INSERT INTO wb_task_lifecycle VALUES(?,?,?) ON CONFLICT(conversation_id)
+                         DO UPDATE SET pinned_at=excluded.pinned_at,archived_at=excluded.archived_at''',
+                      (ident, pinned, archived))
+        return {'id': ident, 'pinned_at': pinned, 'archived_at': archived}
 
     def delete_article(self, aid, expected):
         with self.zip.conn() as c:
@@ -206,7 +311,7 @@ class Workspace:
                 c.execute('UPDATE wb_conversations SET ' + ','.join(columns) + ',updated_at=? WHERE id=?', params + [now(), ident])
         return self.conversation(ident)
 
-    def selected_documents(self, conv, ids=None):
+    def selected_documents(self, conv, ids=None, *, active_only=False):
         ids = conv['document_ids'] if ids is None else ids
         if not isinstance(ids, list) or len(ids) > 100 or any(not isinstance(i, str) for i in ids) or len(set(ids)) != len(ids):
             raise Problem('资料选择不正确')
@@ -216,6 +321,9 @@ class Workspace:
             raise Problem('选定资料不属于当前客户') from None
         if any(library[i]['status'] != 'ready' for i in ids):
             raise Problem('选定资料尚未解析成功，请更新资料选择')
+        retained_ids = set() if active_only else set(conv.get('document_ids', []))
+        if any(doc.get('removed_at') and ident not in retained_ids for ident, doc in library.items()):
+            raise Problem('选定资料已移出资料库，请更新资料选择')
         return [library[i] for i in ids]
 
     def save_snapshot(self, conv, payload):
@@ -272,7 +380,7 @@ class Workspace:
             row = c.execute('SELECT client_id FROM wb_conversations WHERE id=?', (ident,)).fetchone()
             if not row: raise Missing('内容任务不存在')
             if save_as_default:
-                c.execute('UPDATE wb_clients SET name=?,profile=? WHERE id=?', (brief['client'], dumps(profile), row['client_id']))
+                update_client_profile(c, row['client_id'], brief['client'], profile)
             c.execute('UPDATE wb_conversations SET brief=?,draft_revision=draft_revision+1,needs_confirmation=MAX(needs_confirmation,?),updated_at=? WHERE id=?',
                       (dumps(brief), int(needs_confirmation), now(), ident))
         conv = self.conversation(ident)

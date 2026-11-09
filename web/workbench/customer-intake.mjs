@@ -28,7 +28,7 @@ function savedClaims(record) {
   return (record.adoption?.editorial || record.result).important_claims;
 }
 
-export function renderIntake(record, draft, { busy = false, message = '' } = {}) {
+export function renderIntake(record, draft, { busy = false, message = '', compact = false } = {}) {
   if (!record) return '<div class="empty"><h2>整理客户资料</h2><p>在资料页选择文件，生成档案建议、业务概览和关键词。</p></div>';
   if (record.status !== 'ready') return `<section class="customer-intake"><header><h2>整理客户资料</h2>${button('intake-refresh','读取状态')}</header><p role="status">${e(message || (record.status === 'running' ? '正在整理所选资料…' : record.error || '整理尚未完成'))}</p>${['error','interrupted'].includes(record.status) ? button('intake-retry','重新整理') : ''}<p class="muted">${record.sources.map(d => `${e(d.filename)} · 修订 ${e(d.revision)}`).join('；')}</p></section>`;
   const result = draft.editorial;
@@ -38,16 +38,22 @@ export function renderIntake(record, draft, { busy = false, message = '' } = {})
     const value = key === 'name' ? draft.name : draft.profile[key];
     const differs = suggestion && suggestion !== current;
     return `<div class="intake-field"><label class="field"><span>${e(label)}</span><input data-intake-field="${key === 'name' ? 'name' : `profile:${key}`}" value="${e(value)}" maxlength="${key === 'name' ? 100 : 4000}"></label>${differs ? `<p class="intake-suggestion">资料建议：${e(suggestion)} ${suggestion !== value ? button('intake-use-field','使用建议',`data-field="${e(key)}"`) : ''}</p>` : ''}${current && differs ? `<p class="intake-field-conflict">当前档案：${e(current)}</p>` : ''}${references(record.result.profile_sources[key])}</div>`;
-  }).join('');
+  });
+  const profile = compact
+    ? `<div class="intake-profile-grid">${fields.slice(0,5).join('')}</div><details class="intake-references"><summary>联系方式</summary><div class="intake-profile-grid">${fields.slice(5).join('')}</div></details>`
+    : `<div class="intake-profile-grid">${fields.join('')}</div>`;
   const claims = result.important_claims.map((claim,i) => {
     const saved = savedClaims(record)[i];
     const changed = claim.text !== saved?.text;
     return `<div class="intake-editorial-row"><label class="field"><span>说法 ${i+1}</span><textarea data-intake-field="claim:${i}" rows="2" maxlength="4000">${e(claim.text)}</textarea></label>${references(claim.source_refs)}
-      <div class="intake-claim-check" data-claim-check ${changed ? 'hidden' : ''}>${renderClaimCheck(saved,record.public_search_configured)}</div>
-      <p class="helper" data-claim-check-draft ${changed ? '' : 'hidden'}>保存改动后可核对这条说法。</p></div>`;
+      ${compact ? '' : `<div class="intake-claim-check" data-claim-check ${changed ? 'hidden' : ''}>${renderClaimCheck(saved,record.public_search_configured)}</div>
+      <p class="helper" data-claim-check-draft ${changed ? '' : 'hidden'}>保存改动后可核对这条说法。</p>`}</div>`;
   }).join('');
   const searchNote = record.public_search_configured === false ? '<p class="intake-status-note">当前工作台未配置公开搜索。</p>' : '';
-  return `<section class="customer-intake" data-intake-editor="${e(record.id)}"><header><div><h2>整理结果</h2><p>${record.sources.map(d => `${e(d.filename)} · 修订 ${e(d.revision)}`).join('；')}</p></div><span class="intake-save-state" role="status">${e(message || (record.adoption ? '已保存，可继续修改' : '待确认保存'))}</span></header><h3>客户档案</h3><div class="intake-profile-grid">${fields}</div><h3>业务概览</h3><label class="field"><span class="sr-only">业务概览</span><textarea data-intake-field="overview" rows="6" maxlength="6000">${e(result.overview.text)}</textarea></label>${references(result.overview.source_refs)}<h3>关键词</h3><div class="intake-keywords">${result.keywords.map((k,i) => `<label class="field"><span class="sr-only">关键词 ${i+1}</span><input data-intake-field="keyword:${i}" value="${e(k.text)}" maxlength="4000"></label>`).join('')}</div><details class="intake-references"><summary>关键词来源</summary>${result.keywords.map(k => `<div><strong>${e(k.text)}</strong>${references(k.source_refs)}</div>`).join('')}</details><h3>重要说法</h3>${searchNote}${claims}<h3>资料内部冲突</h3>${result.conflicts.length ? result.conflicts.map((c,i) => `<div class="intake-editorial-row"><label class="field"><span>${e(c.topic)}</span><textarea data-intake-field="conflict:${i}" rows="3" maxlength="4000">${e(c.detail)}</textarea></label>${references(c.source_refs)}</div>`).join('') : '<p class="muted">本次整理未识别到内部冲突。</p>'}<footer class="intake-footer"><span>确认后更新客户档案并保存整理结果。</span>${button('intake-save',busy ? '正在保存…' : '确认保存',busy ? 'disabled' : '',true)}</footer></section>`;
+  const conflicts = `<h3>资料内部冲突</h3>${result.conflicts.length ? result.conflicts.map((c,i) => `<div class="intake-editorial-row"><label class="field"><span>${e(c.topic)}</span><textarea data-intake-field="conflict:${i}" rows="3" maxlength="4000">${e(c.detail)}</textarea></label>${references(c.source_refs)}</div>`).join('') : '<p class="muted">本次整理未识别到内部冲突。</p>'}`;
+  const claimsSection = compact ? (result.important_claims.length ? `<details class="intake-references"><summary>重要说法 · ${result.important_claims.length}</summary>${claims}</details>` : '') : `<h3>重要说法</h3>${searchNote}${claims}`;
+  const footer = compact ? '' : `<footer class="intake-footer"><span>确认后更新客户档案并保存整理结果。</span>${button('intake-save',busy ? '正在保存…' : '确认保存',busy ? 'disabled' : '',true)}</footer>`;
+  return `<section class="customer-intake" data-intake-editor="${e(record.id)}"><header><div><h2>整理结果</h2><p>${record.sources.map(d => `${e(d.filename)} · 修订 ${e(d.revision)}`).join('；')}</p></div><span class="intake-save-state" role="status">${e(message || (record.adoption ? '已保存，可继续修改' : '待确认保存'))}</span></header>${compact && result.conflicts.length ? conflicts : ''}<h3>客户档案</h3>${profile}<h3>业务概览</h3><label class="field"><span class="sr-only">业务概览</span><textarea data-intake-field="overview" rows="${compact ? 3 : 6}" maxlength="6000">${e(result.overview.text)}</textarea></label>${references(result.overview.source_refs)}<h3>关键词</h3><div class="intake-keywords">${result.keywords.map((k,i) => `<label class="field"><span class="sr-only">关键词 ${i+1}</span><input data-intake-field="keyword:${i}" value="${e(k.text)}" maxlength="4000"></label>`).join('')}</div><details class="intake-references"><summary>关键词来源</summary>${result.keywords.map(k => `<div><strong>${e(k.text)}</strong>${references(k.source_refs)}</div>`).join('')}</details>${claimsSection}${!compact || !result.conflicts.length ? conflicts : ''}${footer}</section>`;
 }
 
 export class CustomerIntake {

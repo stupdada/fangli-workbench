@@ -371,4 +371,22 @@ test('同客户素材绑定制作版本，模板和发布信息随指定成片�
   assert.equal(publish.status,200);
   assert.match(publish.headers.get('content-disposition'),/publish\.txt/);
   assert.equal(await publish.text(),`发布标题\n${first.publish.title}\n\n发布简介\n${first.publish.description}\n`);
+  const archive=route+'/archive';
+  assert.equal((await f.request(archive,'PUT',{clientId:'other',archived:true})).status,404);
+  const removed=await fetch(f.origin+'/api/video/assets/'+image.id+'/lifecycle',{
+    method:'PUT',headers:{Origin:f.origin,'Content-Type':'application/json'},body:JSON.stringify({clientId:'sample',removed:true})
+  });
+  assert.equal(removed.status,200);
+  assert.deepEqual((await (await fetch(f.origin+'/api/video/assets?clientId=sample')).json()).assets,[]);
+  const removedSelection=await f.request('/productions','POST',{clientId:'sample',topic:'新制作不能选移出素材',asset_ids:[image.id]});
+  assert.equal((await f.request('/operations/'+removedSelection.value.id+'?wait=1')).value.status,'failed');
+  assert.equal(f.inputs.length,1);
+  assert.equal((await f.request(route,'PUT',{...second,expected_version:2})).status,200);
+  assert.ok((await f.request(archive,'PUT',{clientId:'sample',archived:true})).value.archived_at);
+  assert.deepEqual((await f.request('/productions?clientId=sample')).value.productions,[]);
+  assert.equal((await f.request('/productions?clientId=sample&archived=1')).value.productions[0].id,id);
+  assert.equal((await f.request(route+'/renders','POST',{expected_version:3,narration:false})).status,409);
+  assert.equal(await (await fetch(`${f.origin}${f.api}${route}/renders/${made.render_id}/publish.txt`)).text(),`发布标题\n${first.publish.title}\n\n发布简介\n${first.publish.description}\n`);
+  assert.equal((await f.request(archive,'PUT',{clientId:'sample',archived:false})).value.archived_at,null);
+  assert.equal((await f.request('/productions?clientId=sample')).value.productions[0].id,id);
 });

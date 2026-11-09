@@ -4,8 +4,9 @@ import hashlib
 import json
 import threading
 from app.store import now
+from .batch_preview import confirm_rows, plan_rows, public_preview
 from .batch_video import BatchVideos, video_specs
-from .customers import PLAN_FIELDS
+from .customers import BATCH_OPTION_FIELDS
 from .errors import Problem, Conflict, Missing
 from .storage import dumps, loads, uid, text_value
 
@@ -29,6 +30,9 @@ class Batches:
                     conversation_id TEXT NOT NULL UNIQUE,status TEXT NOT NULL,snapshot TEXT NOT NULL,
                     operation_id TEXT,error TEXT NOT NULL DEFAULT '',sequence INTEGER NOT NULL,planned INTEGER NOT NULL);
                 CREATE INDEX IF NOT EXISTS wb_batch_queue ON wb_batch_items(status,batch_id,sequence);
+                CREATE TABLE IF NOT EXISTS wb_batch_article_outputs(
+                    article_id INTEGER PRIMARY KEY REFERENCES articles(id) ON DELETE CASCADE,
+                    position INTEGER NOT NULL CHECK(position>0));
             ''')
             c.execute('BEGIN IMMEDIATE')
             columns = {row['name'] for row in c.execute('PRAGMA table_info(wb_batch_items)')}
@@ -49,23 +53,26 @@ class Batches:
         if queued:
             self.wake()
 
-    def prepare(self, items):
+    def prepare(self, items, *, preview=False):
         if not isinstance(items, list) or not items or len(items) > 100:
             raise Problem('请勾选1至100个客户')
         prepared, issues, seen, frozen_chars = [], [], set(), 0
         for item in items:
             cid = item.get('client_id') if isinstance(item, dict) else None
             try:
-                if not isinstance(item, dict) or set(item) - {'client_id', 'options', 'document_ids', 'videos'}:
+                if not isinstance(item, dict) or set(item) - {'client_id', 'options', 'document_ids', 'videos', 'preview'}:
                     raise Problem('批次客户项格式不正确')
+                if preview and 'preview' in item:
+                    raise Problem('请使用客户和创作安排刷新预览')
                 if not isinstance(cid, str) or cid in seen:
                     raise Problem('客户ID无效或重复')
                 seen.add(cid)
+                self.ws.active_client(cid)
                 videos = video_specs(item.get('videos', []))
                 plan = self.s.customers.plan(cid)['plan']
                 if videos:
                     overrides = item.get('options', {})
-                    if not isinstance(overrides, dict) or set(overrides) - PLAN_FIELDS - {'topic', 'length_hint'}:
+                    if not isinstance(overrides, dict) or set(overrides) - BATCH_OPTION_FIELDS - {'topic'}:
                         raise Problem('本次调整仅接受生成方案字段')
                     options = self.s.normalize_options({**plan['options'], **overrides}, self.s.customers.defaults(cid))
                     if options['selections']:
@@ -73,7 +80,7 @@ class Batches:
                     else:
                         brief = {**options, 'platforms': [], 'keyword': next(iter(options.get('keywords', [])), '')}
                     ids = item.get('document_ids')
-                    documents = self.ws.selected_documents({'client_id': cid, 'document_ids': plan['document_ids']}, ids)
+                    documents = self.ws.selected_documents({'client_id': cid, 'document_ids': plan['document_ids']}, ids, active_only=True)
                     revision = plan['revision']
                 else:
                     brief, documents, revision = self.s.customers.effective(cid, item.get('options'), item.get('document_ids'))
@@ -105,7 +112,14 @@ class Batches:
                             'reference_articles': history, 'topic_offset': offset}
                 snapshot['zip_snapshot'] = self.s.zip_snapshot(brief)
                 snapshot['creation_context'] = self.s.freeze_creation_context(cid, snapshot)
-                prepared.append({'client_id': cid, 'name': brief['client'], 'planned': count, 'snapshot': snapshot, 'videos': videos})
+                entry = {'client_id': cid, 'name': brief['client'], 'snapshot': snapshot}
+                if preview or 'preview' in item:
+                    arranged = plan_rows(snapshot, videos)
+                    if 'preview' in item:
+                        count, videos = confirm_rows(snapshot, videos, arranged, item['preview'])
+                    else:
+                        entry['preview'] = arranged
+                prepared.append({**entry, 'planned': count, 'videos': videos})
             except Problem as exc:
                 issues.append({'client_id': cid, 'error': str(exc)})
         if sum(len(item['videos']) for item in prepared) > 3:
@@ -118,12 +132,12 @@ class Batches:
                 'video_total': sum(len(i['videos']) for i in prepared),
                 'items': [{'client_id': i['client_id'], 'name': i['name'], 'planned': i['planned'],
                            'options': i['snapshot']['options'], 'document_ids': [d['id'] for d in i['snapshot']['documents']],
-                           'videos': i['videos']}
+                           'videos': i['videos'], 'preview': public_preview(i['preview'])}
                           for i in prepared]}
 
     def preflight(self, items):
         with self.s.guard:
-            return self.preflight_result(*self.prepare(items))
+            return self.preflight_result(*self.prepare(items, preview=True))
 
     def submit(self, body):
         if set(body) != {'request_key', 'items'}:
@@ -174,7 +188,9 @@ class Batches:
     def get(self, bid):
         with self.store.conn() as c:
             row = c.execute('SELECT * FROM wb_batches WHERE id=?', (bid,)).fetchone()
-            items = [dict(r) for r in c.execute('SELECT * FROM wb_batch_items WHERE batch_id=? ORDER BY sequence', (bid,))]
+            items = [dict(r) for r in c.execute('''SELECT i.*, t.deleted_at, l.archived_at FROM wb_batch_items i
+                LEFT JOIN wb_conversations t ON t.id=i.conversation_id
+                LEFT JOIN wb_task_lifecycle l ON l.conversation_id=t.id WHERE i.batch_id=? ORDER BY i.sequence''', (bid,))]
             for item in items:
                 item['videos'] = [self.videos.public(v, item['client_id']) for v in self.videos.rows(c, item['id'])]
         if not row:
@@ -182,7 +198,7 @@ class Batches:
         public = []
         for item in items:
             snapshot = loads(item['snapshot'], {})
-            public.append({k: item[k] for k in ('id', 'client_id', 'conversation_id', 'status', 'planned', 'error')} |
+            public.append({k: item[k] for k in ('id', 'client_id', 'conversation_id', 'status', 'planned', 'error', 'deleted_at', 'archived_at')} |
                           {'name': snapshot['brief']['client'], 'completed': self.completed(item['conversation_id']), 'videos': item['videos']})
         return {k: row[k] for k in ('id', 'status', 'created_at', 'updated_at')} | {
             'items': public, 'total': sum(i['planned'] for i in public), 'completed': sum(i['completed'] for i in public),
@@ -359,17 +375,19 @@ class Batches:
     def bind_video_articles(self, conn, item):
         # The first adoption is the batch's actual output, even if someone edits
         # the working version while later articles are being written.
-        articles = conn.execute('''SELECT a.id,MIN(w.version_id) AS version_id
+        articles = conn.execute('''SELECT a.id,MIN(w.version_id) AS version_id,s.position
             FROM wb_conversations c JOIN articles a ON a.plan_id=c.plan_id
             JOIN wb_adoptions w ON w.article_id=a.id
+            LEFT JOIN wb_batch_article_outputs s ON s.article_id=a.id
             LEFT JOIN wb_article_locks l ON l.article_id=a.id
             LEFT JOIN wb_deleted_articles d ON d.article_id=a.id
             WHERE c.id=? AND c.client_id=? AND l.article_id IS NULL AND d.article_id IS NULL
             GROUP BY a.id ORDER BY a.sort,a.id''', (item['conversation_id'], item['client_id'])).fetchall()
+        arranged = 'arranged_articles' in loads(item['snapshot'], {})
+        by_position = {row['position'] if arranged else index: row for index, row in enumerate(articles, 1)}
         for row in self.videos.rows(conn, item['id']):
-            index = row['article_index']
-            if row['stage'] == 'waiting_article' and index <= len(articles):
-                article = articles[index - 1]
+            article = by_position.get(row['article_index'])
+            if row['stage'] == 'waiting_article' and article:
                 conn.execute("UPDATE wb_batch_videos SET article_id=?,version_id=?,stage='script' WHERE id=?",
                              (article['id'], article['version_id'], row['id']))
 

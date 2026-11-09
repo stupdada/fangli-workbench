@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>GEO 检测 · 方立</title>
+  <link rel="stylesheet" href="/workbench/workbench.css">
+  <link rel="stylesheet" href="/workbench/workspace-rail.css">
+  <link rel="stylesheet" href="/workbench/palette.css">
+  <link rel="stylesheet" href="/workbench/geo/geo.css">
+</head>
+<body>
+  <a class="skip-link" href="#geo-main">跳到检测工作区</a>
+  <div id="geo-app" class="geo-app"></div>
+  <dialog id="geo-dialog" aria-labelledby="geo-dialog-title">
+    <form id="geo-form">
+      <header class="dialog-head">
+        <h2 id="geo-dialog-title"></h2>
+        <button class="icon-button" type="button" data-close aria-label="关闭窗口">×</button>
+      </header>
+      <div id="geo-dialog-body"></div>
+      <footer class="dialog-actions">
+        <p id="geo-dialog-error" class="error-text" role="alert"></p>
+        <button class="button quiet" type="button" data-close>取消</button>
+        <button class="button primary geo-primary" type="submit" id="geo-submit">保存</button>
+      </footer>
+    </form>
+  </dialog>
+  <script type="module" src="/workbench/geo/geo.mjs"></script>
+</body>
+</html>

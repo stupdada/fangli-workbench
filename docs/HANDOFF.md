@@ -112,6 +112,18 @@ python main.py --no-browser --port 0 --data-dir ./data/dev-workbench
 
 主站自动管理本次视频子服务。`GET /api/workbench/runtime` 读取状态；`POST /api/workbench/video-service/restart` 携带 `{}` 明确重载本次子服务；`POST /api/workbench/shutdown` 正常关闭。重载前确认本次队列无活动任务并协调使用者。启动失败会退出主站，日志位于相应数据目录的 `logs/`。一次启动不会生成文章或编码视频。
 
+### 工作区备份与恢复
+
+等在途任务完成或停在可恢复的阶段，正常关闭该工作台及其视频子服务。备份工具会尝试获取两份数据目录锁，任一服务仍在使用数据时立即退出。
+
+```powershell
+python -X utf8 tools/workspace_backup.py backup ./data/workbench ./data/workbench-backup.zip
+python -X utf8 tools/workspace_backup.py restore ./data/workbench-backup.zip ./data/workbench-restored
+python -X utf8 main.py --no-browser --port 0 --data-dir ./data/workbench-restored
+```
+
+备份包含两份 SQLite 快照、客户原件和解析修订、视频素材、制作和成片。清单记录文件大小、SHA-256 和两库结构版本。恢复先在临时目录核对全部文件、数据库完整性和外键，再发布到新目录。建议在恢复服务上打开一份原件、历史版本和一条已完成视频。连接凭据和运行日志在各自的位置单独管理，备份包按客户资料保管。
+
 ## 验证与证据
 
 先运行交接自检；需要启动完整工作台时增加运行依赖检查：

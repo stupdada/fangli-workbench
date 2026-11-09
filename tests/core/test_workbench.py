@@ -381,6 +381,47 @@ class WorkbenchTest(unittest.TestCase):
         self.assertEqual(len([r for r in self.model.requests if '本次只读事实复核' in r['messages'][0]['content']]), 1)
         EVIDENCE['fact_failure'] = {'candidate_retained': True, 'native_export_available': True, 'attempts': 1, 'automatic_retries': 0}
 
+    def test_fact_repair_only_changes_selected_sentence_until_adopted(self):
+        original_response = self.model.response
+        quote, second = '初稿判断', '原文中的有效条件继续保留。'
+        fixed = '依据资料限定适用范围'
+
+        def response(payload):
+            if '仅修正所选事实问题的原句' in payload['messages'][0]['content']:
+                request = json.loads(payload['messages'][1]['content'])
+                self.assertEqual([item['quote'] for item in request['issues']], [quote])
+                self.assertIn('橡胶与金属粘接', request['documents'][0]['text'])
+                return 'repair', {'replacements': [{'id': 1, 'text': fixed}]}
+            if '本次只读事实复核' in payload['messages'][0]['content']:
+                self.assertEqual(json.loads(payload['messages'][1]['content'])['body'], fixed)
+                return 'fact', {'status': 'pass', 'summary': '已检查修订句', 'findings': []}
+            kind, value = original_response(payload)
+            if kind == 'audit':
+                return kind, {'findings': [{'quote': quote, 'why': '应补条件'}, {'quote': second, 'why': '应核对来源'}]}
+            return kind, value
+
+        self.model.response = response
+        _, _, _, _, articles = self.write_task()
+        article = articles[0]
+        base = article['current_version']
+        path = self.path + '/articles/' + str(article['id'])
+        editorial = self.request(path + f'/editorial?version_id={base}')
+        self.assertEqual([i['id'] for i in editorial['fact_issues'] if i['repairable']], [1, 2])
+        self.request(path + '/repair-facts', 'POST', {'expected_version': base, 'selected': [5]}, status=400)
+        operation = self.finished(self.request(path + '/repair-facts', 'POST', {'expected_version': base, 'selected': [1]}))
+        self.assertEqual(operation['status'], 'done', operation)
+        vid = operation['result']['candidate_version']
+        self.assertEqual(self.request(self.path)['articles'][0]['current_version'], base)
+        comparison = self.request(path + f'/compare?candidate_version={vid}')
+        self.assertEqual(comparison['candidate']['article']['body_md'], article['body_md'].replace(quote, fixed, 1))
+        self.request(path + '/select-version', 'POST', {'expected_version': base, 'version_id': vid})
+        adopted = self.request(path + f'/editorial?version_id={vid}')
+        self.assertEqual(adopted['fact_scope'], 'repaired_sentences')
+        self.assertEqual([issue['quote'] for issue in adopted['fact_issues']], [second])
+        self.assertEqual(adopted['fact_repairs'][0]['revised'], fixed)
+        self.assertEqual(self.request(path + f'/editorial?version_id={base}')['fact_issues'], editorial['fact_issues'])
+        self.request(path + '/repair-facts', 'POST', {'expected_version': base, 'selected': [1]}, status=409)
+
     def test_style_candidate_readonly_check_notes_export_and_video_pin(self):
         client, _, _, _, articles = self.write_task()
         a = articles[0]; aid = a['id']; path = self.path + f'/articles/{aid}'

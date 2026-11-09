@@ -2,7 +2,7 @@
 const fs=require('node:fs/promises');
 const path=require('node:path');
 const {randomUUID}=require('node:crypto');
-const {POINT_MAX_CHARACTERS,TEMPLATES,assetSelection,publishing,freezeContext,validateDraft,problem,hash}=require('./contract.cjs');
+const {POINT_MAX_CHARACTERS,DAILY,DAILY_SHOTS,TEMPLATES,assetSelection,validateDailyPhotos,publishing,freezeContext,validateDraft,problem,hash}=require('./contract.cjs');
 const {author,createLocalModel}=require('./author.cjs');
 const {runEngine}=require('./engine.cjs');
 const {sendFile}=require('../runtime/video-api.js');
@@ -141,12 +141,15 @@ function createNarrated({dataDir,workspace,workspaceBase,fetchImpl,callModel,eng
     const current=record.versions.at(-1);
     return {id:record.id,client:record.context.client,source:sourceView(record.context),
       documents:record.context.documents.map(({id,revision,digest,filename})=>({id,revision,digest,filename})),
-      topic:record.context.request.topic,version:record.version,updated_at:record.updated_at,point_max_characters:POINT_MAX_CHARACTERS,
+      topic:record.context.request.topic,version:record.version,updated_at:record.updated_at,archived_at:record.archived_at||null,point_max_characters:POINT_MAX_CHARACTERS,
       current:{...current,publish:publishing(current)},versions:record.versions.map(({version,title,created_at})=>({version,title,created_at})),
       renders:record.renders.map(render=>({...render,publish:publishing(record.versions.find(version=>version.version===render.version))}))};
   }
   function revision(record,input){
     if(record.version!==input.expected_version)throw problem(409,'制作版本已更新，请重新打开后编辑');
+  }
+  function editable(record){
+    if(record.archived_at)throw problem(409,'请先恢复作品，再编辑或制作成片');
   }
   async function mediaFor(clientId,ids,pinned=[]){
     const previous=new Map(pinned.map(asset=>[asset.id,asset.sha256]));
@@ -163,7 +166,7 @@ function createNarrated({dataDir,workspace,workspaceBase,fetchImpl,callModel,eng
   }
   async function assetPreview(clientId,id){
     if(!clientId)throw problem(400,'请选择客户');
-    const {file,type,sha256}=await resolveAsset(clientId,id,undefined,controller.signal);
+    const {file,type,sha256}=await resolveAsset(clientId,id,undefined,controller.signal,true);
     const output=path.join(root,'asset-previews',id,sha256);
     let pending=assetPreviews.get(output);
     if(!pending){
@@ -188,10 +191,10 @@ function createNarrated({dataDir,workspace,workspaceBase,fetchImpl,callModel,eng
     }
     if(method==='GET'&&p===`${BASE}/productions`){
       const client=url.searchParams.get('clientId');if(!client)throw problem(400,'请选择客户');
-      const items=[];
+      const items=[],archived=url.searchParams.get('archived')==='1';
       for(const id of await fs.readdir(productions))if(ID.test(id)){
         let record;try{record=await read(productionFile(id));}catch(error){if(error.status===404)continue;throw error;}
-        if(record.context.client.id===client)items.push({id,title:record.versions.at(-1).title,source:sourceView(record.context),version:record.version,updated_at:record.updated_at});
+        if(record.context.client.id===client&&Boolean(record.archived_at)===archived)items.push({id,title:record.versions.at(-1).title,source:sourceView(record.context),version:record.version,updated_at:record.updated_at,archived_at:record.archived_at||null});
       }
       items.sort((a,b)=>b.updated_at.localeCompare(a.updated_at));json(res,200,{productions:items});return true;
     }
@@ -210,11 +213,15 @@ function createNarrated({dataDir,workspace,workspaceBase,fetchImpl,callModel,eng
         if(shared.documents.length!==ids.size)throw problem(404,'所选资料不属于当前客户或已不可用');
       }
       const selected=assetSelection(input.asset_ids);
-      const context=freezeContext(shared,{source,topic:input.topic,note:input.note,platform:input.platform,template:input.template});
+      const context=freezeContext(shared,{source,topic:input.topic,note:input.note,platform:input.platform,template:input.template,shotNotes:input.shot_notes});
+      const daily=context.request.template===DAILY;
+      if(daily&&selected.length!==DAILY_SHOTS)throw problem(400,'门店日常需要 5 张不同的图片');
+      const dailyMedia=daily?await mediaFor(context.client.id,selected):null;
+      if(daily)validateDailyPhotos(dailyMedia.snapshots);
       const id=randomUUID();
       const op=await start('generate',{client_id:context.client.id},binding,{production_id:id},async operationId=>{
         const archive=path.join(operationDir(operationId),'generation.json');
-        const media=await mediaFor(context.client.id,selected);
+        const media=dailyMedia??await mediaFor(context.client.id,selected);
         const generated=await author(context,{callModel,persist:value=>atomic(archive,value),signal:controller.signal});
         const created_at=now();
         const pages=selected.length?generated.pages.map((page,index)=>({...page,asset_id:selected[index%selected.length]})):generated.pages;
@@ -236,16 +243,33 @@ function createNarrated({dataDir,workspace,workspaceBase,fetchImpl,callModel,eng
       if(url.searchParams.has('client_id')&&url.searchParams.get('client_id')!==record.context.client.id)throw problem(404,'制作记录不存在');
       json(res,200,publicView(record));return true;
     }
+    if(tail==='/archive'&&method==='PUT'){
+      const input=await inputJson(req);
+      if(typeof input.archived!=='boolean'||!input.clientId)throw problem(400,'请选择客户和归档状态');
+      idle();saving=true;
+      try{
+        const record=await read(productionFile(id));
+        if(input.clientId!==record.context.client.id)throw problem(404,'制作记录不存在');
+        if(input.archived!==Boolean(record.archived_at)){
+          record.archived_at=input.archived?now():null;
+          await atomic(productionFile(id),record);
+        }
+        json(res,200,publicView(record));return true;
+      }finally{saving=false;}
+    }
     if(!tail&&method==='PUT'){
       idle();saving=true;
       try{
-        const input=await inputJson(req),record=await read(productionFile(id));revision(record,input);
+        const input=await inputJson(req),record=await read(productionFile(id));editable(record);revision(record,input);
         const validated=validateDraft(input),created_at=now(),version=record.version+1;
         const previous=record.versions.at(-1);
+        const daily=validated.template===DAILY;
+        if(daily!==(previous.template===DAILY))throw problem(400,'请从新建短视频切换门店日常模板');
         const media=await mediaFor(record.context.client.id,pageAssetIds(validated.pages),previous.assets);
+        if(daily)validateDailyPhotos(media.snapshots);
         const unchanged=hash(validated.script)===hash(previous.script)&&hash(validated.pages)===hash(previous.pages)&&
           hash(validated.publish)===hash(publishing(previous));
-        const editorial=unchanged?previous.editorial:{claims:[],issues:['口播或画面已编辑，请核对本版事实与资料。'],factual_entailment:'待人工阅读核对'};
+        const editorial=unchanged?previous.editorial:{claims:[],issues:['内容已编辑，请核对本版事实与资料。'],factual_entailment:'待人工阅读核对'};
         const draft={...validated,assets:media.snapshots,editorial,created_at,version,script_digest:hash(validated.script.paragraphs)};
         await preview(id,version,draft,record.context.client,media.sources);
         record.version=version;record.updated_at=created_at;record.versions.push(draft);
@@ -256,13 +280,13 @@ function createNarrated({dataDir,workspace,workspaceBase,fetchImpl,callModel,eng
       const input=await inputJson(req);
       const binding=requestBinding(p,input),previous=await preflight(binding);
       if(previous){json(res,202,previous);return true;}
-      const record=await read(productionFile(id));revision(record,input);
+      const record=await read(productionFile(id));editable(record);revision(record,input);
       if(input.narration!==undefined&&typeof input.narration!=='boolean')throw problem(400,'配音开关格式不正确');
-      const narration=input.narration!==false;
       const renderId=randomUUID(),draft=record.versions.at(-1),output=renderDir(id,renderId);
+      const narration=draft.template!==DAILY&&input.narration!==false;
       const op=await start('render',{client_id:record.context.client.id,production_id:id,version:draft.version},binding,{production_id:id,render_id:renderId},async()=>{
         // A save may have happened while reading the incoming render request.
-        const latest=await read(productionFile(id));revision(latest,input);
+        const latest=await read(productionFile(id));editable(latest);revision(latest,input);
         if(narration&&!(await health()).narrationReady)throw problem(503,'本机未找到 Microsoft Huihui Desktop 普通话音色');
         const media=await mediaFor(latest.context.client.id,pageAssetIds(draft.pages),draft.assets);
         const result=await engine({operation:'render',output,draft,client:latest.context.client,media:media.sources,narration,voice:VOICE},{signal:controller.signal});
@@ -285,12 +309,13 @@ function createNarrated({dataDir,workspace,workspaceBase,fetchImpl,callModel,eng
         const [,rid,name]=renderAsset,render=record.renders.find(r=>r.id===rid),spec=Object.hasOwn(assets,name)&&assets[name];
         if(render&&name==='publish.txt'){
           const release=publishing(record.versions.find(v=>v.version===render.version));
-          const body=Buffer.from(`发布标题\n${release.title}\n\n发布简介\n${release.description}\n`,'utf8');
+          const tags=release.tags?.length?`\n话题标签\n${release.tags.map(tag=>'#'+tag).join(' ')}\n`:'';
+          const body=Buffer.from(`发布标题\n${release.title}\n\n发布简介\n${release.description}\n${tags}`,'utf8');
           res.writeHead(200,{'Content-Type':'text/plain; charset=utf-8','Content-Length':body.length,
             'Content-Disposition':'attachment; filename="publish.txt"','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});
           res.end(method==='HEAD'?undefined:body);return true;
         }
-        if(!render||!spec||name==='narration.wav'&&!render.audioStreams)throw problem(404,'导出文件不存在');
+        if(!render||!spec||name==='narration.wav'&&(!render.audioStreams||render.audio?.kind==='music'))throw problem(404,'导出文件不存在');
         const base=renderDir(id,rid);
         await sendFile(req,res,base,path.join(base,name),{type:spec[0],name,inline:Boolean(spec[1])&&url.searchParams.get('download')!=='1',range:Boolean(spec[1])});
       }

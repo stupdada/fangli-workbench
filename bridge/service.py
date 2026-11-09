@@ -13,7 +13,7 @@ from .errors import Problem, Conflict, Missing
 from .storage import Workspace, PROFILE_FIELDS, dumps, integer, text_value, uid
 
 ROOT = Path(__file__).resolve().parent.parent
-OPTION_FIELDS = set(PROFILE_FIELDS) | {'client', 'keywords', 'selections', 'models', 'rivals', 'aliases',
+OPTION_FIELDS = set(PROFILE_FIELDS) | {'client', 'keywords', 'keyword_links', 'selections', 'models', 'rivals', 'aliases',
     'note', 'length_hint', 'format_overrides', 'platform_types', 'keyword_brands', 'topic', 'points', 'extra'}
 SETTING_FIELDS = {'model', 'temperature', 'max_tokens', 'title_prefix', 'disable_thinking', 'brand'}
 
@@ -40,6 +40,14 @@ class FrozenStore:
         self.plan = copy.deepcopy(self.raw.get_plan(pid))
         self.plan['articles'] = service.ws.visible_articles(pid)
         self.articles = {a['id']: a for a in self.plan['articles']}
+        self.arranged_articles = source.get('arranged_articles')
+        self.arranged_positions = set()
+        self.active_arrangement = None
+        if self.arranged_articles is not None:
+            with self.raw.conn() as conn:
+                slots = conn.execute('''SELECT s.article_id,s.position FROM wb_batch_article_outputs s
+                    JOIN articles a ON a.id=s.article_id WHERE a.plan_id=?''', (pid,))
+                self.arranged_positions = {row['position'] for row in slots if row['article_id'] in self.articles}
 
     def get_settings(self): return copy.deepcopy(self.settings)
     def list_platforms(self): return copy.deepcopy(self.platforms)
@@ -60,10 +68,16 @@ class FrozenStore:
     def add_article(self, pid, **values):
         # Serialize publication of the native row and lock with workspace views.
         with self.service.guard:
-            aid = self.raw.add_article(pid, **values)
-            self.active = aid
-            self.service.ws.lock_article(aid, self.jid)
-            self.service.ws.bind_source(aid, self.sid)
+            if self.active_arrangement is not None:
+                position = self.active_arrangement['position']
+                aid = self.raw.add_arranged_article(pid, position, self.jid, self.sid, values)
+                self.active = aid
+                self.arranged_positions.add(position)
+            else:
+                aid = self.raw.add_article(pid, **values)
+                self.active = aid
+                self.service.ws.lock_article(aid, self.jid)
+                self.service.ws.bind_source(aid, self.sid)
             self.articles[aid] = self.raw.get_article(aid)
             evidence = {'zip_data': copy.deepcopy(values['data'])} if isinstance(values.get('data'), dict) else {}
             exchange = getattr(provider.local, 'last_exchange', {})
@@ -72,6 +86,21 @@ class FrozenStore:
             if evidence: self.service.ws.save_generation_evidence(aid, **evidence)
             self.service.ws.capture_zip(aid, 'ZIP 初稿', select=False)
         return aid
+
+    def next_arranged_task(self, skipped):
+        for index, row in enumerate(self.arranged_articles):
+            if row['position'] in self.arranged_positions or row['id'] in skipped:
+                continue
+            self.active_arrangement = row
+            platform = next(p for p in self.platforms if p['id'] == row['platform_id'])
+            keywords = row['keywords']
+            return {'key': row['id'], 'platform': platform, 'account_type': row['account_type'],
+                    'fmt': row['format'], 'group': keywords, 'keyword': keywords[0], 'extras': keywords[1:],
+                    'angle': row['angle'], 'sub': row['sub'], 'qi': index, 'index': index + 1,
+                    'count': len(self.arranged_articles),
+                    'avoid': [a['title'] for a in self.articles.values()
+                              if a['platform_id'] == row['platform_id'] and a.get('title')]}
+        return None
 
     def update_article(self, aid, **values):
         if 'geo' in values:
@@ -138,6 +167,15 @@ def install_context():
             values = signature.bind(*args, **kwargs)
             values.apply_defaults()
             store = values.arguments['store']
+            arrangement = getattr(store, 'active_arrangement', None)
+            if arrangement:
+                values.arguments['brief'] = {**values.arguments['brief'], 'topic': arrangement['topic']}
+            brief = values.arguments['brief']
+            primary = values.arguments['keyword'] or brief.get('keyword', '')
+            related = [target for source, target in brief.get('keyword_links', []) if source == primary]
+            if related:
+                values.arguments['extra_note'] += ('\n\n【本篇关联词】' + dumps(related) +
+                    '。仅在所选资料支持主关键词与关联词的实际关系时自然提及，并说明关系和适用条件。')
             context = getattr(store, 'creation_context', None)
             if context:
                 from .creation_context import for_article
@@ -155,8 +193,10 @@ def install_context():
         generator.build_messages = messages_with_history
     if not getattr(generator.next_task, '_workspace_context', False):
         next_task = generator.next_task
-        def task_with_history(store, *args, **kwargs):
-            task = next_task(store, *args, **kwargs)
+        def task_with_history(store, plan_id, brief, skip_keys=None):
+            if isinstance(store, FrozenStore) and store.arranged_articles is not None:
+                return store.next_arranged_task(set(skip_keys or ()))
+            task = next_task(store, plan_id, brief, skip_keys)
             if task and isinstance(store, FrozenStore) and store.topic_offset:
                 index = store.topic_offset + len(store.articles)
                 task['angle'] = prompts.ANGLES[index % len(prompts.ANGLES)]
@@ -164,6 +204,16 @@ def install_context():
             return task
         task_with_history._workspace_context = True
         generator.next_task = task_with_history
+    if not getattr(generator.pending_tasks, '_workspace_context', False):
+        pending_tasks = generator.pending_tasks
+        def pending_with_arrangement(store, *args, **kwargs):
+            if isinstance(store, FrozenStore) and store.arranged_articles is not None:
+                tasks = store.arranged_articles
+                done = {i for i, row in enumerate(tasks) if row['position'] in store.arranged_positions}
+                return tasks, done, [i for i in range(len(tasks)) if i not in done]
+            return pending_tasks(store, *args, **kwargs)
+        pending_with_arrangement._workspace_context = True
+        generator.pending_tasks = pending_with_arrangement
 
 
 class Service:
@@ -184,9 +234,11 @@ class Service:
         from .customers import Customers
         from .batches import Batches
         from .client_intake import ClientIntake
+        from .geo_checks import GeoChecks
         self.customers = Customers(self)
         self.intake = ClientIntake(self)
         self.batches = Batches(self)
+        self.geo = GeoChecks(self)
         if boot_batches:
             self.batches.boot()
 
@@ -247,9 +299,9 @@ class Service:
                 'provider_models': copy.deepcopy(self.catalog or []),
                 'setting_limits': {'temperature': {'min': 0, 'max': 1.5}, 'max_tokens': {'min': 800, 'max': 8000}}}
 
-    def create_conversation(self, cid):
+    def create_conversation(self, cid, *, document_ids=None, creation_id=None):
         with self.guard:
-            return self.customers.new_task(cid)
+            return self.customers.new_task(cid, document_ids=document_ids, creation_id=creation_id)
 
     def save_task_profile(self, ident, name, profile, save_as_default=False):
         text_value(name, '客户名称', 100, empty=False)
@@ -264,9 +316,10 @@ class Service:
             changed = brief != conv['brief']
             job = self.running_job(conv)
             running = bool(changed and job and job['status'] == 'running')
-            if running: generator.cancel_job(job['id'])
             if type(save_as_default) is not bool: raise Problem('save_as_default需为布尔值')
-            return self.ws.save_task_profile(ident, brief, running, save_as_default)
+            result = self.ws.save_task_profile(ident, brief, running, save_as_default)
+            if running: generator.cancel_job(job['id'])
+            return result
 
     def running_job(self, conv):
         return generator.get_job(conv.get('job_id')) if conv.get('job_id') else None
@@ -278,8 +331,10 @@ class Service:
             job = self.running_job(conv)
             if not job and conv.get('job_id'):
                 job = {'id': conv['job_id'], 'status': 'interrupted', 'message': '服务重启，已有稿件已保留，请明确决定是否续写'}
+            batch = self.batches.context(ident)
+            keywords = conv['brief'].get('keywords', []) if batch else self.customers.keyword_choices(conv['client_id'])
             return {'conversation': conv, 'articles': articles, 'documents': self.ws.selected_documents(conv),
-                    'job': job, 'operations': self.ws.operations_for(ident), 'batch': self.batches.context(ident)}
+                    'available_keywords': keywords, 'job': job, 'operations': self.ws.operations_for(ident), 'batch': batch}
 
     def normalize_options(self, patch, base=None):
         if not isinstance(patch, dict) or set(patch) - OPTION_FIELDS - {'document_ids'}:
@@ -298,6 +353,19 @@ class Service:
         aliases = value.get('aliases', [])
         if not isinstance(aliases, list) or len(aliases) > 200 or any(not isinstance(g, list) or not g or any(not isinstance(s, str) or len(s) > 500 for s in g) for g in aliases):
             raise Problem('同义词需为词组列表')
+        if 'keyword_links' in value:
+            links = value['keyword_links']
+            if not isinstance(links, list) or len(links) > 200:
+                raise Problem('串联关键词最多 200 组')
+            normalized = []
+            for pair in links:
+                if not isinstance(pair, list) or len(pair) != 2:
+                    raise Problem('每组串联关键词需填写搜索词 A 和关联词 B')
+                source, target = (text_value(word, '串联关键词', 500, empty=False).strip() for word in pair)
+                if source == target or any(char in source + target for char in ('\n', '\r', '\0', '→')):
+                    raise Problem('串联关键词需为两个不同的单行词组')
+                normalized.append((source, target))
+            value['keyword_links'] = [list(pair) for pair in dict.fromkeys(normalized)]
         selections = value.get('selections', [])
         if not isinstance(selections, list) or len(selections) > 100:
             raise Problem('平台选择不正确')
@@ -498,7 +566,8 @@ class Service:
         brief = {**source['brief'], 'format_overrides': source.get('format_overrides', source['brief'].get('format_overrides', {}))}
         client = {'id': cid, 'name': brief.get('client', ''), 'profile': {k: brief.get(k, '') for k in PROFILE_FIELDS}}
         context = build(client, source['documents'], brief, source['platforms'],
-                        self.customers.plan(cid)['plan']['options'], self.accepted_expressions)
+                        self.customers.plan(cid)['plan']['options'], self.accepted_expressions,
+                        models=source.get('models', ()), prefs=source.get('prefs', ()))
         editorial = self.adopted_intake_editorial(cid, context['documents'])
         context['editorial'].update(editorial)
         context['editorial']['supported_claims'] = supported_claims(context['documents'], editorial.get('important_claims', []))
@@ -617,17 +686,39 @@ class Service:
                                                   body.get('excerpt'), body.get('purpose'), body.get('medium'))
 
     def article_editorial(self, ident, aid, vid):
-        from .creation_context import fact_findings
+        from .checks import article_length
+        from .creation_context import key
+        from .editing import version_fact_issues
         with self.guard:
             self.article_context(ident, aid)
             version = self.ws.version(aid, vid)
             source = self.ws.version_source(aid, vid)
             context = source.get('creation_context') or {}
             editorial = context.get('editorial') or {}
-            return {'version_id': vid, 'documents': context.get('documents', source.get('documents', [])),
+            article = version['article']
+            review = version.get('review') or article.get('audit') or {}
+            documents = context.get('documents', source.get('documents', []))
+            brief = source.get('brief', {})
+            variant = context.get('style', {}).get('variants', {}).get(key(article.get('platform_id'), article.get('account_type'), article.get('fmt')))
+            measured = article_length(article.get('body_md') or '', variant['length']) if variant else (article.get('geo') or {}).get('length')
+            status = review.get('status') or ('unverified' if review.get('verdict') == 'unverified' else
+                'checked' if review.get('ok') else 'failed' if review else 'unchecked')
+            return {'version_id': vid, 'documents': documents,
+                    'generation_context': {'client': context.get('client', {'name': brief.get('client', '')}),
+                        'request': context.get('request', {'note': brief.get('note', '')}),
+                        'documents': [{'filename': doc['filename'], 'revision': doc.get('revision')} for doc in documents],
+                        'style': {'applied': variant} if variant else {},
+                        'editorial': {'length': measured}},
                     'important_claims': editorial.get('important_claims', []), 'conflicts': editorial.get('conflicts', []),
-                    'fact_issues': fact_findings(version), 'risk_tips': version['article'].get('risk_tips') or [],
+                    'fact_issues': version_fact_issues(version), 'fact_repairs': version.get('metadata', {}).get('fact_repairs', []),
+                    'fact_status': status, 'fact_scope': review.get('scope'),
+                    'fact_summary': review.get('summary') or review.get('reason') or review.get('error') or '',
+                    'risk_tips': version['article'].get('risk_tips') or [],
                     'risk_tips_inherited': version['origin'] in ('manual', 'style', 'revision')}
+
+    def repair_facts(self, ident, aid, expected, selected):
+        from .editing import repair_facts
+        return repair_facts(self, ident, aid, expected, selected)
 
     def require_stopped(self, ident):
         conv = self.ws.conversation(ident)
@@ -648,6 +739,17 @@ class Service:
             self.require_stopped(ident)
             self.ws.delete_conversation(ident)
             return {'deleted_id': ident}
+
+    def set_task_state(self, ident, body):
+        if len(body) != 1 or set(body) - {'pinned', 'archived'} or type(next(iter(body.values()))) is not bool:
+            raise Problem('请选择置顶或归档状态')
+        field, enabled = next(iter(body.items()))
+        with self.guard:
+            if field == 'archived' and enabled:
+                self.require_stopped(ident)
+            else:
+                self.ws.conversation(ident)
+            return self.ws.set_task_state(ident, field, enabled)
 
     def delete_article(self, ident, aid, expected):
         with self.guard:
@@ -685,4 +787,4 @@ class Service:
         for thread in threads: thread.join(timeout=max(0, deadline - time.monotonic()))
         if self.batches.worker:
             self.batches.worker.join(timeout=max(0, deadline - time.monotonic()))
-        return not any(thread.is_alive() for thread in threads) and not (self.batches.worker and self.batches.worker.is_alive())
+        return self.geo.close() and not any(thread.is_alive() for thread in threads) and not (self.batches.worker and self.batches.worker.is_alive())

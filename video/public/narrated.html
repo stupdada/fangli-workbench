@@ -6,11 +6,16 @@
   <title>方立 · 短视频制作</title>
   <link rel="stylesheet" href="/video/video-ui.css">
   <link rel="stylesheet" href="/video/narrated.css">
+  <link rel="stylesheet" href="/video/workspace-rail.css">
+  <link rel="stylesheet" href="/video/palette.css">
   <script src="/video/narrated.js" defer></script>
+  <script type="module" src="/video/video-shell.mjs"></script>
 </head>
-<body>
+<body class="video-shell">
   <a class="skip-link" href="#short-editor">跳到短视频编辑</a>
-  <header class="topbar short-top"><a class="brand" href="/">方立</a><h1>短视频制作</h1><nav aria-label="工作区"><a href="/video/">全文视频</a><a href="/workbench/index.html">文案工作台</a></nav></header>
+  <aside id="video-navigation" aria-label="工作台导航"></aside>
+  <div class="video-surface">
+  <header class="topbar video-topbar"><h1>视频工作区</h1><nav aria-label="视频类型"><a href="/video/" data-video-mode="/video/">全文视频</a><span aria-current="page">短视频</span></nav><a href="/workbench/zip/index.html" data-video-return>返回工作台</a></header>
   <div id="short-status" class="short-status" role="status" aria-live="polite"></div>
   <div class="short-workspace">
     <aside class="rail short-rail" aria-label="客户和短视频">
@@ -24,6 +29,7 @@
           <p class="muted">可多选，也可拖到这里</p>
         </div>
         <p class="muted" id="short-library-note">选择客户后查看素材。</p>
+        <button id="short-removed" class="text-button" type="button" aria-pressed="false">已移出素材</button>
         <div class="short-library" id="short-library" aria-label="当前客户素材"></div>
         <figure class="short-media-preview" id="short-media-preview" hidden>
           <img id="short-media-image" alt="素材预览" hidden>
@@ -31,24 +37,30 @@
         </figure>
       </section>
       <div class="section-head"><h2>我的短视频</h2><button id="short-new" class="text-button" type="button" disabled>新建</button></div>
+      <button id="short-archived" class="text-button" type="button" aria-pressed="false">已归档作品</button>
       <nav id="short-history" aria-label="短视频草稿"></nav>
     </aside>
     <main id="short-editor" tabindex="-1">
       <form id="short-source" class="short-source">
-        <p class="short-kicker">9:16 · 30—45 秒</p>
+        <p class="short-kicker" id="short-format">9:16 · 30—45 秒</p>
         <h2>这条视频想讲什么？</h2>
         <div id="short-source-name" class="short-origin">客户资料</div>
         <label for="short-topic">视频主题</label>
         <textarea id="short-topic" rows="2" maxlength="500" placeholder="例如：长毛猫到店洗护前要准备哪三件事？"></textarea>
         <label for="short-template" class="short-template-label">页面模板</label>
         <select id="short-template"><option value="process">流程说明</option></select>
+        <div id="short-shot-settings" hidden>
+          <h3 class="short-template-label">镜头说明</h3>
+          <p id="short-shot-order" class="muted" aria-live="polite"></p>
+          <div id="short-shot-notes"></div>
+        </div>
         <details id="short-documents" hidden><summary>本次使用的资料</summary><div id="short-document-list"></div></details>
         <button type="submit" id="short-generate" class="primary" disabled>生成短脚本</button>
       </form>
       <section id="short-draft" hidden>
-        <div class="section-head short-draft-head"><div><p class="short-kicker" id="short-origin-label"></p><h2>口播与画面</h2></div><span id="short-revision"></span></div>
+        <div class="section-head short-draft-head"><div><p class="short-kicker" id="short-origin-label"></p><h2 id="short-draft-heading">口播与画面</h2></div><span id="short-revision"></span></div>
         <label for="short-title">视频标题</label><input id="short-title" maxlength="40">
-        <label for="short-draft-template" class="short-template-label">默认页面模板</label>
+        <label for="short-draft-template" class="short-template-label" id="short-draft-template-label">默认页面模板</label>
         <select id="short-draft-template"><option value="process">流程说明</option></select>
         <p class="muted short-count" id="short-character-count" aria-live="polite"></p>
         <div id="short-pages"></div>
@@ -56,16 +68,17 @@
           <h3>发布信息</h3>
           <label for="short-publish-title">发布标题</label><input id="short-publish-title" maxlength="80">
           <label for="short-publish-description">发布简介</label><textarea id="short-publish-description" rows="3" maxlength="300"></textarea>
+          <div id="short-tag-field" hidden><label for="short-publish-tags">话题标签</label><input id="short-publish-tags" maxlength="150" placeholder="输入 3—6 个话题，用空格分开"></div>
         </div>
         <details class="short-edit-record"><summary>来源与编辑记录</summary><div id="short-editorial"></div></details>
         <div class="short-action-bar">
-          <div><label class="check-row"><input type="checkbox" id="short-narration" checked><span>普通话配音</span></label><p class="muted" id="short-voice"></p></div>
+          <div><label class="check-row" id="short-narration-label"><input type="checkbox" id="short-narration" checked><span>普通话配音</span></label><p class="muted" id="short-voice"></p></div>
           <div class="actions"><button class="text-button" type="button" id="short-revert" disabled>撤销修改</button><button class="secondary" type="button" id="short-save" disabled>保存新版本</button><button class="primary" type="button" id="short-render" disabled>制作成片</button></div>
         </div>
       </section>
     </main>
     <aside class="short-preview" aria-label="页面和成片预览" id="short-preview" hidden>
-      <div class="section-head"><h2>预览</h2><span>720 × 1280</span></div>
+      <div class="section-head"><h2>预览</h2><span id="short-size">720 × 1280</span></div>
       <div id="short-preview-tabs" class="short-preview-tabs" aria-label="选择预览页面"></div>
       <figure class="short-phone"><img id="short-preview-image" alt="短视频页面预览"><video id="short-player" controls playsinline preload="metadata" hidden></video></figure>
       <p id="short-preview-label" class="muted"></p>
@@ -73,6 +86,7 @@
       <div class="short-downloads" id="short-downloads"></div>
       <section class="short-renders" id="short-renders"></section>
     </aside>
+  </div>
   </div>
 </body>
 </html>

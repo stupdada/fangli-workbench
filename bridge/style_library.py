@@ -21,12 +21,17 @@ def load():
              'config/style-library.json': hashlib.sha256(config_bytes).hexdigest()})
 
 
+def _form(article):
+    return {'短视频': 'video', '问答': 'answer', '回答': 'answer'}.get(
+        article.get('fmt'), 'images' if article.get('platform_name') == '抖音' else 'article')
+
+
 def _select(bundle, article, client_id):
     config, library, reference_library, _ = bundle
     account = 'enterprise' if article.get('account_type') == 'official' else 'personal'
     platform = article.get('platform_name')
     platform = {'头条': '今日头条'}.get(platform, platform)
-    form = {'短视频': 'video', '问答': 'answer'}.get(article.get('fmt'), 'images' if platform == '抖音' else 'article')
+    form = _form(article)
     selected = [p for p in library['profiles'] if p.get('platform') == platform and
                 p.get('account_type') == account and form in p.get('forms', [])]
     binding = config.get('client_bindings', {}).get(client_id, {})
@@ -60,6 +65,8 @@ def generation_references(bundle, article, client_id):
     """Freeze exact applicable rules and provenance for the first writing call."""
     if not bundle: return {'profiles': [], 'expressions': [], 'status': 'unavailable'}
     selected, expressions = _select(bundle, article, client_id)
+    form = _form(article)
+    selected = [{**profile, **profile.get('form_overrides', {}).get(form, {})} for profile in selected]
     return {'profiles': selected, 'expressions': expressions, 'version': bundle[1].get('version'),
             'sources': bundle[3],
             'use': '平台规则与认可表达用于写法；事实依据来自当前客户的本次资料和已确认档案。'}

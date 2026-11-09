@@ -25,7 +25,7 @@ function publicEvidenceMarkup(check, escape) {
     ${candidates.length ? `<details><summary>待核对的公开候选</summary><ul>${candidates.map(item => `<li>${item}</li>`).join('')}</ul></details>` : ''}`;
 }
 
-export function articleEditorialMarkup(value, escape) {
+export function articleEditorialMarkup(value, escape, { blocked, historical, candidate, activity = '' }) {
   const documents = value.documents || [];
   const statusLabels = {
     client_provided: '客户提供', editor_edited: '编辑修订', not_checked: '未做公开核对',
@@ -50,17 +50,35 @@ export function articleEditorialMarkup(value, escape) {
     ['所选资料中的冲突', value.conflicts, conflict =>
       `<p><strong>${escape(conflict.topic || '')}</strong></p><p>${escape(conflict.detail || '')}</p>${refs(conflict.source_refs)}`,
     '本版资料没有留存冲突记录。'],
-    ['生成后的事实核查问题', value.fact_issues, issue =>
-      `<blockquote>${escape(issue.quote || '')}</blockquote><p>${escape([issue.kind, issue.why].filter(Boolean).join(' · '))}</p>
-       ${issue.revised != null ? `<p>核查后表述：${escape(issue.revised)}</p>` : ''}${refs(issue.source_refs)}`,
-    '本版没有留存事实问题。'],
     [value.risk_tips_inherited ? '沿用的原稿处理说明' : '生成时记录的处理说明', value.risk_tips, note =>
       `<p>${escape(typeof note === 'string' ? note : JSON.stringify(note))}</p>`, '本版没有留存处理说明。'],
   ];
-  return `<p class="helper">版本 ${escape(value.version_id)} · 资料说法和冲突供审阅，稿件实际采用情况以正文和核查记录为准。</p>
-    ${sections.map(([title, items, markup, empty]) =>
-      `<section><h3>${title}</h3>${items?.length ? items.map(markup).join('') : `<p class="helper">${empty}</p>`}</section>`).join('')}
-    <section><h3>本版资料原文</h3>${documents.map((doc, index) =>
+  const issues = value.fact_issues || [];
+  const pending = issues.filter(issue => issue.state === 'pending');
+  const repaired = [...issues.filter(issue => issue.state === 'resolved'), ...(value.fact_repairs || [])];
+  const state = { unchecked:'未核查', failed:'核查未完成', unverified:'待复核', pass:'复核完成', needs_review:'待处理',
+    checked:pending.length ? '核查完成，仍有待处理问题' : '核查完成' }[value.fact_status] || '待复核';
+  const button = (action, label, attr = '', disabled = false) => `<button type="button" class="button quiet sm" data-action="${action}" ${attr} ${disabled ? 'disabled' : ''}>${label}</button>`;
+  const beforeAfter = item => `<div class="fact-change"><small>原句</small><blockquote>${escape(item.quote || '')}</blockquote><small>修订句</small><p>${escape(item.revised || '已移除此处表述')}</p></div>`;
+  const candidateCheck = candidate?.fact_check;
+  const checkLabel = {pass:'修订句已复核',needs_review:'修订句仍有待核问题',unverified:'修订句复核未完成'};
+  return `<div class="editorial-details"><p class="helper">版本 ${escape(value.version_id)} · ${historical ? '历史版 · ' : ''}${value.fact_scope === 'repaired_sentences' ? '修订句复核 · ' : ''}${state}</p>
+    ${value.fact_summary ? `<p class="helper">${escape(value.fact_summary)}</p>` : ''}
+    ${activity}
+    ${candidate ? `<section class="fact-candidate"><h3>修订候选 · 版本 ${escape(candidate.candidate_version)}</h3>
+      ${candidateCheck ? `<p class="helper">${escape(checkLabel[candidateCheck.status] || '')}${candidateCheck.summary ? ` · ${escape(candidateCheck.summary)}` : ''}</p>` : ''}
+      ${candidate.repairs.map(beforeAfter).join('')}
+      ${button('adopt-fact-repair','采用修订',`data-version="${escape(candidate.candidate_version)}"`,blocked)}</section>` : ''}
+    <section aria-label="待处理事实问题"><div class="spread"><h3>待处理问题</h3>
+      ${!historical && pending.some(issue => issue.repairable) ? button('repair-facts','一键修正','',blocked) : ''}</div>
+      ${pending.map(issue => `<div class="fact-issue"><strong>${escape(issue.kind || issue.why || '请核对事实')}</strong>
+        <blockquote>${escape(issue.quote || '未留存原句')}</blockquote>${issue.kind && issue.why ? `<p>${escape(issue.why)}</p>` : ''}
+        <div class="inline-actions">${!historical && issue.repairable ? button('locate-fact','定位原句',`data-issue="${issue.id}"`) + button('repair-facts','修正此项',`data-issue="${issue.id}"`,blocked) : ''}</div>
+        ${!issue.repairable ? '<p class="helper">原句无法唯一定位，请对照正文核对。</p>' : ''}
+        ${issue.source_refs?.length ? `<details><summary>查看依据</summary>${refs(issue.source_refs)}</details>` : ''}</div>`).join('') || '<p class="helper">本版无待处理问题记录。</p>'}</section>
+    ${repaired.length ? `<details class="inspector-disclosure"><summary>已处理 · ${repaired.length} 条</summary>${repaired.map(beforeAfter).join('')}</details>` : ''}
+    ${sections.map(([title, items, markup, empty]) => `<details class="inspector-disclosure"><summary>${title}</summary>${items?.length ? items.map(markup).join('') : `<p class="helper">${empty}</p>`}</details>`).join('')}
+    <details class="inspector-disclosure" data-editorial-sources><summary>本版资料原文</summary>${documents.map((doc, index) =>
       `<details data-editorial-document="${index}"><summary>${escape(doc.filename)}${doc.revision == null ? '' : ` · 版本 ${escape(doc.revision)}`}</summary>
-        <pre class="diff-text">${escape(doc.text || '')}</pre></details>`).join('') || '<p class="helper">本版没有留存资料原文。</p>'}</section>`;
+        <pre class="diff-text">${escape(doc.text || '')}</pre></details>`).join('') || '<p class="helper">本版没有留存资料原文。</p>'}</details></div>`;
 }

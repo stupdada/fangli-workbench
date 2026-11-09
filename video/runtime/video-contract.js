@@ -11,6 +11,7 @@ const SILENT_LIMITS = Object.freeze({ fps: 25, minDurationSeconds: 1, maxDuratio
 const ERRORS = Object.freeze({
   INVALID_INPUT: '视频参数不正确', CLIENT_INVALID: '请选择有效客户', NOT_FOUND: '视频记录不存在或不属于当前客户',
   ASSET_INVALID: '素材不存在或不属于当前客户', MEDIA_MISSING: '本地素材缺失，请恢复原素材后重试',
+  ASSET_REMOVED: '素材已移出素材库，请恢复后再选用', WORK_ARCHIVE_BUSY: '成片完成后才可归档',
   MEDIA_INVALID: '素材无法解码，请检查素材', RENDER_FAILED: '本地视频合成失败，可检查环境后重试',
   AUTH: '配音鉴权失败，已停止整批，请检查服务端配置后明确重试',
   QUOTA: '配音额度不足，已停止整批，请处理额度后明确重试',

@@ -82,6 +82,46 @@ test('new workspace source contract, immutable versions, manual video, stop/retr
     traces.push({type:'api-verification',dataDir,storePid:service.handle.storePid,batchId,version:originalVersion,rendererStubCalls:renderer.calls.length,actualRenders:0,source:created.body.jobs[0].source});
   }finally{await service.close();await work.close();}
 });
+test('full-text video archive and shared asset removal preserve saved files and job identity',async()=>{
+  const work=await fixture(),dataDir=await freshData('recovery');
+  const service=await start({port:0,dataDir,workspaceBase:work.url,renderBatch:async ({manifest,output})=>{
+    const {jobs:[job]}=JSON.parse(await fs.readFile(manifest,'utf8'));
+    const dir=path.join(output,job.id);await fs.mkdir(dir,{recursive:true});
+    await fs.writeFile(path.join(dir,'video.mp4'),'fixture bytes');
+    await fs.writeFile(path.join(dir,'subtitles.srt'),'冻结字幕');
+    return {success:true,mode:'silent',jobs:[{id:job.id,state:'completed',mode:'silent',audioTrackCount:0,durationSeconds:5}]};
+  }});
+  const base='http://127.0.0.1:'+service.port;
+  try{
+    const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6V1sAAAAASUVORK5CYII=','base64');
+    const upload=await fetch(base+'/api/video/upload?clientId='+clientId+'&name=test.png',{method:'POST',headers:{Origin:base,'Content-Type':'image/png'},body:png});
+    assert.equal(upload.status,201);const asset=await upload.json();
+    const spec={clientId,mode:'silent',jobs:['one','two'].map(id=>({id,title:id,originalText:'画面文字',segments:[{id:'screen-1',text:'画面文字',media:asset.id,durationSeconds:5}]}))};
+    const made=await json(base,'/api/video/batches','POST',spec);assert.equal(made.status,202);
+    await service.handle.whenIdle();
+    const batch='/api/video/batches/'+made.body.id, query='?clientId='+clientId;
+    const before=await json(base,batch+'/status'+query);
+    assert.equal(before.body.state,'completed');
+    const jobRoute=batch+'/jobs/one/archive',assetRoute='/api/video/assets/'+asset.id+'/lifecycle',assetList='/api/video/assets'+query;
+    assert.equal((await json(base,jobRoute,'PUT',{clientId:otherId,archived:true})).status,404);
+    assert.equal((await json(base,assetRoute,'PUT',{clientId:otherId,removed:true})).status,400);
+    const archived=await json(base,jobRoute,'PUT',{clientId,archived:true});
+    assert.ok(archived.body.jobs[0].archivedAt);assert.equal(archived.body.jobs[1].archivedAt,null);
+    assert.equal((await json(base,'/api/video/batches'+query+'&archived=1')).body.batches[0].id,made.body.id);
+    assert.equal((await json(base,assetRoute,'PUT',{clientId,removed:true})).status,200);
+    assert.deepEqual((await json(base,assetList)).body.assets,[]);
+    assert.equal((await json(base,assetList+'&removed=1')).body.assets[0].id,asset.id);
+    const changed=structuredClone(spec);changed.jobs[0].title='新作品';
+    assert.equal((await json(base,'/api/video/batches','POST',changed)).body.errorCode,'ASSET_REMOVED');
+    assert.equal(await (await fetch(base+before.body.jobs[0].subtitlesUrl)).text(),'冻结字幕');
+    assert.equal((await json(base,assetRoute,'PUT',{clientId,removed:false})).body.id,asset.id);
+    assert.equal((await json(base,assetList)).body.assets[0].id,asset.id);
+    const restored=await json(base,jobRoute,'PUT',{clientId,archived:false});
+    assert.equal(restored.body.jobs[0].archivedAt,null);
+    assert.equal(restored.body.jobs[0].version,before.body.jobs[0].version);
+    assert.deepEqual((await json(base,'/api/video/batches'+query+'&archived=1')).body.batches,[]);
+  }finally{await service.close();await work.close();}
+});
 test('context rejects wrong returned version and remote endpoints; failure stays closed',async()=>{
   assert.throws(()=>localBase('https://example.com'));assert.throws(()=>localBase('http://localhost/path'));assert.throws(()=>localBase('http://u:p@localhost'));
   const context=createWorkspaceContext('http://127.0.0.1',async()=>new Response(JSON.stringify({client:{id:clientId},documents:[],article:{...article,version_id:8}})));

@@ -1,0 +1,77 @@
+:root[data-workbench-palette="blue"] {
+  --palette-canvas: #f5f7fa;
+  --palette-paper: #fff;
+  --palette-wash: #eaf2ff;
+  --palette-hover: #e3edff;
+  --palette-blue-hover: #1758c4;
+  --ink: #1b2430;
+  --muted: #4a5869;
+  --line: #e3e8ef;
+  --side: #eef2f7;
+  --blue: #1f6feb;
+  --hover-surface: var(--palette-hover);
+  --selection-wash: var(--palette-wash);
+  background-color: var(--palette-canvas);
+  color: var(--ink);
+  accent-color: var(--blue);
+}
+
+[data-workbench-palette="blue"] :is(.main, .content-wrap, .workspace) {
+  background-color: var(--palette-canvas);
+}
+
+[data-workbench-palette="blue"] :is(.topbar, .step-surface, .draft-pane, .article-workspace, .inspector) {
+  background-color: var(--palette-paper);
+}
+
+[data-workbench-palette="blue"] :is(.button.primary, .button.blue, .send-button, .stepper .active b) {
+  background-color: var(--blue);
+  color: var(--palette-paper);
+}
+
+[data-workbench-palette="blue"] :is(.button.primary, .button.blue, .send-button):hover:not(:disabled) {
+  background-color: var(--palette-blue-hover);
+}
+
+[data-workbench-palette="blue"] :is(.button.quiet:not(.danger), .top-actions .button:not(.danger), .message.assistant) {
+  color: var(--muted);
+}
+
+[data-workbench-palette="blue"] :is(.mode-switch, .settings-layout > nav, .customer-table thead th) {
+  background-color: var(--side);
+}
+
+[data-workbench-palette="blue"] :is(.mode-switch button.active, .article-tab.active, .stepper .active button) {
+  color: var(--palette-blue-hover);
+}
+
+[data-workbench-palette="blue"] .article-tab.active:after {
+  background-color: var(--blue);
+}
+
+[data-workbench-palette="blue"] :is(.task-row, .nav-button):hover:not(.active),
+[data-workbench-palette="blue"] .settings-layout > nav button:hover:not([aria-current]),
+[data-workbench-palette="blue"] .top-actions .button:hover:not(:disabled) {
+  background-color: var(--palette-hover);
+}
+
+[data-workbench-palette="blue"] .chat-workbench .composer {
+  background-color: var(--palette-paper);
+  border-color: var(--line);
+}
+
+[data-workbench-palette="blue"] .chat-workbench .composer:hover {
+  background-color: var(--palette-wash);
+}
+
+[data-workbench-palette="blue"] .chat-workbench .composer:focus-within {
+  border-color: var(--blue);
+}
+
+[data-workbench-palette="blue"] .article-workspace .revision-box {
+  background-color: var(--palette-canvas);
+}
+
+[data-workbench-palette="blue"] .conversation-log .message.user {
+  background-color: var(--palette-blue-hover);
+}
