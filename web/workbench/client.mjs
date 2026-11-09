@@ -1,4 +1,5 @@
 import { DEFAULT_MODEL, OPERATION_KIND, normalizeOptions, clone, running, validateStart, streamReducer } from './model.mjs';
+import { localDownloadHeaders } from './download-delivery.mjs';
 
 export const STORAGE_KEY = 'fangli.workbench.v1';
 const enc = encodeURIComponent;
@@ -32,11 +33,11 @@ export class WorkbenchClient {
     this.cache = record;
     try { this.storage?.setItem(STORAGE_KEY, JSON.stringify(record)); } catch { /* Server remains authoritative; surface save errors separately. */ }
   }
-  async api(path, method = 'GET', body, {timeoutMs = 45000} = {}) {
+  async api(path, method = 'GET', body, {timeoutMs = 45000, headers = {}} = {}) {
     let response;
     const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      response = await this.fetcher(path, { method, headers: { 'Content-Type': 'application/json' },
+      response = await this.fetcher(path, { method, headers: { 'Content-Type': 'application/json', ...headers },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: controller.signal });
       const data = await response.json();
       if (!response.ok || !data.ok) throw new ApiError(data.error || `请求失败（${response.status}）`, response.status);
@@ -126,7 +127,7 @@ export class WorkbenchClient {
 
   async boot(id, { resumeCached = true } = {}) {
     try {
-      const results = await Promise.allSettled([this.api('/api/workbench/bootstrap'), this.api('/api/workbench/zip-config')]);
+      const results = await Promise.allSettled([this.api('/api/workbench/bootstrap', 'GET', undefined, {headers: localDownloadHeaders()}), this.api('/api/workbench/zip-config')]);
       if (results[0].status === 'rejected') throw results[0].reason;
       const b = results[0].value; this.state.bootstrap = b; this.state.clients = b.clients || []; this.state.conversations = b.conversations || [];
       this.state.config = results[1].status === 'fulfilled' ? results[1].value : null;

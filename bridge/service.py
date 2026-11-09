@@ -235,11 +235,13 @@ class Service:
         from .batches import Batches
         from .client_intake import ClientIntake
         from .geo_checks import GeoChecks
+        from .downloads import Downloads
         from .writing_lab import WritingLab
         self.customers = Customers(self)
         self.intake = ClientIntake(self)
         self.batches = Batches(self)
         self.geo = GeoChecks(self)
+        self.downloads = Downloads(self)
         self.writing_lab = WritingLab(self)
         if boot_batches:
             self.batches.boot()

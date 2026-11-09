@@ -8,6 +8,7 @@ import { createWorkbenchPaperFeedback } from './paper-feedback.mjs';
 import { paperMotionEnabled, setPaperMotionEnabled } from '../assets/paper-motion.mjs';
 import { liveReplyMarkup } from './dialogue-view.mjs';
 import { WorkbenchClient } from './client.mjs';
+import { fetchDelivery, localDownloadHeaders, startBrowserDownload } from './download-delivery.mjs';
 import { randomUUID } from './browser-crypto.mjs';
 import { DEFAULT_MODEL, PROFILE_FIELDS, clone, enabled, running, accountName, splitWords, normalizeOptions, selectionCounts, setCount,
   togglePlatform, planSummary, optionIssues, escapeHTML as e, markdown, articleBody, valueText,OPERATION_KIND,latestOperation,reviewDefaults,reviewSelection,interviewMessageText } from './model.mjs';
@@ -666,6 +667,53 @@ function syncWritingSource(resetApiModel = false) {
   $('#setting-api-status', content).textContent = apiSourceStatus(source);
 }
 const settingsSections=[['writing','写作模型'],['platforms','发布平台'],['targets','目标 AI'],['preferences','抓取偏好'],['risks','风险清单'],['appearance','外观']];
+const downloadSettingsPath = '/api/workbench/downloads/settings';
+let downloadFolderPending = false;
+
+function downloadPanel(settings) {
+  const { download_dir: chosen, download_dir_effective: effective } = settings;
+  return `<p class="helper">稿件和任务归档会保存到这台电脑的指定文件夹。同名文件会追加序号。</p>
+    <div class="admin-row spread download-location">
+      <div><strong>${chosen ? '自定义文件夹' : '默认文件夹'}</strong><p class="helper">${e(effective)}</p></div>
+      <div class="inline-actions"><button type="button" class="button quiet sm" data-download-pick>选择文件夹</button>
+        ${chosen ? '<button type="button" class="button quiet sm" data-download-reset>恢复默认</button>' : ''}</div>
+    </div>
+    <details><summary>手动填写路径</summary><div class="details-content"><label class="field"><span>文件夹绝对路径</span>
+      <input type="text" name="download_dir" value="${e(chosen)}" placeholder="留空使用默认路径">
+      <small>请输入已存在且可写的文件夹。</small></label></div></details>`;
+}
+
+async function saveDownloadSettings(data) {
+  const {settings} = await client.api(downloadSettingsPath, 'POST', {download_dir: data.get('download_dir')}, {headers: localDownloadHeaders()});
+  client.state.bootstrap.download_settings = settings;
+  toast(`下载路径已设为 ${settings.download_dir_effective}`);
+}
+
+async function changeDownloadFolder(pick) {
+  if (downloadFolderPending) return;
+  const session = settingsSession;
+  const controls = $$('[data-settings-section], [data-download-pick], [data-download-reset], #modal-submit', modal);
+  const status = $('#modal-error', modal);
+  downloadFolderPending = true;
+  controls.forEach(control => { control.disabled = true; });
+  status.textContent = '';
+  try {
+    const result = pick
+      ? await client.api('/api/workbench/downloads/pick', 'POST', {}, {headers: localDownloadHeaders(), timeoutMs: 95000})
+      : await client.api(downloadSettingsPath, 'POST', {download_dir: ''}, {headers: localDownloadHeaders()});
+    if (result.cancelled) return;
+    client.state.bootstrap.download_settings = result.settings;
+    if (settingsSession === session && session.section === 'downloads') openSettings('downloads', true);
+    toast(`下载路径已设为 ${result.settings.download_dir_effective}`);
+  } catch (error) {
+    if (settingsSession === session) status.textContent = error.message;
+    else toast(error.message);
+  } finally {
+    downloadFolderPending = false;
+    if (settingsSession === session) controls.forEach(control => { control.disabled = false; });
+  }
+}
+
 function captureSettings() {
   if(!settingsSession?.current)return;
   settingsSession.current.values=$$('input,textarea,select',$('#settings-content')).map(el=>({value:el.value,checked:el.checked}));
@@ -673,7 +721,8 @@ function captureSettings() {
 }
 function settingsDisplay(title,html,submit,options={}) {
   captureSettings();const session=settingsSession,section=session.section;
-  const nav=settingsSections.map(([key,label])=>`<button type="button" data-settings-section="${key}" ${section===key?'aria-current="page"':''}>${label}</button>`).join('');
+  const sections = client.state.bootstrap?.download_settings ? [...settingsSections, ['downloads','文件下载路径']] : settingsSections;
+  const nav=sections.map(([key,label])=>`<button type="button" data-settings-section="${key}" ${section===key?'aria-current="page"':''}>${label}</button>`).join('');
   const current=session.current={title,html,submit,options,section,main:!!options.settingsMain};
   const wrapped=submit?async data=>{await submit(data);if(settingsSession!==session)return false;openSettings(section,true);return false;}:null;
   baseDialog('工作台设置',`<div class="settings-layout"><nav aria-label="设置分类">${nav}</nav><section id="settings-content"><h3 class="settings-title">${e(title)}</h3>${html}</section></div>`,wrapped,{...options,wide:true});
@@ -686,6 +735,12 @@ function catalogueMarkup(kind) {
 function openSettings(section='writing',reset=false) {
   if(!settingsSession)settingsSession={section,views:new Map()};
   captureSettings();settingsSession.section=section;
+  if (section === 'downloads') {
+    const settings = client.state.bootstrap?.download_settings;
+    if (!settings) return openSettings('writing');
+    settingsDisplay('文件下载路径', downloadPanel(settings), saveDownloadSettings, {settingsMain:true, label:'保存设置'});
+    return;
+  }
   if (section === 'appearance') {
     const checked = paperMotionEnabled() ? 'checked' : '';
     const palette = currentWorkbenchPalette();
@@ -1331,10 +1386,15 @@ function deleteTaskDialog() {
   dialog('删除任务',`<p>确认删除“${e(displayTaskTitle(client.state.conversation))}”？</p><p class="helper">任务将从历史列表移除。客户档案和已固定的视频来源保留，未保存的编辑也会移除。</p>`,async()=>{await client.deleteConversation();history.replaceState(null,'',location.pathname);panel=null;toast('任务已删除');},{label:'确认删除任务'});
 }
 async function downloadFile(url,filename) {
-  const response=await fetch(url);if(!response.ok){let result;try{result=await response.json();}catch{}throw new Error(result?.error||'下载失败，请核对当前状态');}
-  const blob=await response.blob(),link=document.createElement('a'),objectUrl=URL.createObjectURL(blob);link.href=objectUrl;link.download=filename;link.click();setTimeout(()=>URL.revokeObjectURL(objectUrl),2000);
+  const result = await fetchDelivery(url, filename, {saveLocal: !!client.state.bootstrap?.download_settings});
+  if (result.saved) {
+    toast(`已保存到 ${result.saved}`);
+    return;
+  }
+  startBrowserDownload(result);
+  toast(result.warning ? `${result.warning}。已交给浏览器下载` : '已开始下载');
 }
-async function archiveTask() {client.assertSettled();if(client.state.dirty)await client.saveDraft();await downloadFile(client.path('/archive'),`方立-任务归档-${client.state.conversation.id}.zip`);toast('本地归档已下载');}
+async function archiveTask() {client.assertSettled();if(client.state.dirty)await client.saveDraft();await downloadFile(client.path('/archive'),`方立-任务归档-${client.state.conversation.id}.zip`);}
 function acceptedExpressionDialog() {
   const a=currentArticle();if(!a?.current_version)return;
   const path=client.articlePath(a.id,'/accepted-expressions');
@@ -1485,20 +1545,7 @@ async function exportDialog() {
     if(!ids.length)throw new Error('至少选择一篇稿件');
     const query=new URLSearchParams({fmt,ids:ids.join(',')});
     if(fmt!=='json')query.set('scope','delivery');
-    const response=await fetch(client.path(`/export?${query}`));
-    if(!response.ok){
-      let detail;
-      try{detail=await response.json();}catch{}
-      throw new Error(detail?.error||'导出失败，请确认后台状态');
-    }
-    const blob=await response.blob();
-    const link=document.createElement('a'),objectUrl=URL.createObjectURL(blob);
-    link.href=objectUrl;
-    const filename = response.headers.get('Content-Disposition')?.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
-    link.download=filename ? decodeURIComponent(filename) : `方立-${client.state.conversation.id}.${fmt}`;
-    link.click();
-    setTimeout(()=>URL.revokeObjectURL(objectUrl),2000);
-    toast('已导出所选采用版本');
+    await downloadFile(client.path(`/export?${query}`), `方立-${client.state.conversation.id}.${fmt}`);
   },{label:articles.length?'导出文件':'下载 ZIP'});
   $('[name=fmt]',modal).onchange=event=>{
     const format=event.target.value, archive=format==='archive';
@@ -1553,7 +1600,7 @@ function editTarget(id) {
   dialog(id?'编辑目标 AI':'添加目标 AI',`<div class="form-grid"><label class="field wide"><span>名称</span><input type="text" name="name" required value="${e(t.name||'')}"></label><label class="field wide"><span>备注</span><textarea class="input" name="note">${e(t.note||'')}</textarea></label>${id?`<label class="check-label"><input type="checkbox" name="enabled" ${enabled(t)?'checked':''}>启用目标</label>`:'<p class="helper">新增目标默认启用，保存后可调整。</p>'}</div>`,async data=>{await client.api('/api/models'+(id?'/'+id:''),id?'PUT':'POST',{name:data.get('name'),note:data.get('note'),...(id?{enabled:data.has('enabled')}:{})});await refreshCatalogue();toast('目标 AI 已保存');});
 }
 async function refreshCatalogue() {
-  const b=await client.api('/api/workbench/bootstrap');client.state.bootstrap={...client.state.bootstrap,...b};client.state.clients=b.clients||client.state.clients;client.state.conversations=b.conversations||client.state.conversations;await reloadConfig();client.emit();
+  const b=await client.api('/api/workbench/bootstrap', 'GET', undefined, {headers: localDownloadHeaders()});client.state.bootstrap={...client.state.bootstrap,...b};client.state.clients=b.clients||client.state.clients;client.state.conversations=b.conversations||client.state.conversations;await reloadConfig();client.emit();
 }
 function editRisk(id) {
   const r=client.state.config?.risks?.find(x=>String(x.id)===String(id))||{level:'高',category:'通用风控',item:'',tip:'',platform_id:null};
@@ -1563,6 +1610,8 @@ function deleteRisk(id) { dialog('删除风险点','<p class="helper">此操作�
 
 document.addEventListener('click', event => {
   const settingsNav=event.target.closest('[data-settings-section]');if(settingsNav){event.preventDefault();openSettings(settingsNav.dataset.settingsSection);return;}
+  const downloadControl = event.target.closest('[data-download-pick], [data-download-reset]');
+  if (downloadControl) { changeDownloadFolder(downloadControl.hasAttribute('data-download-pick')); return; }
   for(const menu of $$('.toolbar-menu[open]'))if(!menu.contains(event.target))menu.open=false;
   const exportPick=event.target.closest('[data-export-pick]');
   if(exportPick){for(const input of $$('input[name="ids"]',modal))input.checked=exportPick.dataset.exportPick==='all';rememberExportSelection();return;}

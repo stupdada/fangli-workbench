@@ -25,6 +25,8 @@
 
 主服务同源，仅监听本机；公开站点账户体系另阶段实现。JSON API 返回 `{ok:true,...}`，失败 `{ok:false,error:"可读原因"}`，冲突用409、无效输入400、缺资源404。客户/会话使用字符串 ID，文章沿用 ZIP 整数 ID，工作版本为整数 ID。`app/` 的原始 Store 仍持有 ZIP 生成参考记录。前端只调用工作台接口修改工作版本，避免绕过锁直接改原生成记录。
 
+稿件导出和任务 ZIP 归档的 GET、HEAD 请求只返回文件。通过本机入口打开的工作台可调用 `POST /api/workbench/downloads/settings` 或 `/api/workbench/downloads/pick` 设置本机目录，并向同一导出或归档地址 POST 空对象保存成品。服务只对通过本机请求检查的页面提供目录设置。局域网网关不转发本机下载请求头，局域网入口始终使用浏览器下载。
+
 异步模型操作返回 `{operation_id}`，查询返回 `{operation:{id,kind,status,result,error,...}}`。status为running/done/error/stopped/interrupted；访谈通过操作SSE接收增量，其余操作仅进行中有界刷新，结束即停止。批量写作仍可消费原生 `GET /api/jobs/{job_id}/stream`，next/chunk/status/end事件保持原形。
 
 ### 共用 API

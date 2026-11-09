@@ -106,6 +106,9 @@ def create_server(db_path=None, port=8770, video_base=None):
     return Server(('127.0.0.1', port), path, video_base)
 
 
+TASK_DOWNLOAD_ROUTE = re.compile(r'/api/workbench/conversations/([^/]+)/(export|archive)')
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = 'FangliWorkbench/1.0'
     sys_version = ''
@@ -135,6 +138,41 @@ class Handler(BaseHTTPRequestHandler):
 
     def _json(self, data, status=200):
         self._send(status, json.dumps({'ok': True, **data}, ensure_ascii=False, allow_nan=False).encode('utf-8'))
+
+    def _local_download_allowed(self):
+        # The LAN gateway rewrites Host and Origin, but its request allowlist drops this header.
+        return (self.client_address[0] == '127.0.0.1'
+                and self.headers.get_all('X-Fangli-Local-Download') == ['1'])
+
+    def _require_local_download(self):
+        if not self._local_download_allowed():
+            raise Forbidden('服务器的保存目录只能通过本机入口设置和使用')
+
+    def _task_download(self, match, query, *, save=False):
+        ident, action = match.groups()
+        s = self.service
+        if action == 'export':
+            ids = None
+            if 'ids' in query:
+                raw = query['ids'][0]
+                if not raw or any(not v.strip().isdigit() for v in raw.split(',')):
+                    raise Problem('导出稿件ID不正确')
+                ids = [int(v.strip()) for v in raw.split(',')]
+            scope = query.get('scope', [None])
+            if len(scope) != 1:
+                raise Problem('请选择一个导出范围')
+            body, ctype, name = exports.export(s, ident, query.get('fmt', ['docx'])[0], ids, scope=scope[0])
+        else:
+            body, ctype, name = exports.archive(s, ident)
+        headers = {'Content-Disposition': "attachment; filename*=UTF-8''" + urllib.parse.quote(name)}
+        if save:
+            try:
+                target = s.downloads.write(name, body)
+            except Problem as exc:
+                headers['X-Download-Error'] = urllib.parse.quote(str(exc))
+            else:
+                return self._json({'path': str(target), 'name': target.name})
+        return self._send(200, body, ctype, headers)
 
     def _boundary(self):
         host = self.headers.get('Host', '')
@@ -177,7 +215,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(302, b'', 'text/plain; charset=utf-8', {'Location': '/video/' + ('?' + parsed.query if parsed.query else '')})
             if path.startswith('/video/') or path == '/api/video' or path.startswith('/api/video/'):
                 return self._proxy(self.path)
+            match = TASK_DOWNLOAD_ROUTE.fullmatch(path)
+            if match and self.command == 'POST':
+                self._require_local_download()
+                if self._body(MAX_BODY):
+                    raise Problem('保存导出文件无需额外字段')
+                return self._task_download(match, query, save=True)
             if self.command in ('GET', 'HEAD'):
+                if match:
+                    return self._task_download(match, query)
                 if path in ('/', '/workbench', '/workbench/'):
                     suffix = '?' + parsed.query if parsed.query else ''
                     return self._send(302, b'', 'text/plain; charset=utf-8', {'Location': '/workbench/zip/index.html' + suffix})
@@ -244,7 +290,11 @@ class Handler(BaseHTTPRequestHandler):
             raise Missing('检测接口不存在')
         if path == '/api/workbench/runtime':
             return self._json({'main': {'pid': os.getpid(), 'port': self.server.server_port}, 'video': self.server.video.snapshot()})
-        if path in ('/api/workbench/bootstrap', '/api/bootstrap'): return self._json(s.bootstrap())
+        if path in ('/api/workbench/bootstrap', '/api/bootstrap'):
+            data = s.bootstrap()
+            if self._local_download_allowed():
+                data['download_settings'] = s.downloads.public()
+            return self._json(data)
         if path == '/api/workbench/zip-config': return self._json(s.zip_config())
         if path == '/api/workbench/clients':
             return self._json({'clients': ws.clients(archived=query.get('archived') == ['1'])})
@@ -312,26 +362,20 @@ class Handler(BaseHTTPRequestHandler):
             fmt = (query.get('fmt') or [''])[0]
             if fmt == 'md': return self._send(200, exports.compare_markdown(data).encode('utf-8'), 'text/markdown; charset=utf-8', {'Content-Disposition': 'attachment; filename="comparison.md"'})
             return self._json(data)
-        match = re.fullmatch(r'/api/workbench/conversations/([^/]+)/export', path)
-        if match:
-            raw = (query.get('ids') or [''])[0]
-            ids = None
-            if 'ids' in query:
-                if not raw or any(not v.strip().isdigit() for v in raw.split(',')): raise Problem('导出稿件ID不正确')
-                ids = [int(v.strip()) for v in raw.split(',')]
-            scope = query.get('scope', [None])
-            if len(scope) != 1: raise Problem('请选择一个导出范围')
-            body, ctype, name = exports.export(s, match[1], (query.get('fmt') or ['docx'])[0], ids, scope=scope[0])
-            return self._send(200, body, ctype, {'Content-Disposition': "attachment; filename*=UTF-8''" + urllib.parse.quote(name)})
-        match = re.fullmatch(r'/api/workbench/conversations/([^/]+)/archive', path)
-        if match:
-            body, ctype, name = exports.archive(s, match[1])
-            return self._send(200, body, ctype, {'Content-Disposition': "attachment; filename*=UTF-8''" + urllib.parse.quote(name)})
         if path == '/api/workbench/video-context': return self._json(self.video_context(query))
         raise Missing('接口不存在')
 
     def route_write(self, method, path, body):
         s, ws = self.service, self.service.ws
+        if method == 'POST' and path in ('/api/workbench/downloads/settings', '/api/workbench/downloads/pick'):
+            self._require_local_download()
+            if path.endswith('/pick'):
+                if body:
+                    raise Problem('选择下载路径无需额外字段')
+                return self._json(s.downloads.pick())
+            if set(body) != {'download_dir'}:
+                raise Problem('仅接受下载路径')
+            return self._json({'settings': s.downloads.save(body['download_dir'])})
         if path == '/api/workbench/writing-lab' and method == 'POST':
             return self._json(s.writing_lab.start(body), 202)
         if method == 'POST' and (match := WRITING_LAB_ROUTE.fullmatch(path)):
